@@ -68,7 +68,7 @@ public class DataEditorBasicExample extends Layer1ApiInjectorRelay implements La
 
     private int modifySize(long size) {
         size *= SIZE_MULTIPLIER;
-        return (int)size;
+        return (int) size;
     }
 
     private int modifyPrice(int price) {

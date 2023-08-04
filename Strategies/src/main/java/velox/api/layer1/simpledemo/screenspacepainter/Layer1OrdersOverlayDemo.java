@@ -351,6 +351,6 @@ public class Layer1OrdersOverlayDemo implements
     @Override
     public void onTrade(String alias, double price, int size, TradeInfo tradeInfo) {
         // Remembering first trade price rounded to nearest level.
-        prices.putIfAbsent(alias, (int)Math.round(price));
+        prices.putIfAbsent(alias, (int) Math.round(price));
     }
 }

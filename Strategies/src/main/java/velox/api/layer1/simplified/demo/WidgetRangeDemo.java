@@ -26,7 +26,7 @@ public class WidgetRangeDemo implements CustomModule, TradeDataListener, Histori
     private Indicator indicatorFirst;
     private Indicator indicatorSecond;
     
-    private final long widgetRangeLifeSpan = 1_000 * 1_000_000_000l;// 1000sec so sample length is 10 sec
+    private final long widgetRangeLifeSpan = 1_000 * 1_000_000_000l; // 1000sec so sample length is 10 sec
 
     @Override
     public void initialize(String alias, InstrumentInfo info, Api api, InitialState initialState) {

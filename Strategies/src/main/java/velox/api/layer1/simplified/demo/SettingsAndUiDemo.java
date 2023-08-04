@@ -101,7 +101,7 @@ public class SettingsAndUiDemo implements
         JSpinner offsetSpinner = new JSpinner(new SpinnerNumberModel(
                 settings.lastTradeOffset, -100, 100, 1));
         offsetSpinner.addChangeListener(e -> {
-            settings.lastTradeOffset = (Integer)offsetSpinner.getValue();
+            settings.lastTradeOffset = (Integer) offsetSpinner.getValue();
             api.setSettings(settings);
         });
         
@@ -138,7 +138,7 @@ public class SettingsAndUiDemo implements
         JSpinner lineWidthSpinner = new JSpinner(new SpinnerNumberModel(
                 settings.lineWidth, 1, 10, 1));
         lineWidthSpinner.addChangeListener(e -> {
-            settings.lineWidth = (Integer)lineWidthSpinner.getValue();
+            settings.lineWidth = (Integer) lineWidthSpinner.getValue();
             api.setSettings(settings);
             lastTradeIndicator.setWidth(settings.lineWidth);
         });
@@ -178,7 +178,7 @@ public class SettingsAndUiDemo implements
      */
     public static StrategyPanel[] getCustomDisabledSettingsPanels() {
         // Generating disabled UI
-        return getCustomSettingsPanels(new Settings(), null ,null);
+        return getCustomSettingsPanels(new Settings(), null, null);
         
     }
 }

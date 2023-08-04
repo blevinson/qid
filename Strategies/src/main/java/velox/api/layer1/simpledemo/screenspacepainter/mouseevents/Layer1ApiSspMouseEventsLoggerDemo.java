@@ -55,7 +55,7 @@ public class Layer1ApiSspMouseEventsLoggerDemo implements
     
     public Layer1ApiSspMouseEventsLoggerDemo(Layer1ApiProvider provider) {
         this.provider = provider;
-        ListenableHelper.addListeners(provider,this);
+        ListenableHelper.addListeners(provider, this);
     }
     
     enum MouseEventType {

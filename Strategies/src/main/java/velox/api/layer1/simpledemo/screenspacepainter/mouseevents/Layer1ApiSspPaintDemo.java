@@ -73,7 +73,7 @@ public class Layer1ApiSspPaintDemo implements
     
     public Layer1ApiSspPaintDemo(Layer1ApiProvider provider) {
         this.provider = provider;
-        ListenableHelper.addListeners(provider,this);
+        ListenableHelper.addListeners(provider, this);
     }
     
     @Override

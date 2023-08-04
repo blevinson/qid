@@ -146,7 +146,7 @@ public class Layer1ApiHelperExecuteStrategy extends Layer1ApiHelperStrategyAbstr
             
             if (!orderBook.getBidMap().isEmpty() && !orderBook.getAskMap().isEmpty()) {
                 if (isConditionSatisfiedMore(volumeAsk, volumeBid, percent)) {
-                    moveOrders(false, orderBook.getAskMap().firstKey() - distance,ordersMap, pips, requestTimesMap, levelsNumber, pendingMoves);
+                    moveOrders(false, orderBook.getAskMap().firstKey() - distance, ordersMap, pips, requestTimesMap, levelsNumber, pendingMoves);
                 }
                 
                 if (isConditionSatisfiedMore(volumeBid, volumeAsk, percent)) {

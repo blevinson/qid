@@ -89,7 +89,7 @@ public class FeedRecorder implements Layer1CustomPanelsGetter, Layer1ApiDataAdap
     @Override
     public void onInstrumentAdded(String alias, InstrumentInfo instrumentInfo) {
         instruments.put(alias, instrumentInfo);
-        int id = (int)(Math.random() * Integer.MAX_VALUE);
+        int id = (int) (Math.random() * Integer.MAX_VALUE);
         instrumentIds.put(alias, id);
         try {
             recorder.onInstrumentAdded(id, instrumentInfo);

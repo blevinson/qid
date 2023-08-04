@@ -417,7 +417,7 @@ public class UserDataUserMessageDemo implements Layer1ApiAdminAdapter, Layer1Api
     @Override
     public void onInstrumentAdded(String alias, InstrumentInfo instrumentInfo) {
         new Thread(() -> {
-            provider.sendUserMessage(getGeneratorMessage(alias,false));
+            provider.sendUserMessage(getGeneratorMessage(alias, false));
             provider.sendUserMessage(getGeneratorMessage(alias, true));
         }).start();
     }
@@ -425,7 +425,7 @@ public class UserDataUserMessageDemo implements Layer1ApiAdminAdapter, Layer1Api
     @Override
     public void onInstrumentRemoved(String alias) {
         new Thread(() -> {
-            provider.sendUserMessage(getGeneratorMessage(alias,false));
+            provider.sendUserMessage(getGeneratorMessage(alias, false));
         }).start();
     }
 
@@ -440,7 +440,7 @@ public class UserDataUserMessageDemo implements Layer1ApiAdminAdapter, Layer1Api
         if (data instanceof Layer1ApiHistoricalDataLoadedMessage) {
             Layer1ApiHistoricalDataLoadedMessage message = (Layer1ApiHistoricalDataLoadedMessage) data;
             new Thread(() -> {
-                provider.sendUserMessage(getGeneratorMessage(message.alias,false));
+                provider.sendUserMessage(getGeneratorMessage(message.alias, false));
                 provider.sendUserMessage(getGeneratorMessage(message.alias, true));
             }).start();
         } else if (data instanceof UserMessageLayersChainCreatedTargeted) {

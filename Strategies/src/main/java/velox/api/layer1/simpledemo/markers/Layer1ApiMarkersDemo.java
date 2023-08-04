@@ -193,7 +193,7 @@ public class Layer1ApiMarkersDemo implements
             double lastPrice = ((TradeAggregationEvent) intervalResponse.get(0).events.get(StandardEvents.TRADE.toString())).lastPrice;
             
             for (int i = 1; i <= intervalsNumber; ++i) {
-                TradeAggregationEvent trades = (TradeAggregationEvent)intervalResponse.get(i).events.get(StandardEvents.TRADE.toString());
+                TradeAggregationEvent trades = (TradeAggregationEvent) intervalResponse.get(i).events.get(StandardEvents.TRADE.toString());
                 
                 if (!Double.isNaN(trades.lastPrice)) {
                     lastPrice = trades.lastPrice;

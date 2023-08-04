@@ -50,7 +50,7 @@ public class Layer1ApiMouseEventsSquareDemo implements
     
     public Layer1ApiMouseEventsSquareDemo(Layer1ApiProvider provider) {
         this.provider = provider;
-        ListenableHelper.addListeners(provider,this);
+        ListenableHelper.addListeners(provider, this);
     }
     
     @Override
