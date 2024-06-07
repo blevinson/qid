@@ -164,13 +164,13 @@ public class Layer1ApiMarkersDemo implements
     }
 
     @Override
-    public void onInstrumentRemoved(String alias) { }
+    public void onInstrumentRemoved(String alias) {}
     
     @Override
-    public void onInstrumentNotFound(String symbol, String exchange, String type) { }
+    public void onInstrumentNotFound(String symbol, String exchange, String type) {}
 
     @Override
-    public void onInstrumentAlreadySubscribed(String symbol, String exchange, String type) { }
+    public void onInstrumentAlreadySubscribed(String symbol, String exchange, String type) {}
     
     @Override
     public void calculateValuesInRange(String indicatorName, String alias, long t0, long intervalWidth, int intervalsNumber,
@@ -330,7 +330,7 @@ public class Layer1ApiMarkersDemo implements
             }
             
             @Override
-            public void addColorChangeListener(ColorsChangedListener listener) { }
+            public void addColorChangeListener(ColorsChangedListener listener) {}
         };
         
         ColorsConfigItem configItemLines = new ColorsConfigItem(INDICATOR_LINE_COLOR_NAME, INDICATOR_LINE_COLOR_NAME, true,

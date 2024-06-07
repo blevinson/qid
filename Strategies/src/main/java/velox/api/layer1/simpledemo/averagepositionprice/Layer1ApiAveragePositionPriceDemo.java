@@ -203,7 +203,7 @@ public class Layer1ApiAveragePositionPriceDemo implements Layer1ApiFinishable,
             }
             
             @Override
-            public void addColorChangeListener(ColorsChangedListener listener) { }
+            public void addColorChangeListener(ColorsChangedListener listener) {}
         };
         
         ColorsConfigItem configItemLines = new ColorsConfigItem(LINE_COLOR_NAME, LINE_COLOR_NAME, true,
@@ -318,13 +318,13 @@ public class Layer1ApiAveragePositionPriceDemo implements Layer1ApiFinishable,
     }
 
     @Override
-    public void onInstrumentRemoved(String alias) { }
+    public void onInstrumentRemoved(String alias) {}
     
     @Override
-    public void onInstrumentNotFound(String symbol, String exchange, String type) { }
+    public void onInstrumentNotFound(String symbol, String exchange, String type) {}
 
     @Override
-    public void onInstrumentAlreadySubscribed(String symbol, String exchange, String type) { }
+    public void onInstrumentAlreadySubscribed(String symbol, String exchange, String type) {}
 
     @Override
     public void finish() {

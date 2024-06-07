@@ -50,7 +50,7 @@ public class OrdersDemoNoHistory implements
     }
     
     @Override
-    public void stop() { }
+    public void stop() {}
 
     @Override
     public void onPositionUpdate(StatusInfo statusInfo) {

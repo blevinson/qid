@@ -258,7 +258,7 @@ public class UserDataUserMessageDemo implements Layer1ApiAdminAdapter, Layer1Api
                     }
                 }).setColorInterface(new Layer1IndicatorColorInterface() {
                     @Override
-                    public void setColor(String alias, String name, Color color) { }
+                    public void setColor(String alias, String name, Color color) {}
 
                     @Override
                     public Color getColor(String alias, String name) {
@@ -306,37 +306,37 @@ public class UserDataUserMessageDemo implements Layer1ApiAdminAdapter, Layer1Api
         }
 
         @Override
-        public void onStatus(StatusInfo statusInfo) { }
+        public void onStatus(StatusInfo statusInfo) {}
 
         @Override
-        public void onOrderUpdated(OrderInfoUpdate orderInfoUpdate) { }
+        public void onOrderUpdated(OrderInfoUpdate orderInfoUpdate) {}
 
         @Override
-        public void onOrderExecuted(ExecutionInfo executionInfo) { }
+        public void onOrderExecuted(ExecutionInfo executionInfo) {}
 
         @Override
-        public void onBalance(BalanceInfo balanceInfo) { }
+        public void onBalance(BalanceInfo balanceInfo) {}
 
         @Override
-        public void onTrade(String alias, double price, int size, TradeInfo tradeInfo) { }
+        public void onTrade(String alias, double price, int size, TradeInfo tradeInfo) {}
 
         @Override
-        public void onMarketMode(String alias, MarketMode marketMode) { }
+        public void onMarketMode(String alias, MarketMode marketMode) {}
 
         @Override
-        public void onDepth(String alias, boolean isBid, int price, int size) { }
+        public void onDepth(String alias, boolean isBid, int price, int size) {}
 
         @Override
-        public void onInstrumentAdded(String alias, InstrumentInfo instrumentInfo) { }
+        public void onInstrumentAdded(String alias, InstrumentInfo instrumentInfo) {}
 
         @Override
-        public void onInstrumentRemoved(String alias) { }
+        public void onInstrumentRemoved(String alias) {}
 
         @Override
-        public void onInstrumentNotFound(String symbol, String exchange, String type) { }
+        public void onInstrumentNotFound(String symbol, String exchange, String type) {}
 
         @Override
-        public void onInstrumentAlreadySubscribed(String symbol, String exchange, String type) { }
+        public void onInstrumentAlreadySubscribed(String symbol, String exchange, String type) {}
 
         @Override
         public void onUserMessage(Object data) {

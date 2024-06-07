@@ -32,7 +32,7 @@ public class BarMidPriceNoHistory implements
     }
     
     @Override
-    public void stop() { }
+    public void stop() {}
 
     @Override
     public void onBar(OrderBook ob, Bar bar) {

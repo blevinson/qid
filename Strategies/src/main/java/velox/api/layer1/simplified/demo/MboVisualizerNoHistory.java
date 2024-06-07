@@ -48,10 +48,10 @@ public class MboVisualizerNoHistory
     }
 
     @Override
-    public void initialize(String alias, InstrumentInfo info, Api api, InitialState initialState) { }
+    public void initialize(String alias, InstrumentInfo info, Api api, InitialState initialState) {}
 
     @Override
-    public void stop() { }
+    public void stop() {}
 
     @Override
     public void send(String orderId, boolean isBid, int price, int size) {

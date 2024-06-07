@@ -44,7 +44,7 @@ public class BboWithHistoryData implements
     }
     
     @Override
-    public void stop() { }
+    public void stop() {}
 
     @Override
     public void onBbo(int bidPrice, int bidSize, int askPrice, int askSize) {

@@ -39,7 +39,7 @@ public class IndicatorModifiableDemo implements CustomModule, TradeDataListener,
     }
     
     @Override
-    public void stop() { }
+    public void stop() {}
 
     @Override
     public void onTrade(double price, int size, TradeInfo tradeInfo) {

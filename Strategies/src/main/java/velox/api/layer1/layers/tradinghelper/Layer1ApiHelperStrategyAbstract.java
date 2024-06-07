@@ -100,7 +100,7 @@ public class Layer1ApiHelperStrategyAbstract<V extends HelperStrategySettings> i
         }
     }
     
-    protected void doActionForAlias(String alias) { }
+    protected void doActionForAlias(String alias) {}
     
     @Override
     public StrategyPanel[] getCustomGuiFor(String alias, String indicatorName) {

@@ -49,7 +49,7 @@ public class BarDemoWithHistoryData implements
     }
     
     @Override
-    public void stop() { }
+    public void stop() {}
 
     @Override
     public void onBar(OrderBook orderBook, Bar bar) {

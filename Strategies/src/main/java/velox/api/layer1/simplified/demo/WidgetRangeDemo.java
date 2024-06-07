@@ -53,6 +53,6 @@ public class WidgetRangeDemo implements CustomModule, TradeDataListener, Histori
     }
 
     @Override
-    public void stop() { }
+    public void stop() {}
 
 }
