@@ -1,5 +1,7 @@
 package velox.api.layer1.layers.tradinghelper;
 
+import java.util.Objects;
+
 public class OrderRequest implements Comparable<OrderRequest> {
     public final String orderId;
     public final Integer requestLevel;
@@ -22,7 +24,7 @@ public class OrderRequest implements Comparable<OrderRequest> {
     public boolean equals(Object obj) {
         if (obj instanceof OrderRequest) {
             OrderRequest orderRequest = (OrderRequest) obj;
-            return orderRequest.orderId.equals(this.orderId) && orderRequest.requestLevel == this.requestLevel;
+            return orderRequest.orderId.equals(this.orderId) && Objects.equals(orderRequest.requestLevel, this.requestLevel);
         }
         return false;
     }
