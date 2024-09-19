@@ -123,8 +123,8 @@ public class TradingMessagesSenderSettingsPanel extends StrategyPanel {
         setOrderSizeBlock.setBorder(BorderFactory.createTitledBorder(SET_ORDER_SIZE_TITLE));
         JLabel comboBoxSetOrderSizeAliasesLabel = new JLabel("Select instrument:");
 
-        JLabel integerFieldLabel = new JLabel("Select new order size");
-        JLabel integerFieldLabelNote = new JLabel("Note that the size multilier will be applied):");
+        JLabel integerFieldLabel = new JLabel("Select new order size:");
+        JLabel integerFieldLabelNote = new JLabel("(Note that the size multilier will be applied)");
         integerFieldLabelNote.setFont(new Font("", Font.ITALIC, 12));
         JTextField integerField = new JTextField(10);
         integerField.setInputVerifier(new InputVerifier() {
