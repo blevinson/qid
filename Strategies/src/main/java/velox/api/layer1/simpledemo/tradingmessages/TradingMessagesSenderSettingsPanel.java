@@ -1,7 +1,7 @@
 package velox.api.layer1.simpledemo.tradingmessages;
 
+import velox.api.layer1.messages.Layer1ApiChangeTradingModeMessage;
 import velox.api.layer1.messages.Layer1ApiSetOrderSizeMessage;
-import velox.api.layer1.messages.Layer1ApiTradingEnableMessage;
 import velox.api.layer1.messages.Layer1ApiTradingMessageWithCallback;
 import velox.gui.StrategyPanel;
 
@@ -29,6 +29,11 @@ import java.util.function.Consumer;
 public class TradingMessagesSenderSettingsPanel extends StrategyPanel {
     public static TradingMessagesSenderSettingsPanel newPanel(final String name, final Consumer<Object> messageConsumer, final AtomicBoolean isWorking) {
         return new TradingMessagesSenderSettingsPanel(name, messageConsumer, isWorking);
+    }
+    
+    private enum TradingAction {
+        ENABLE,
+        DISABLE
     }
     
     private static final String TRADING_ENABLE_TITLE = "Send Trading Enable Message";
@@ -90,8 +95,11 @@ public class TradingMessagesSenderSettingsPanel extends StrategyPanel {
 
         JLabel comboBoxTradingEnableAliasesLabel = new JLabel("Select instrument:");
 
+        JLabel actionComboBoxLabel = new JLabel("Select action:");
+        JComboBox<TradingAction> actionComboBox = new JComboBox<>(TradingAction.values());
+
         JLabel modeComboBoxLabel = new JLabel("Select Trading mode:");
-        JComboBox<Layer1ApiTradingEnableMessage.Mode> modeComboBox = new JComboBox<>(Layer1ApiTradingEnableMessage.Mode.values());
+        JComboBox<Layer1ApiChangeTradingModeMessage.Mode> modeComboBox = new JComboBox<>(Layer1ApiChangeTradingModeMessage.Mode.values());
 
         JButton tradingEnableButton = new JButton("Send TradingEnable Message");
         tradingEnableButton.addActionListener(e -> {
@@ -100,20 +108,31 @@ public class TradingMessagesSenderSettingsPanel extends StrategyPanel {
                 JOptionPane.showMessageDialog(null, "Alias cannot be empty!", "Error", JOptionPane.ERROR_MESSAGE);
                 return;
             }
-            Layer1ApiTradingEnableMessage.Mode tradingMode;
+            Layer1ApiChangeTradingModeMessage.Mode tradingMode;
             try {
-                tradingMode = (Layer1ApiTradingEnableMessage.Mode) modeComboBox.getSelectedItem();
+                tradingMode = (Layer1ApiChangeTradingModeMessage.Mode) modeComboBox.getSelectedItem();
             } catch (ClassCastException exception) {
                 JOptionPane.showMessageDialog(null, "Trading Mode cannot be empty!", "Error", JOptionPane.ERROR_MESSAGE);
                 return;
             }
+
+            boolean enable;
+            try {
+                TradingAction action = (TradingAction) actionComboBox.getSelectedItem();
+                enable = action == TradingAction.ENABLE;
+            } catch (ClassCastException exception) {
+                JOptionPane.showMessageDialog(null, "Action cannot be empty!", "Error", JOptionPane.ERROR_MESSAGE);
+                return;
+            }
             
-            String messageText = "Layer1ApiTradingEnableMessage with alias: " + alias + ", tradingMode: " + tradingMode;
-            messageConsumer.accept(new Layer1ApiTradingEnableMessage(alias, tradingMode, getResponseListener(messageText)));
+            String messageText = "Layer1ApiChangeTradingModeMessage with alias: " + alias + ", enable: " + enable + ", tradingMode: " + tradingMode;
+            messageConsumer.accept(new Layer1ApiChangeTradingModeMessage(alias, enable, tradingMode, getResponseListener(messageText)));
         });
 
         tradingEnableBlock.add(comboBoxTradingEnableAliasesLabel);
         tradingEnableBlock.add(comboBoxAliasesTradingEnable);
+        tradingEnableBlock.add(actionComboBoxLabel);
+        tradingEnableBlock.add(actionComboBox);
         tradingEnableBlock.add(modeComboBoxLabel);
         tradingEnableBlock.add(modeComboBox);
         tradingEnableBlock.add(tradingEnableButton);
