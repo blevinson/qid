@@ -35,12 +35,7 @@ Try making some modifications to the examples to see how things work. Change the
 
 You might also want to set up an IDE - this will be covered later in this guide.
 
-### Making sure your changes get applied
-**Important note: this specific demo project is compiled as part of Bookmap itself. It means that if you want to make changes to classes in this project you should either rename those or delete built-in `bm-strategies.jar`**. Failing to do that will result in Bookmap loading built-in version instead of what you build.
-
-If you opt for deleting `bm-strategies.jar` - go to the `lib` folder inside bookmap installation folder (on Windows it's `C:\Program Files\Bookmap\lib` by default) and delete `bm-strategies.jar` (with bookmap closed). Then start bookmap. Built-in Chase/Escape/Execute strategies will disappear, and now you are free to modify any classes in this demo without the need to rename. Note that you don't have to do that if you intend to rename classes or write your own - it only matters if full class name matches an existing one exactly.
-
-## Which API to chose?
+## Which API to choose?
 
 If you are just starting - go for Simplified API. It's much easier, and at least you will be able to validate that everything is set up correctly before diving into the more complex core API. Don't be fooled by a name though - while it is a wrapper around core API intended to simplify it - it is still reasonably powerful.
 
