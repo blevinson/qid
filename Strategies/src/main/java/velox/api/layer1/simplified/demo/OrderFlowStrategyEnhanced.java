@@ -62,16 +62,16 @@ public class OrderFlowStrategyEnhanced implements
 
     // ========== PARAMETERS ==========
     @Parameter(name = "Iceberg Min Orders")
-    private Integer icebergMinOrders = 5;
+    private Integer icebergMinOrders = 20;  // Increased from 5 to reduce false signals
 
     @Parameter(name = "Spoof Max Age (ms)")
     private Integer spoofMaxAge = 500;
 
     @Parameter(name = "Spoof Min Size")
-    private Integer spoofMinSize = 5;
+    private Integer spoofMinSize = 20;  // Increased from 5
 
     @Parameter(name = "Absorption Min Size")
-    private Integer absorptionMinSize = 10;
+    private Integer absorptionMinSize = 50;  // Increased from 10
 
     // ========== RISK MANAGEMENT PARAMETERS ==========
     @Parameter(name = "Max Position Size")
@@ -153,8 +153,8 @@ public class OrderFlowStrategyEnhanced implements
     private LinkedList<Integer> recentOrderCounts = new LinkedList<>();
     private LinkedList<Integer> recentTotalSizes = new LinkedList<>();
 
-    private int adaptiveOrderThreshold = 8;
-    private int adaptiveSizeThreshold = 30;
+    private int adaptiveOrderThreshold = 25;  // Increased from 8 - requires more orders at price
+    private int adaptiveSizeThreshold = 100;  // Increased from 30 - requires more total size
 
     // ========== PERFORMANCE TRACKING ==========
     private List<Trade> tradeHistory = new ArrayList<>();
@@ -749,7 +749,11 @@ public class OrderFlowStrategyEnhanced implements
         totalSizeSeen += size;
 
         updateAdaptiveThresholds(price);
-        checkForIceberg(isBid, price);
+
+        // Only check for icebergs on large orders (not every single order)
+        if (size >= adaptiveSizeThreshold * 0.5) {
+            checkForIceberg(isBid, price);
+        }
     }
 
     public void replace(String orderId, boolean isBid, int price, int size) {
