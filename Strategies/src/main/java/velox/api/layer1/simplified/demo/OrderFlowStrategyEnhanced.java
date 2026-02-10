@@ -291,11 +291,62 @@ public class OrderFlowStrategyEnhanced implements
         thresholdMultSpinner.addChangeListener(e -> updateThresholdMultiplier());
         settingsPanel.add(thresholdMultSpinner, gbc);
 
+        // Minimum Detection Thresholds
+        gbc.gridx = 0; gbc.gridy = 4;
+        JLabel icebergOrdersLabel = new JLabel("Iceberg Min Orders:");
+        icebergOrdersLabel.setToolTipText("Minimum orders at one price to trigger iceberg signal");
+        settingsPanel.add(icebergOrdersLabel, gbc);
+        gbc.gridx = 1;
+        JSpinner icebergOrdersSpinner = new JSpinner(new SpinnerNumberModel(icebergMinOrders.intValue(), 5, 100, 5));
+        icebergOrdersSpinner.setToolTipText("Higher = fewer but more reliable signals (default: 20)");
+        icebergOrdersSpinner.addChangeListener(e -> icebergMinOrders = (Integer) icebergOrdersSpinner.getValue());
+        settingsPanel.add(icebergOrdersSpinner, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 5;
+        JLabel spoofSizeLabel = new JLabel("Spoof Min Size:");
+        spoofSizeLabel.setToolTipText("Minimum order size to consider as potential spoof");
+        settingsPanel.add(spoofSizeLabel, gbc);
+        gbc.gridx = 1;
+        JSpinner spoofSizeSpinner = new JSpinner(new SpinnerNumberModel(spoofMinSize.intValue(), 5, 100, 5));
+        spoofSizeSpinner.setToolTipText("Higher = fewer spoof signals (default: 20)");
+        spoofSizeSpinner.addChangeListener(e -> spoofMinSize = (Integer) spoofSizeSpinner.getValue());
+        settingsPanel.add(spoofSizeSpinner, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 6;
+        JLabel absorbSizeLabel = new JLabel("Absorption Min Size:");
+        absorbSizeLabel.setToolTipText("Minimum trade size to detect absorption");
+        settingsPanel.add(absorbSizeLabel, gbc);
+        gbc.gridx = 1;
+        JSpinner absorbSizeSpinner = new JSpinner(new SpinnerNumberModel(absorptionMinSize.intValue(), 10, 200, 10));
+        absorbSizeSpinner.setToolTipText("Higher = fewer absorption signals (default: 50)");
+        absorbSizeSpinner.addChangeListener(e -> absorptionMinSize = (Integer) absorbSizeSpinner.getValue());
+        settingsPanel.add(absorbSizeSpinner, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 7;
+        JLabel adaptOrderLabel = new JLabel("Adaptive Order Thresh:");
+        adaptOrderLabel.setToolTipText("Dynamic threshold based on recent order activity");
+        settingsPanel.add(adaptOrderLabel, gbc);
+        gbc.gridx = 1;
+        JSpinner adaptOrderSpinner = new JSpinner(new SpinnerNumberModel(adaptiveOrderThreshold, 10, 100, 5));
+        adaptOrderSpinner.setToolTipText("Auto-adjusts based on market conditions (default: 25)");
+        adaptOrderSpinner.addChangeListener(e -> adaptiveOrderThreshold = (Integer) adaptOrderSpinner.getValue());
+        settingsPanel.add(adaptOrderSpinner, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 8;
+        JLabel adaptSizeLabel = new JLabel("Adaptive Size Thresh:");
+        adaptSizeLabel.setToolTipText("Dynamic size threshold based on recent activity");
+        settingsPanel.add(adaptSizeLabel, gbc);
+        gbc.gridx = 1;
+        JSpinner adaptSizeSpinner = new JSpinner(new SpinnerNumberModel(adaptiveSizeThreshold, 50, 500, 25));
+        adaptSizeSpinner.setToolTipText("Auto-adjusts based on market conditions (default: 100)");
+        adaptSizeSpinner.addChangeListener(e -> adaptiveSizeThreshold = (Integer) adaptSizeSpinner.getValue());
+        settingsPanel.add(adaptSizeSpinner, gbc);
+
         // Safety Controls section
-        gbc.gridx = 0; gbc.gridy = 4; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 9; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Safety Controls", gbc);
 
-        gbc.gridy = 5; gbc.gridwidth = 1;
+        gbc.gridy = 10; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Simulation Mode Only:"), gbc);
         gbc.gridx = 1;
         simModeCheckBox = new JCheckBox();
@@ -303,7 +354,7 @@ public class OrderFlowStrategyEnhanced implements
         simModeCheckBox.addActionListener(e -> updateSimMode());
         settingsPanel.add(simModeCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 6;
+        gbc.gridx = 0; gbc.gridy = 11;
         settingsPanel.add(new JLabel("Enable Auto-Execution:"), gbc);
         gbc.gridx = 1;
         autoExecCheckBox = new JCheckBox();
@@ -312,17 +363,17 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(autoExecCheckBox, gbc);
 
         // Risk Management section
-        gbc.gridx = 0; gbc.gridy = 7; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 12; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Risk Management", gbc);
 
-        gbc.gridy = 8; gbc.gridwidth = 1;
+        gbc.gridy = 13; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Max Position:"), gbc);
         gbc.gridx = 1;
         JSpinner maxPosSpinner = new JSpinner(new SpinnerNumberModel(maxPosition.intValue(), 1, 10, 1));
         maxPosSpinner.addChangeListener(e -> maxPosition = (Integer) maxPosSpinner.getValue());
         settingsPanel.add(maxPosSpinner, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 9;
+        gbc.gridx = 0; gbc.gridy = 14;
         settingsPanel.add(new JLabel("Daily Loss Limit:"), gbc);
         gbc.gridx = 1;
         JSpinner lossLimitSpinner = new JSpinner(new SpinnerNumberModel(dailyLossLimit.intValue(), 100.0, 5000.0, 100.0));
@@ -330,7 +381,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(lossLimitSpinner, gbc);
 
         // Apply button
-        gbc.gridx = 0; gbc.gridy = 10; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 15; gbc.gridwidth = 2;
         JButton applyButton = new JButton("Apply Settings");
         applyButton.addActionListener(e -> applySettings());
         settingsPanel.add(applyButton, gbc);
