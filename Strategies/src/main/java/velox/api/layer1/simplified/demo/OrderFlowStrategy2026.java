@@ -44,6 +44,8 @@ public class OrderFlowStrategy2026 implements
     private Boolean showAbsorption = true;
     private Boolean showDelta = true;
     private Boolean showRetailTraps = true;
+    private Long signalCooldownMs = 5000L; // Cooldown between signals (5 seconds)
+    private Integer minSignalStrength = 100; // Minimum delta for signal consideration
 
     // ========== INDICATORS ==========
     private Indicator bidSizeIndicator;
@@ -80,6 +82,11 @@ public class OrderFlowStrategy2026 implements
     private static final int MA_SHORT_PERIOD = 5;
     private static final int MA_LONG_PERIOD = 20;
     private int maCounter = 0;
+
+    // Signal cooldown tracking
+    private long lastBullishSignalTime = 0;
+    private long lastBearishSignalTime = 0;
+    private long lastRetailTrapSignalTime = 0;
 
     @Override
     public void initialize(String alias, InstrumentInfo info, Api api, InitialState initialState) {
@@ -209,13 +216,21 @@ public class OrderFlowStrategy2026 implements
             absorptionAskIndicator.addPoint(askPrice);
         }
 
-        // Generate trading signals (no division needed!)
-        if (bidAbsorption && cumulativeDelta > 0) {
-            bullishSignalIndicator.addPoint(bidPrice);
+        // Generate trading signals with cooldown and strength check
+        long currentTime = System.currentTimeMillis();
+
+        if (bidAbsorption && cumulativeDelta > 0 && Math.abs(currentDelta) >= minSignalStrength) {
+            if (currentTime - lastBullishSignalTime >= signalCooldownMs) {
+                bullishSignalIndicator.addPoint(bidPrice);
+                lastBullishSignalTime = currentTime;
+            }
         }
 
-        if (askAbsorption && cumulativeDelta < 0) {
-            bearishSignalIndicator.addPoint(askPrice);
+        if (askAbsorption && cumulativeDelta < 0 && Math.abs(currentDelta) >= minSignalStrength) {
+            if (currentTime - lastBearishSignalTime >= signalCooldownMs) {
+                bearishSignalIndicator.addPoint(askPrice);
+                lastBearishSignalTime = currentTime;
+            }
         }
     }
 
@@ -230,14 +245,22 @@ public class OrderFlowStrategy2026 implements
         // Calculate "big player" threshold based on average trade size
         long bigPlayerThreshold = (long) (averageDelta * bigPlayerMultiplier);
 
-        // Bullish signal: Strong buying pressure from big players (no division!)
-        if (currentDelta > bigPlayerThreshold && currentDelta > 0) {
-            bullishSignalIndicator.addPoint(price);
+        long currentTime = System.currentTimeMillis();
+
+        // Bullish signal: Strong buying pressure from big players with cooldown
+        if (currentDelta > bigPlayerThreshold && currentDelta > 0 && Math.abs(currentDelta) >= minSignalStrength) {
+            if (currentTime - lastBullishSignalTime >= signalCooldownMs) {
+                bullishSignalIndicator.addPoint(price);
+                lastBullishSignalTime = currentTime;
+            }
         }
 
-        // Bearish signal: Strong selling pressure from big players (no division!)
-        if (currentDelta < -bigPlayerThreshold && currentDelta < 0) {
-            bearishSignalIndicator.addPoint(price);
+        // Bearish signal: Strong selling pressure from big players with cooldown
+        if (currentDelta < -bigPlayerThreshold && currentDelta < 0 && Math.abs(currentDelta) >= minSignalStrength) {
+            if (currentTime - lastBearishSignalTime >= signalCooldownMs) {
+                bearishSignalIndicator.addPoint(price);
+                lastBearishSignalTime = currentTime;
+            }
         }
     }
 
@@ -255,13 +278,21 @@ public class OrderFlowStrategy2026 implements
         // Bearish trap: Price falling but delta positive
         boolean bearishTrap = priceChange < 0 && currentDelta > Math.abs(averageDelta);
 
-        // Display trap signals (no division!)
-        if (bullishTrap) {
-            retailTrapIndicator.addPoint(price);
+        long currentTime = System.currentTimeMillis();
+
+        // Display trap signals with cooldown
+        if (bullishTrap && Math.abs(currentDelta) >= minSignalStrength) {
+            if (currentTime - lastRetailTrapSignalTime >= signalCooldownMs) {
+                retailTrapIndicator.addPoint(price);
+                lastRetailTrapSignalTime = currentTime;
+            }
         }
 
-        if (bearishTrap) {
-            retailTrapIndicator.addPoint(price);
+        if (bearishTrap && Math.abs(currentDelta) >= minSignalStrength) {
+            if (currentTime - lastRetailTrapSignalTime >= signalCooldownMs) {
+                retailTrapIndicator.addPoint(price);
+                lastRetailTrapSignalTime = currentTime;
+            }
         }
     }
 
