@@ -87,11 +87,16 @@ public class OrderFlowStrategyEnhanced implements
     @Parameter(name = "Enable Auto-Execution")
     private Boolean autoExecution = false;
 
-    // ========== INDICATORS ==========
-    private Indicator icebergBidIndicator;
-    private Indicator icebergAskIndicator;
-    private Indicator spoofIndicator;
-    private Indicator absorptionIndicator;
+    // ========== ADAPTIVE MODE PARAMETERS ==========
+    @Parameter(name = "Use Adaptive Thresholds")
+    private Boolean useAdaptiveThresholds = true;  // Default: adaptive mode enabled
+
+    // ========== INDICATORS (Layer 1: Detection Markers) ==========
+    // NOTE: Now using MARKERS (discrete icons) instead of continuous lines
+    private Indicator icebergBuyMarker;     // GREEN circle markers
+    private Indicator icebergSellMarker;    // RED circle markers
+    private Indicator spoofingMarker;       // MAGENTA triangle markers
+    private Indicator absorptionMarker;     // YELLOW square markers
 
     // ========== CUSTOM PANELS ==========
     private StrategyPanel settingsPanel;
@@ -102,10 +107,14 @@ public class OrderFlowStrategyEnhanced implements
     private JSpinner minConfluenceSpinner;
     private JLabel thresholdMultLabel;
     private JSpinner thresholdMultSpinner;
+    private JLabel adaptiveModeLabel;
+    private JCheckBox adaptiveModeCheckBox;
     private JLabel simModeLabel;
     private JCheckBox simModeCheckBox;
     private JLabel autoExecLabel;
     private JCheckBox autoExecCheckBox;
+    private JSpinner adaptOrderSpinner;  // Store reference for enabling/disabling
+    private JSpinner adaptSizeSpinner;   // Store reference for enabling/disabling
 
     // Stats Panel Components
     private JLabel totalTradesLabel;
@@ -197,18 +206,19 @@ public class OrderFlowStrategyEnhanced implements
         log("Instrument: " + alias);
         log("Pip size: " + pips);
 
-        // Create indicators
-        icebergBidIndicator = api.registerIndicator("Iceberg BUY", GraphType.PRIMARY);
-        icebergBidIndicator.setColor(Color.GREEN);
+        // Create detection MARKER indicators (Layer 1)
+        // These will use custom icons instead of continuous lines
+        icebergBuyMarker = api.registerIndicator("Iceberg BUY Markers", GraphType.PRIMARY);
+        icebergBuyMarker.setColor(Color.GREEN);
 
-        icebergAskIndicator = api.registerIndicator("Iceberg SELL", GraphType.PRIMARY);
-        icebergAskIndicator.setColor(Color.RED);
+        icebergSellMarker = api.registerIndicator("Iceberg SELL Markers", GraphType.PRIMARY);
+        icebergSellMarker.setColor(Color.RED);
 
-        spoofIndicator = api.registerIndicator("Spoof/FADE", GraphType.PRIMARY);
-        spoofIndicator.setColor(Color.MAGENTA);
+        spoofingMarker = api.registerIndicator("Spoofing Markers", GraphType.PRIMARY);
+        spoofingMarker.setColor(Color.MAGENTA);
 
-        absorptionIndicator = api.registerIndicator("Absorption", GraphType.PRIMARY);
-        absorptionIndicator.setColor(Color.YELLOW);
+        absorptionMarker = api.registerIndicator("Absorption Markers", GraphType.PRIMARY);
+        absorptionMarker.setColor(Color.YELLOW);
 
         // Initialize log files
         try {
@@ -322,35 +332,59 @@ public class OrderFlowStrategyEnhanced implements
         absorbSizeSpinner.addChangeListener(e -> absorptionMinSize = (Integer) absorbSizeSpinner.getValue());
         settingsPanel.add(absorbSizeSpinner, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 7;
+        gbc.gridx = 0; gbc.gridy = 7; gbc.gridwidth = 2;
+        addSeparator(settingsPanel, "Adaptive Thresholds", gbc);
+
+        gbc.gridy = 8; gbc.gridwidth = 1;
+        settingsPanel.add(new JLabel("Use Adaptive Thresholds:"), gbc);
+        gbc.gridx = 1;
+        adaptiveModeCheckBox = new JCheckBox();
+        adaptiveModeCheckBox.setSelected(useAdaptiveThresholds);
+        adaptiveModeCheckBox.setToolTipText("When enabled, automatically calculates thresholds. When disabled, use manual values below.");
+        adaptiveModeCheckBox.addActionListener(e -> updateAdaptiveMode());
+        settingsPanel.add(adaptiveModeCheckBox, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 9;
         JLabel adaptOrderLabel = new JLabel("Adaptive Order Thresh:");
         adaptOrderLabel.setToolTipText("Dynamic threshold based on recent order activity");
         settingsPanel.add(adaptOrderLabel, gbc);
         gbc.gridx = 1;
         // Clamp value to valid range to handle saved settings
         int safeOrderThreshold = Math.max(1, Math.min(adaptiveOrderThreshold, 100));
-        JSpinner adaptOrderSpinner = new JSpinner(new SpinnerNumberModel(safeOrderThreshold, 1, 100, 5));
+        adaptOrderSpinner = new JSpinner(new SpinnerNumberModel(safeOrderThreshold, 1, 100, 5));
         adaptOrderSpinner.setToolTipText("Auto-adjusts based on market conditions (default: 25)");
-        adaptOrderSpinner.addChangeListener(e -> adaptiveOrderThreshold = (Integer) adaptOrderSpinner.getValue());
+        adaptOrderSpinner.setEnabled(!useAdaptiveThresholds);  // Disabled in adaptive mode
+        adaptOrderSpinner.addChangeListener(e -> {
+            if (!useAdaptiveThresholds) {
+                adaptiveOrderThreshold = (Integer) adaptOrderSpinner.getValue();
+                log("📊 Manual Order Threshold: " + adaptiveOrderThreshold);
+            }
+        });
         settingsPanel.add(adaptOrderSpinner, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 8;
+        gbc.gridx = 0; gbc.gridy = 10;
         JLabel adaptSizeLabel = new JLabel("Adaptive Size Thresh:");
         adaptSizeLabel.setToolTipText("Dynamic size threshold based on recent activity");
         settingsPanel.add(adaptSizeLabel, gbc);
         gbc.gridx = 1;
         // Clamp value to valid range to handle saved settings
         int safeSizeThreshold = Math.max(1, Math.min(adaptiveSizeThreshold, 500));
-        JSpinner adaptSizeSpinner = new JSpinner(new SpinnerNumberModel(safeSizeThreshold, 1, 500, 25));
+        adaptSizeSpinner = new JSpinner(new SpinnerNumberModel(safeSizeThreshold, 1, 500, 25));
         adaptSizeSpinner.setToolTipText("Auto-adjusts based on market conditions (default: 100)");
-        adaptSizeSpinner.addChangeListener(e -> adaptiveSizeThreshold = (Integer) adaptSizeSpinner.getValue());
+        adaptSizeSpinner.setEnabled(!useAdaptiveThresholds);  // Disabled in adaptive mode
+        adaptSizeSpinner.addChangeListener(e -> {
+            if (!useAdaptiveThresholds) {
+                adaptiveSizeThreshold = (Integer) adaptSizeSpinner.getValue();
+                log("📊 Manual Size Threshold: " + adaptiveSizeThreshold);
+            }
+        });
         settingsPanel.add(adaptSizeSpinner, gbc);
 
         // Safety Controls section
-        gbc.gridx = 0; gbc.gridy = 9; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 11; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Safety Controls", gbc);
 
-        gbc.gridy = 10; gbc.gridwidth = 1;
+        gbc.gridy = 12; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Simulation Mode Only:"), gbc);
         gbc.gridx = 1;
         simModeCheckBox = new JCheckBox();
@@ -358,7 +392,7 @@ public class OrderFlowStrategyEnhanced implements
         simModeCheckBox.addActionListener(e -> updateSimMode());
         settingsPanel.add(simModeCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 11;
+        gbc.gridx = 0; gbc.gridy = 13;
         settingsPanel.add(new JLabel("Enable Auto-Execution:"), gbc);
         gbc.gridx = 1;
         autoExecCheckBox = new JCheckBox();
@@ -367,17 +401,17 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(autoExecCheckBox, gbc);
 
         // Risk Management section
-        gbc.gridx = 0; gbc.gridy = 12; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 14; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Risk Management", gbc);
 
-        gbc.gridy = 13; gbc.gridwidth = 1;
+        gbc.gridy = 15; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Max Position:"), gbc);
         gbc.gridx = 1;
         JSpinner maxPosSpinner = new JSpinner(new SpinnerNumberModel(maxPosition.intValue(), 1, 10, 1));
         maxPosSpinner.addChangeListener(e -> maxPosition = (Integer) maxPosSpinner.getValue());
         settingsPanel.add(maxPosSpinner, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 14;
+        gbc.gridx = 0; gbc.gridy = 16;
         settingsPanel.add(new JLabel("Daily Loss Limit:"), gbc);
         gbc.gridx = 1;
         JSpinner lossLimitSpinner = new JSpinner(new SpinnerNumberModel(dailyLossLimit.intValue(), 100.0, 5000.0, 100.0));
@@ -385,7 +419,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(lossLimitSpinner, gbc);
 
         // Apply button
-        gbc.gridx = 0; gbc.gridy = 15; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 17; gbc.gridwidth = 2;
         JButton applyButton = new JButton("Apply Settings");
         applyButton.addActionListener(e -> applySettings());
         settingsPanel.add(applyButton, gbc);
@@ -666,6 +700,29 @@ public class OrderFlowStrategyEnhanced implements
         log("📊 Threshold Multiplier updated: " + value);
     }
 
+    private void updateAdaptiveMode() {
+        boolean selected = adaptiveModeCheckBox.isSelected();
+        useAdaptiveThresholds = selected;
+
+        if (selected) {
+            // Switching to adaptive mode
+            log("🔄 Adaptive Mode: ENABLED (thresholds auto-calculated from market data)");
+            log("📊 Manual threshold controls disabled");
+        } else {
+            // Switching to manual mode - sync spinner values with current thresholds
+            SwingUtilities.invokeLater(() -> {
+                adaptOrderSpinner.setValue(adaptiveOrderThreshold);
+                adaptSizeSpinner.setValue(adaptiveSizeThreshold);
+            });
+            log("🎛️ Manual Mode: ENABLED (using your threshold values)");
+            log("📊 Thresholds set to - Orders: " + adaptiveOrderThreshold + ", Size: " + adaptiveSizeThreshold);
+        }
+
+        // Enable/disable spinners based on mode
+        adaptOrderSpinner.setEnabled(!selected);
+        adaptSizeSpinner.setEnabled(!selected);
+    }
+
     private void updateSimMode() {
         boolean selected = simModeCheckBox.isSelected();
         if (!selected) {
@@ -805,8 +862,14 @@ public class OrderFlowStrategyEnhanced implements
 
         updateAdaptiveThresholds(price);
 
-        // Only check for icebergs on large orders (not every single order)
-        if (size >= adaptiveSizeThreshold * 0.5) {
+        // Only check for icebergs on orders large enough to matter
+        // Use a larger percentage to reduce noise
+        int minSizeToCheck = Math.max(
+            adaptiveSizeThreshold / 2,  // Increased from /5 to /2
+            spoofMinSize.intValue()
+        );
+
+        if (size >= minSizeToCheck) {
             checkForIceberg(isBid, price);
         }
     }
@@ -840,6 +903,7 @@ public class OrderFlowStrategyEnhanced implements
     }
 
     private void updateAdaptiveThresholds(int price) {
+        // Always track statistics for display, even in manual mode
         avgOrderSize = (double) totalSizeSeen / totalOrdersSeen;
 
         List<String> ordersAtPrice = priceLevels.getOrDefault(price, Collections.emptyList());
@@ -855,13 +919,30 @@ public class OrderFlowStrategyEnhanced implements
             recentTotalSizes.removeFirst();
         }
 
+        // Only calculate adaptive thresholds if adaptive mode is enabled
+        if (!useAdaptiveThresholds) {
+            // Manual mode - keep current threshold values, just track stats
+            return;
+        }
+
         double avgOrderCount = recentOrderCounts.stream()
             .mapToInt(Integer::intValue).average().orElse(5.0);
         double avgTotalSize = recentTotalSizes.stream()
             .mapToInt(Integer::intValue).average().orElse(25.0);
 
-        adaptiveOrderThreshold = Math.max((int) (avgOrderCount * 3.0), 8);
-        adaptiveSizeThreshold = Math.max((int) (avgTotalSize * 3.0), 30);
+        // Calculate adaptive thresholds
+        adaptiveOrderThreshold = Math.max(
+            (int) (avgOrderCount * 5.0),  // Increased multiplier from 2.0 to 5.0
+            icebergMinOrders.intValue()
+        );
+        adaptiveSizeThreshold = Math.max(
+            (int) (avgTotalSize * 5.0),  // Increased multiplier from 2.0 to 5.0
+            absorptionMinSize.intValue()
+        );
+
+        // Ensure minimums
+        adaptiveOrderThreshold = Math.max(adaptiveOrderThreshold, 10);
+        adaptiveSizeThreshold = Math.max(adaptiveSizeThreshold, 50);
     }
 
     private void checkForIceberg(boolean isBid, int price) {
@@ -894,8 +975,12 @@ public class OrderFlowStrategyEnhanced implements
                         signalWriter.flush();
                     }
 
-                    Indicator indicator = isBid ? icebergBidIndicator : icebergAskIndicator;
-                    indicator.addPoint(price);
+                    // Add detection marker point (Layer 1)
+                    // NOTE: Currently using simple point markers. Custom icon markers
+                    // require the advanced API (OnlineValueCalculatorAdapter), which
+                    // we can add later. The foundational classes are ready.
+                    Indicator markerIndicator = isBid ? icebergBuyMarker : icebergSellMarker;
+                    markerIndicator.addPoint(price);
 
                     if (isBid) {
                         icebergCount.incrementAndGet();
