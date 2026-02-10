@@ -1793,6 +1793,12 @@ public class OrderFlowStrategyEnhanced implements
      */
     private void generatePerformanceReport() {
         if (trackedSignals.isEmpty()) {
+            JOptionPane.showMessageDialog(statsPanel,
+                "📊 No signals tracked yet.\n\n" +
+                "Wait for iceberg signals to be detected,\n" +
+                "then click Report again to see performance data.",
+                "Performance Report",
+                JOptionPane.INFORMATION_MESSAGE);
             log("📊 No signals tracked yet");
             return;
         }
@@ -1821,14 +1827,16 @@ public class OrderFlowStrategyEnhanced implements
         double winRate = closedSignals > 0 ? (profitableSignals * 100.0 / closedSignals) : 0;
         double avgTicks = closedSignals > 0 ? (totalTicksMoved * 1.0 / closedSignals) : 0;
 
-        log("📊 ========== PERFORMANCE REPORT ==========");
-        log(String.format("   Total Signals: %d", totalSignals));
-        log(String.format("   Open Signals: %d", openSignals));
-        log(String.format("   Closed Signals: %d", closedSignals));
-        log(String.format("   Profitable: %d | Losing: %d", profitableSignals, losingSignals));
-        log(String.format("   Win Rate: %.1f%%", winRate));
-        log(String.format("   Avg Ticks/Signal: %.1f", avgTicks));
-        log("==========================================");
+        // Build report string for popup
+        StringBuilder report = new StringBuilder();
+        report.append("📊 PERFORMANCE REPORT\n");
+        report.append("==================\n\n");
+        report.append(String.format("Total Signals: %d\n", totalSignals));
+        report.append(String.format("Open Signals: %d\n", openSignals));
+        report.append(String.format("Closed Signals: %d\n", closedSignals));
+        report.append(String.format("Profitable: %d | Losing: %d\n", profitableSignals, losingSignals));
+        report.append(String.format("Win Rate: %.1f%%\n", winRate));
+        report.append(String.format("Avg Ticks/Signal: %.1f\n\n", avgTicks));
 
         // Score distribution analysis
         Map<String, Integer> scoreDistribution = new HashMap<>();
@@ -1848,6 +1856,34 @@ public class OrderFlowStrategyEnhanced implements
                 }
             }
         }
+
+        report.append("WIN RATE BY SCORE RANGE:\n");
+        for (String range : Arrays.asList("100+", "80-99", "60-79", "<60")) {
+            int total = scoreDistribution.getOrDefault(range, 0);
+            int wins = scoreWins.getOrDefault(range, 0);
+            if (total > 0) {
+                double rangeWinRate = (wins * 100.0) / total;
+                report.append(String.format("  %s: %.1f%% (%d/%d)\n", range, rangeWinRate, wins, total));
+            }
+        }
+
+        // Show popup dialog
+        SwingUtilities.invokeLater(() -> {
+            JOptionPane.showMessageDialog(statsPanel,
+                report.toString(),
+                "Performance Report",
+                JOptionPane.INFORMATION_MESSAGE);
+        });
+
+        // Also log to console
+        log("📊 ========== PERFORMANCE REPORT ==========");
+        log(String.format("   Total Signals: %d", totalSignals));
+        log(String.format("   Open Signals: %d", openSignals));
+        log(String.format("   Closed Signals: %d", closedSignals));
+        log(String.format("   Profitable: %d | Losing: %d", profitableSignals, losingSignals));
+        log(String.format("   Win Rate: %.1f%%", winRate));
+        log(String.format("   Avg Ticks/Signal: %.1f", avgTicks));
+        log("==========================================");
 
         log("📊 Win Rate by Score Range:");
         for (String range : Arrays.asList("100+", "80-99", "60-79", "<60")) {
