@@ -36,25 +36,44 @@ public class SignalData {
     public RiskManagement risk;
 
     public static class ScoreBreakdown {
+        // Iceberg detection
         public int icebergPoints;
         public String icebergDetails;
         public int icebergCount;
         public int totalSize;
 
+        // Trend (now with real EMAs)
         public int trendPoints;
         public String trendDetails;
         public int ema9;
         public int ema21;
         public int ema50;
+        public int emaAlignmentCount;  // How many EMAs confirm (0-3)
 
+        // VWAP
         public int vwapPoints;
         public String vwapDetails;
         public int vwap;
         public String priceVsVwap;
 
+        // Volume (CVD + Volume Profile)
         public int volumePoints;
         public String volumeDetails;
         public int volumeAtLevel;
+
+        // ========== NEW CONFLUENCE FACTORS ==========
+        public int cvdPoints;  // CVD confirmation points
+        public String cvdDetails;  // CVD explanation
+        public int cvdDivergencePoints;  // CVD divergence bonus/penalty
+
+        public int volumeProfilePoints;  // Volume profile confirmation
+        public String volumeProfileDetails;  // Volume profile explanation
+
+        public int volumeImbalancePoints;  // Volume imbalance confirmation
+        public String volumeImbalanceDetails;  // Volume imbalance explanation
+
+        public int emaTrendPoints;  // EMA trend alignment
+        public String emaTrendDetails;  // EMA trend explanation
     }
 
     public static class DetectionDetails {
@@ -87,6 +106,49 @@ public class SignalData {
         public long currentVolume;
         public long avgVolumeAtTime;
         public double volumeRatio;
+
+        // ========== ENHANCED CONFLUENCE DATA ==========
+
+        // CVD (Cumulative Volume Delta)
+        public long cvd;  // Current CVD value
+        public long cvdAtSignalPrice;  // CVD at the signal price level
+        public String cvdTrend;  // "BULLISH", "BEARISH", "NEUTRAL"
+        public double cvdStrength;  // CVD as percentage of total volume
+        public String cvdDivergence;  // "NONE", "BULLISH_DIVERGENCE", "BEARISH_DIVERGENCE"
+        public double cvdBuySellRatio;  // Buy volume / Sell volume ratio
+
+        // Volume Profile
+        public long volumeAtSignalPrice;  // Volume at exact signal price
+        public long volumeNearby;  // Total volume in nearby range
+        public double volumeRatioAtPrice;  // Signal volume / nearby volume (0.0 to 1.0)
+        public String volumeLevelType;  // "HIGH_VOLUME_NODE", "LOW_VOLUME_NODE", "NORMAL"
+        public int pocPrice;  // Point of Control price
+        public int valueAreaLow;  // Value Area Low
+        public int valueAreaHigh;  // Value Area High
+
+        // Volume Imbalance
+        public long bidVolumeAtPrice;  // Bid volume at signal price
+        public long askVolumeAtPrice;  // Ask volume at signal price
+        public double volumeImbalanceRatio;  // Bid/Ask ratio
+        public String volumeImbalanceSentiment;  // "STRONG_BUYING", "BUYING", "BALANCED", "SELLING", "STRONG_SELLING"
+
+        // VWAP
+        public double vwap;  // Current VWAP
+        public String priceVsVwap;  // "ABOVE", "BELOW", "NEAR"
+        public double vwapDistanceTicks;  // Distance from VWAP in ticks
+
+        // EMAs
+        public double ema9;
+        public double ema21;
+        public double ema50;
+        public double ema9DistanceTicks;  // Distance from EMA9
+        public double ema21DistanceTicks;  // Distance from EMA21
+        public double ema50DistanceTicks;  // Distance from EMA50
+
+        // Trend Confirmation
+        public boolean emaTrendAlignment;  // Are EMAs aligned with signal direction?
+        public int emaAlignmentCount;  // How many EMAs confirm the direction (0-3)
+        public String trendStrength;  // "WEAK", "MODERATE", "STRONG"
     }
 
     public static class AccountContext {

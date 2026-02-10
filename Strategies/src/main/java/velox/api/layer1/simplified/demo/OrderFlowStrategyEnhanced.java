@@ -10,10 +10,12 @@ import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.Executors;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.ConcurrentHashMap;
 
 import javax.swing.*;
 
@@ -60,6 +62,9 @@ public class OrderFlowStrategyEnhanced implements
     BboListener,
     CustomSettingsPanelProvider {
 
+    // ========== VERSION ==========
+    private static final String VERSION = "v0.02.00";
+
     // ========== PARAMETERS ==========
     @Parameter(name = "Iceberg Min Orders")
     private Integer icebergMinOrders = 20;  // Increased from 5 to reduce false signals
@@ -91,12 +96,47 @@ public class OrderFlowStrategyEnhanced implements
     @Parameter(name = "Use Adaptive Thresholds")
     private Boolean useAdaptiveThresholds = true;  // Default: adaptive mode enabled
 
+    // ========== AI TRADING PARAMETERS ==========
+    @Parameter(name = "Enable AI Trading")
+    private Boolean enableAITrading = false;
+
+    @Parameter(name = "AI Mode")
+    private String aiMode = "MANUAL";  // MANUAL, SEMI_AUTO, FULL_AUTO
+
+    @Parameter(name = "Confluence Threshold")
+    private Integer confluenceThreshold = 50;
+
+    @Parameter(name = "AI Auth Token")
+    private String aiAuthToken = "";
+
     // ========== INDICATORS (Layer 1: Detection Markers) ==========
-    // NOTE: Now using MARKERS (discrete icons) instead of continuous lines
-    private Indicator icebergBuyMarker;     // GREEN circle markers
-    private Indicator icebergSellMarker;    // RED circle markers
+    // NOTE: Using separate indicators for each marker to avoid connecting lines
+    // TODO: Upgrade to ScreenSpacePainter (advanced API) for proper icons
+    private Indicator icebergBuyMarker;     // GREEN buy signals
+    private Indicator icebergSellMarker;    // RED sell signals
+    private int icebergMarkerCount = 0;     // Track number of markers
     private Indicator spoofingMarker;       // MAGENTA triangle markers
     private Indicator absorptionMarker;     // YELLOW square markers
+
+    // ========== AI COMPONENTS ==========
+    private AIIntegrationLayer aiIntegration;
+    private AIOrderManager aiOrderManager;
+    private OrderExecutor orderExecutor;
+    private final Map<String, SignalData> pendingSignals = new ConcurrentHashMap<>();
+
+    // ========== ENHANCED CONFLUENCE INDICATORS ==========
+    private final CVDCalculator cvdCalculator = new CVDCalculator();
+    private final VolumeProfileCalculator volumeProfile = new VolumeProfileCalculator(50, 1000);
+    private final EMACalculator ema9 = new EMACalculator(9);
+    private final EMACalculator ema21 = new EMACalculator(21);
+    private final EMACalculator ema50 = new EMACalculator(50);
+    private final VWAPCalculator vwapCalculator = new VWAPCalculator();
+    private final ATRCalculator atrCalculator = new ATRCalculator(14);
+
+    // Tracking for EMAs and VWAP
+    private double currentHigh = Double.NaN;
+    private double currentLow = Double.NaN;
+    private double previousClose = Double.NaN;
 
     // ========== CUSTOM PANELS ==========
     private StrategyPanel settingsPanel;
@@ -208,10 +248,10 @@ public class OrderFlowStrategyEnhanced implements
 
         // Create detection MARKER indicators (Layer 1)
         // These will use custom icons instead of continuous lines
-        icebergBuyMarker = api.registerIndicator("Iceberg BUY Markers", GraphType.PRIMARY);
+        icebergBuyMarker = api.registerIndicator("🟢 ICEBERG BUY", GraphType.PRIMARY);
         icebergBuyMarker.setColor(Color.GREEN);
 
-        icebergSellMarker = api.registerIndicator("Iceberg SELL Markers", GraphType.PRIMARY);
+        icebergSellMarker = api.registerIndicator("🔴 ICEBERG SELL", GraphType.PRIMARY);
         icebergSellMarker.setColor(Color.RED);
 
         spoofingMarker = api.registerIndicator("Spoofing Markers", GraphType.PRIMARY);
@@ -219,6 +259,58 @@ public class OrderFlowStrategyEnhanced implements
 
         absorptionMarker = api.registerIndicator("Absorption Markers", GraphType.PRIMARY);
         absorptionMarker.setColor(Color.YELLOW);
+
+        // Initialize AI components if enabled
+        if (enableAITrading && aiAuthToken != null && !aiAuthToken.isEmpty()) {
+            log("🤖 Initializing AI Trading System...");
+
+            // Create order executor with logger wrapper
+            orderExecutor = new SimpleOrderExecutor(new AIIntegrationLayer.AIStrategyLogger() {
+                @Override
+                public void log(String message, Object... args) {
+                    OrderFlowStrategyEnhanced.this.log(message);
+                }
+            });
+
+            // Create AI integration layer with logger wrapper
+            aiIntegration = new AIIntegrationLayer(aiAuthToken, new AIIntegrationLayer.AIStrategyLogger() {
+                @Override
+                public void log(String message, Object... args) {
+                    OrderFlowStrategyEnhanced.this.log(message);
+                }
+            });
+
+            // Set trading session plan
+            String sessionPlan = String.format(
+                "Trading Plan for %s:\n" +
+                "- Max %d trades per day\n" +
+                "- Risk 1%% per trade\n" +
+                "- 1:2 reward-risk ratio\n" +
+                "- Break-even at +3 ticks\n" +
+                "- Focus on quality over quantity\n" +
+                "- Current mode: %s",
+                alias, maxPosition, aiMode
+            );
+            aiIntegration.setSessionPlan(sessionPlan);
+
+            // Create AI order manager with logger wrapper
+            aiOrderManager = new AIOrderManager(orderExecutor, new AIIntegrationLayer.AIStrategyLogger() {
+                @Override
+                public void log(String message, Object... args) {
+                    OrderFlowStrategyEnhanced.this.log(message);
+                }
+            });
+            aiOrderManager.breakEvenEnabled = true;
+            aiOrderManager.breakEvenTicks = 3;
+            aiOrderManager.maxPositions = maxPosition;
+            aiOrderManager.maxDailyLoss = dailyLossLimit;
+
+            log("✅ AI Trading System initialized");
+            log("   Mode: " + aiMode);
+            log("   Confluence Threshold: " + confluenceThreshold);
+        } else {
+            log("ℹ️ AI Trading disabled");
+        }
 
         // Initialize log files
         try {
@@ -423,6 +515,15 @@ public class OrderFlowStrategyEnhanced implements
         JButton applyButton = new JButton("Apply Settings");
         applyButton.addActionListener(e -> applySettings());
         settingsPanel.add(applyButton, gbc);
+
+        // Version label (bottom right)
+        gbc.gridx = 1; gbc.gridy = 18; gbc.gridwidth = 1;
+        gbc.anchor = GridBagConstraints.EAST;
+        gbc.weightx = 1.0;
+        JLabel versionLabel = new JLabel(VERSION);
+        versionLabel.setFont(new Font("Arial", Font.ITALIC, 10));
+        versionLabel.setForeground(Color.GRAY);
+        settingsPanel.add(versionLabel, gbc);
     }
 
     private void addSeparator(JPanel panel, String text, GridBagConstraints gbc) {
@@ -948,6 +1049,12 @@ public class OrderFlowStrategyEnhanced implements
     private void checkForIceberg(boolean isBid, int price) {
         List<String> ordersAtPrice = priceLevels.getOrDefault(price, Collections.emptyList());
 
+        // Debug: Show highest order count
+        if (ordersAtPrice.size() > 5) {
+            log(String.format("🔍 Tracking %d orders at %d (threshold: %d)",
+                ordersAtPrice.size(), price, adaptiveOrderThreshold));
+        }
+
         if (ordersAtPrice.size() >= adaptiveOrderThreshold) {
             long now = System.currentTimeMillis();
             Long lastSignalTimeAtPrice = lastIcebergSignalTime.get(price);
@@ -975,10 +1082,10 @@ public class OrderFlowStrategyEnhanced implements
                         signalWriter.flush();
                     }
 
-                    // Add detection marker point (Layer 1)
-                    // NOTE: Currently using simple point markers. Custom icon markers
-                    // require the advanced API (OnlineValueCalculatorAdapter), which
-                    // we can add later. The foundational classes are ready.
+                    // Add marker point at signal price
+                    // NOTE: Simplified API connects points with lines. For true discrete
+                    // markers, we would need ScreenSpacePainter (advanced API).
+                    // This is a limitation of the current simplified API approach.
                     Indicator markerIndicator = isBid ? icebergBuyMarker : icebergSellMarker;
                     markerIndicator.addPoint(price);
 
@@ -988,6 +1095,28 @@ public class OrderFlowStrategyEnhanced implements
                         icebergCount.incrementAndGet();
                     }
 
+                    // ========== AI TRADING EVALUATION ==========
+                    if (enableAITrading && aiIntegration != null && aiOrderManager != null) {
+                        // Create SignalData for AI evaluation
+                        SignalData signalData = createSignalData(isBid, price, totalSize);
+
+                        // Evaluate with AI (asynchronous)
+                        aiIntegration.evaluateSignalAsync(signalData)
+                            .thenAccept(decision -> {
+                                // Execute AI decision
+                                if ("TAKE".equals(decision.action)) {
+                                    aiOrderManager.executeEntry(decision, signalData);
+                                } else {
+                                    aiOrderManager.executeSkip(decision, signalData);
+                                }
+                            })
+                            .exceptionally(ex -> {
+                                log("❌ AI evaluation failed: " + ex.getMessage());
+                                return null;
+                            });
+                    }
+                    // ============================================
+
                     lastSignal = Integer.valueOf(totalSize);  // Store size as last signal
                     activeSignals.add(Integer.valueOf(totalSize));
                 }
@@ -995,19 +1124,464 @@ public class OrderFlowStrategyEnhanced implements
         }
     }
 
+    /**
+     * Create SignalData for AI evaluation
+     */
+    private SignalData createSignalData(boolean isBid, int price, int totalSize) {
+        SignalData signal = new SignalData();
+
+        // Basic signal info
+        signal.direction = isBid ? "LONG" : "SHORT";
+        signal.price = price;
+        signal.pips = pips;
+        signal.timestamp = System.currentTimeMillis();
+
+        // ========== SCORE BREAKDOWN (Enhanced) ==========
+        signal.scoreBreakdown = new SignalData.ScoreBreakdown();
+
+        // Iceberg detection
+        signal.scoreBreakdown.icebergPoints = Math.min(40, totalSize * 2);
+        signal.scoreBreakdown.icebergDetails = String.format("%d iceberg orders detected", totalSize);
+        signal.scoreBreakdown.icebergCount = totalSize;
+        signal.scoreBreakdown.totalSize = totalSize;
+
+        // ========== CVD ANALYSIS ==========
+        long cvd = cvdCalculator.getCVD();
+        long cvdAtPrice = cvdCalculator.getCVDAtPrice(price);
+        double cvdStrength = cvdCalculator.getCVDStrength();
+        String cvdTrend = cvdCalculator.getCVDTrend();
+        double cvdBuySellRatio = cvdCalculator.getBuySellRatio();
+        CVDCalculator.DivergenceType cvdDivergence = cvdCalculator.checkDivergence(price, 20);
+
+        // CVD Confluence Scoring
+        int cvdPoints = 0;
+        String cvdDetails = "";
+
+        if ((cvd > 0 && isBid) || (cvd < 0 && !isBid)) {
+            // CVD confirms signal direction
+            cvdPoints += 15;
+            cvdDetails = String.format("CVD confirms direction (%s, strength: %.1f%%)",
+                                       cvdTrend, cvdStrength);
+        } else if (Math.abs(cvd) > 5000) {
+            // Extreme CVD = potential reversal
+            cvdPoints -= 10;
+            cvdDetails = String.format("CVD extreme at %d (potential reversal)", cvd);
+        } else {
+            cvdDetails = String.format("CVD neutral (%s, %d)", cvdTrend, cvd);
+        }
+
+        // CVD divergence bonus/penalty
+        int cvdDivergencePoints = 0;
+        if (cvdDivergence == CVDCalculator.DivergenceType.BULLISH && isBid) {
+            cvdDivergencePoints = 10;
+            cvdDetails += " + bullish divergence";
+        } else if (cvdDivergence == CVDCalculator.DivergenceType.BEARISH && !isBid) {
+            cvdDivergencePoints = 10;
+            cvdDetails += " + bearish divergence";
+        }
+
+        signal.scoreBreakdown.cvdPoints = cvdPoints;
+        signal.scoreBreakdown.cvdDetails = cvdDetails;
+        signal.scoreBreakdown.cvdDivergencePoints = cvdDivergencePoints;
+
+        // ========== VOLUME PROFILE ANALYSIS ==========
+        VolumeProfileCalculator.VolumeArea volumeArea = volumeProfile.getVolumeNearPrice(price);
+        VolumeProfileCalculator.ValueArea valueArea = volumeProfile.getValueArea();
+        int poc = volumeProfile.getPOC();
+        VolumeProfileCalculator.VolumeImbalance imbalance = volumeProfile.getImbalance(price);
+
+        // Volume Profile Confluence Scoring
+        int volumeProfilePoints = 0;
+        String volumeProfileDetails = "";
+
+        if (volumeArea.volumeRatio > 0.3) {
+            // High volume node (POC level)
+            volumeProfilePoints = 20;
+            volumeProfileDetails = String.format("High-volume node (%.0f%% of nearby volume: %d/%d)",
+                                                 volumeArea.volumeRatio * 100,
+                                                 volumeArea.volumeAtPrice,
+                                                 volumeArea.totalNearby);
+        } else if (volumeArea.volumeRatio < 0.05) {
+            // Low volume zone - could move fast
+            volumeProfilePoints = 5;
+            volumeProfileDetails = String.format("Low-volume zone (%.0f%%: %d nearby)",
+                                                 volumeArea.volumeRatio * 100,
+                                                 volumeArea.totalNearby);
+        } else {
+            volumeProfileDetails = String.format("Normal volume (%.0f%%: %d)",
+                                                 volumeArea.volumeRatio * 100,
+                                                 volumeArea.volumeAtPrice);
+        }
+
+        signal.scoreBreakdown.volumeProfilePoints = volumeProfilePoints;
+        signal.scoreBreakdown.volumeProfileDetails = volumeProfileDetails;
+
+        // ========== VOLUME IMBALANCE ANALYSIS ==========
+        int volumeImbalancePoints = 0;
+        String volumeImbalanceDetails = "";
+
+        if ("STRONG_BUYING".equals(imbalance.sentiment) && isBid) {
+            volumeImbalancePoints = 10;
+            volumeImbalanceDetails = String.format("Strong buying pressure (ratio: %.2f:1)", imbalance.ratio);
+        } else if ("STRONG_SELLING".equals(imbalance.sentiment) && !isBid) {
+            volumeImbalancePoints = 10;
+            volumeImbalanceDetails = String.format("Strong selling pressure (ratio: %.2f:1)", imbalance.ratio);
+        } else if ("BUYING".equals(imbalance.sentiment)) {
+            volumeImbalancePoints = 5;
+            volumeImbalanceDetails = "Moderate buying pressure";
+        } else if ("SELLING".equals(imbalance.sentiment)) {
+            volumeImbalancePoints = 5;
+            volumeImbalanceDetails = "Moderate selling pressure";
+        } else {
+            volumeImbalanceDetails = "Balanced order flow";
+        }
+
+        signal.scoreBreakdown.volumeImbalancePoints = volumeImbalancePoints;
+        signal.scoreBreakdown.volumeImbalanceDetails = volumeImbalanceDetails;
+
+        // ========== EMA TREND ANALYSIS ==========
+        double ema9Val = ema9.isInitialized() ? ema9.getEMA() : Double.NaN;
+        double ema21Val = ema21.isInitialized() ? ema21.getEMA() : Double.NaN;
+        double ema50Val = ema50.isInitialized() ? ema50.getEMA() : Double.NaN;
+
+        // Count how many EMAs confirm the direction
+        int emaAlignmentCount = 0;
+        String emaTrendDetails = "";
+
+        if (!Double.isNaN(ema9Val)) {
+            if (isBid && price > ema9Val) emaAlignmentCount++;
+            if (!isBid && price < ema9Val) emaAlignmentCount++;
+        }
+        if (!Double.isNaN(ema21Val)) {
+            if (isBid && price > ema21Val) emaAlignmentCount++;
+            if (!isBid && price < ema21Val) emaAlignmentCount++;
+        }
+        if (!Double.isNaN(ema50Val)) {
+            if (isBid && price > ema50Val) emaAlignmentCount++;
+            if (!isBid && price < ema50Val) emaAlignmentCount++;
+        }
+
+        // EMA Trend Strength
+        String trendStrength = "WEAK";
+        if (emaAlignmentCount == 3) {
+            trendStrength = "STRONG";
+        } else if (emaAlignmentCount == 2) {
+            trendStrength = "MODERATE";
+        }
+
+        emaTrendDetails = String.format("EMA alignment: %d/3 (%s)", emaAlignmentCount, trendStrength);
+
+        int emaTrendPoints = 0;
+        if (emaAlignmentCount == 3) {
+            emaTrendPoints = 15;
+        } else if (emaAlignmentCount == 2) {
+            emaTrendPoints = 10;
+        } else if (emaAlignmentCount == 1) {
+            emaTrendPoints = 5;
+        }
+
+        signal.scoreBreakdown.trendPoints = emaTrendPoints;
+        signal.scoreBreakdown.trendDetails = emaTrendDetails;
+        signal.scoreBreakdown.emaTrendPoints = emaTrendPoints;
+        signal.scoreBreakdown.emaTrendDetails = emaTrendDetails;
+        signal.scoreBreakdown.emaAlignmentCount = emaAlignmentCount;
+
+        // ========== VWAP ANALYSIS ==========
+        int vwapPoints = 0;
+        String vwapDetails = "";
+
+        if (vwapCalculator.isInitialized()) {
+            double vwap = vwapCalculator.getVWAP();
+            String vwapRel = vwapCalculator.getRelationship(price);
+            double vwapDist = vwapCalculator.getDistance(price, pips);
+
+            if ((isBid && "ABOVE".equals(vwapRel)) || (!isBid && "BELOW".equals(vwapRel))) {
+                vwapPoints = 10;
+                vwapDetails = String.format("Price %s VWAP (%.1f ticks)",
+                                           vwapRel.toLowerCase(), Math.abs(vwapDist));
+            } else {
+                vwapDetails = String.format("Price %s VWAP (%.1f ticks)",
+                                           vwapRel.toLowerCase(), Math.abs(vwapDist));
+            }
+        }
+
+        signal.scoreBreakdown.vwapPoints = vwapPoints;
+        signal.scoreBreakdown.vwapDetails = vwapDetails;
+
+        // ========== DETECTION DETAILS ==========
+        signal.detection = new SignalData.DetectionDetails();
+        signal.detection.type = isBid ? "ICEBERG_BUY" : "ICEBERG_SELL";
+        signal.detection.totalOrders = totalSize;
+        signal.detection.totalSize = totalSize * 10;
+        signal.detection.patternsFound = new String[]{"ICEBERG"};
+
+        // ========== MARKET CONTEXT (Enhanced) ==========
+        signal.market = new SignalData.MarketContext();
+        signal.market.symbol = alias;
+        signal.market.timeOfDay = new SimpleDateFormat("HH:mm").format(new Date());
+        signal.market.currentPrice = price;
+        signal.market.spreadTicks = 1;
+
+        // CVD data
+        signal.market.cvd = cvd;
+        signal.market.cvdAtSignalPrice = cvdAtPrice;
+        signal.market.cvdTrend = cvdTrend;
+        signal.market.cvdStrength = cvdStrength;
+        signal.market.cvdDivergence = cvdDivergence.toString();
+        signal.market.cvdBuySellRatio = cvdBuySellRatio;
+
+        // Volume Profile data
+        signal.market.volumeAtSignalPrice = volumeArea.volumeAtPrice;
+        signal.market.volumeNearby = volumeArea.totalNearby;
+        signal.market.volumeRatioAtPrice = volumeArea.volumeRatio;
+        signal.market.volumeLevelType = volumeArea.getLevelType();
+        signal.market.pocPrice = poc;
+        signal.market.valueAreaLow = valueArea.vaLow;
+        signal.market.valueAreaHigh = valueArea.vaHigh;
+
+        // Volume Imbalance data
+        signal.market.bidVolumeAtPrice = imbalance.bidVolume;
+        signal.market.askVolumeAtPrice = imbalance.askVolume;
+        signal.market.volumeImbalanceRatio = imbalance.ratio;
+        signal.market.volumeImbalanceSentiment = imbalance.sentiment;
+
+        // VWAP data
+        if (vwapCalculator.isInitialized()) {
+            signal.market.vwap = vwapCalculator.getVWAP();
+            signal.market.priceVsVwap = vwapCalculator.getRelationship(price);
+            signal.market.vwapDistanceTicks = vwapCalculator.getDistance(price, pips);
+        }
+
+        // EMAs
+        signal.market.ema9 = ema9Val;
+        signal.market.ema21 = ema21Val;
+        signal.market.ema50 = ema50Val;
+        signal.market.ema9DistanceTicks = ema9.isInitialized() ? ema9.getDistance(price, pips) : 0;
+        signal.market.ema21DistanceTicks = ema21.isInitialized() ? ema21.getDistance(price, pips) : 0;
+        signal.market.ema50DistanceTicks = ema50.isInitialized() ? ema50.getDistance(price, pips) : 0;
+
+        // Trend
+        signal.market.trend = cvd > 0 ? "BULLISH" : "BEARISH";
+        signal.market.priceVsEma9 = ema9.isInitialized() ? ema9.getRelationship(price) : "UNKNOWN";
+        signal.market.priceVsEma21 = ema21.isInitialized() ? ema21.getRelationship(price) : "UNKNOWN";
+        signal.market.priceVsEma50 = ema50.isInitialized() ? ema50.getRelationship(price) : "UNKNOWN";
+
+        // EMA Trend Alignment
+        signal.market.emaTrendAlignment = emaAlignmentCount >= 2;
+        signal.market.emaAlignmentCount = emaAlignmentCount;
+        signal.market.trendStrength = trendStrength;
+
+        // ATR
+        if (atrCalculator.isInitialized()) {
+            signal.market.atr = atrCalculator.getATR();
+            signal.market.atrLevel = atrCalculator.getATRLevel(2.0);  // 2.0 as baseline
+        }
+
+        // ========== ACCOUNT CONTEXT ==========
+        signal.account = new SignalData.AccountContext();
+        signal.account.accountSize = 10000.0;
+        signal.account.currentBalance = 10000.0 + (aiOrderManager != null ? aiOrderManager.getDailyPnl() : 0);
+        signal.account.dailyPnl = aiOrderManager != null ? aiOrderManager.getDailyPnl() : 0;
+        signal.account.tradesToday = aiOrderManager != null ? aiOrderManager.getActivePositionCount() : 0;
+        signal.account.maxContracts = maxPosition;
+        signal.account.maxTradesPerDay = maxPosition;
+        signal.account.riskPerTradePercent = 1.0;
+
+        // ========== PERFORMANCE HISTORY (simplified) ==========
+        signal.performance = new SignalData.PerformanceHistory();
+        signal.performance.totalTrades = 0;
+        signal.performance.winRate = 0;
+
+        // ========== RISK MANAGEMENT ==========
+        signal.risk = new SignalData.RiskManagement();
+        int stopLossTicks = 20;  // 20 ticks = $250 for ES
+        int takeProfitTicks = 40;  // 40 ticks = $500 for ES (1:2 ratio)
+        signal.risk.stopLossTicks = stopLossTicks;
+        signal.risk.stopLossPrice = isBid ? price - (stopLossTicks * pips) : price + (stopLossTicks * pips);
+        signal.risk.stopLossValue = stopLossTicks * 12.5;  // ES futures
+        signal.risk.takeProfitTicks = takeProfitTicks;
+        signal.risk.takeProfitPrice = isBid ? price + (takeProfitTicks * pips) : price - (takeProfitTicks * pips);
+        signal.risk.takeProfitValue = takeProfitTicks * 12.5;
+        signal.risk.breakEvenTicks = 3;
+        signal.risk.breakEvenPrice = isBid ? price + (3 * pips) : price - (3 * pips);
+        signal.risk.riskRewardRatio = "1:2";
+        signal.risk.positionSizeContracts = 1;
+        signal.risk.totalRiskPercent = 1.5;
+
+        // ========== CALCULATE FINAL SCORE ==========
+        signal.score = calculateConfluenceScore(isBid, price, totalSize);
+        signal.threshold = confluenceThreshold;
+        signal.thresholdPassed = signal.score >= confluenceThreshold;
+
+        return signal;
+    }
+
+    /**
+     * Calculate confluence score (Enhanced with all indicators)
+     */
+    private int calculateConfluenceScore(boolean isBid, int price, int totalSize) {
+        int score = 0;
+
+        // ========== ICEBERG DETECTION (max 40 points) ==========
+        int icebergScore = Math.min(40, totalSize * 2);
+        score += icebergScore;
+
+        // ========== CVD CONFIRMATION (max 25 points) ==========
+        long cvd = cvdCalculator.getCVD();
+        String cvdTrend = cvdCalculator.getCVDTrend();
+        double cvdStrength = cvdCalculator.getCVDStrength();
+
+        if ((cvd > 0 && isBid) || (cvd < 0 && !isBid)) {
+            // CVD confirms signal direction
+            int cvdScore = (int)Math.min(15, cvdStrength / 2);
+            score += cvdScore;
+        } else if (cvdCalculator.isAtExtreme(5.0)) {
+            // Extreme CVD = potential exhaustion
+            score -= 10;
+        }
+
+        // CVD divergence bonus
+        CVDCalculator.DivergenceType divergence = cvdCalculator.checkDivergence(price, 20);
+        if (divergence == CVDCalculator.DivergenceType.BULLISH && isBid) {
+            score += 10;
+        } else if (divergence == CVDCalculator.DivergenceType.BEARISH && !isBid) {
+            score += 10;
+        }
+
+        // ========== VOLUME PROFILE (max 20 points) ==========
+        VolumeProfileCalculator.VolumeArea volumeArea = volumeProfile.getVolumeNearPrice(price);
+
+        if (volumeArea.volumeRatio > 0.3) {
+            // High volume node (support/resistance)
+            score += 20;
+        } else if (volumeArea.volumeRatio < 0.05) {
+            // Low volume = easy move
+            score += 5;
+        }
+
+        // ========== VOLUME IMBALANCE (max 10 points) ==========
+        VolumeProfileCalculator.VolumeImbalance imbalance = volumeProfile.getImbalance(price);
+
+        if ("STRONG_BUYING".equals(imbalance.sentiment) && isBid) {
+            score += 10;
+        } else if ("STRONG_SELLING".equals(imbalance.sentiment) && !isBid) {
+            score += 10;
+        } else if ("BUYING".equals(imbalance.sentiment) || "SELLING".equals(imbalance.sentiment)) {
+            score += 5;
+        }
+
+        // ========== EMA TREND ALIGNMENT (max 15 points) ==========
+        int emaAlignmentCount = 0;
+
+        double ema9Val = ema9.isInitialized() ? ema9.getEMA() : Double.NaN;
+        double ema21Val = ema21.isInitialized() ? ema21.getEMA() : Double.NaN;
+        double ema50Val = ema50.isInitialized() ? ema50.getEMA() : Double.NaN;
+
+        if (!Double.isNaN(ema9Val)) {
+            if (isBid && price > ema9Val) emaAlignmentCount++;
+            if (!isBid && price < ema9Val) emaAlignmentCount++;
+        }
+        if (!Double.isNaN(ema21Val)) {
+            if (isBid && price > ema21Val) emaAlignmentCount++;
+            if (!isBid && price < ema21Val) emaAlignmentCount++;
+        }
+        if (!Double.isNaN(ema50Val)) {
+            if (isBid && price > ema50Val) emaAlignmentCount++;
+            if (!isBid && price < ema50Val) emaAlignmentCount++;
+        }
+
+        // Score based on EMA alignment
+        if (emaAlignmentCount == 3) {
+            score += 15;  // Strong trend
+        } else if (emaAlignmentCount == 2) {
+            score += 10;  // Moderate trend
+        } else if (emaAlignmentCount == 1) {
+            score += 5;   // Weak trend
+        }
+
+        // ========== VWAP ALIGNMENT (max 10 points) ==========
+        if (vwapCalculator.isInitialized()) {
+            String vwapRel = vwapCalculator.getRelationship(price);
+            if ((isBid && "ABOVE".equals(vwapRel)) || (!isBid && "BELOW".equals(vwapRel))) {
+                score += 10;
+            }
+        }
+
+        // ========== TIME OF DAY (max 10 points) ==========
+        int hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
+        if (hour >= 10 && hour <= 15) {
+            score += 10;  // Prime trading hours
+        } else if ((hour >= 9 && hour < 10) || (hour > 15 && hour <= 16)) {
+            score += 5;   // Secondary hours
+        }
+
+        // ========== SIZE BONUS (max 5 points) ==========
+        if (totalSize >= 50) {
+            score += 5;   // Large iceberg
+        } else if (totalSize >= 30) {
+            score += 3;
+        }
+
+        return score;
+    }
+
     @Override
     public void onTrade(double price, int size, TradeInfo tradeInfo) {
-        // Trade tracking implementation
+        // ========== UPDATE ALL INDICATORS ==========
+
+        // Update CVD
+        cvdCalculator.onTrade(price, size, tradeInfo);
+
+        // Update Volume Profile
+        volumeProfile.onTrade(price, size);
+
+        // Update EMAs
+        ema9.update(price);
+        ema21.update(price);
+        ema50.update(price);
+
+        // Update VWAP
+        vwapCalculator.update(price, size);
+
+        // Update ATR (track high/low)
+        if (Double.isNaN(currentHigh) || price > currentHigh) {
+            currentHigh = price;
+        }
+        if (Double.isNaN(currentLow) || price < currentLow) {
+            currentLow = price;
+        }
+
+        // Update ATR on each trade with current OHLC
+        if (!Double.isNaN(previousClose)) {
+            atrCalculator.update(currentHigh, currentLow, price);
+        }
+        previousClose = price;  // Will be updated on next trade
+
+        // Monitor positions on each trade
+        if (aiOrderManager != null) {
+            aiOrderManager.onPriceUpdate((int)price, System.currentTimeMillis());
+        }
     }
 
     @Override
     public void onBbo(int priceBid, int priceAsk, int sizeBid, int sizeAsk) {
-        // BBO tracking implementation
+        // Monitor positions on BBO update
+        if (aiOrderManager != null) {
+            // Use mid price for monitoring
+            int midPrice = (priceBid + priceAsk) / 2;
+            aiOrderManager.onPriceUpdate(midPrice, System.currentTimeMillis());
+        }
     }
 
     @Override
     public void stop() {
         log("OrderFlowStrategyEnhanced stopped");
+
+        // Shutdown AI components
+        if (aiIntegration != null) {
+            aiIntegration.shutdown();
+            log("✅ AI Integration Layer shut down");
+        }
 
         if (updateExecutor != null) {
             updateExecutor.shutdown();

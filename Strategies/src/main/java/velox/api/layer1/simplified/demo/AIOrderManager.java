@@ -17,14 +17,14 @@ public class AIOrderManager {
     private final Map<String, ActivePosition> activePositions = new ConcurrentHashMap<>();
 
     // Configuration
-    private boolean breakEvenEnabled = true;
-    private boolean trailingStopEnabled = false;  // Disabled by default
-    private int breakEvenTicks = 3;
-    private int trailAmountTicks = 2;
+    public boolean breakEvenEnabled = true;
+    public boolean trailingStopEnabled = false;  // Disabled by default
+    public int breakEvenTicks = 3;
+    public int trailAmountTicks = 2;
 
     // Risk limits
-    private int maxPositions = 1;
-    private double maxDailyLoss = 500.0;
+    public int maxPositions = 1;
+    public double maxDailyLoss = 500.0;
 
     // Statistics
     private final AtomicInteger totalTrades = new AtomicInteger(0);
