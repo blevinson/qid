@@ -169,8 +169,8 @@ public class OrderFlowStrategyEnhanced implements
     private double todayPeakEquity = 0.0;
 
     // Current activity
-    private List<Signal> activeSignals = new ArrayList<>();
-    private Signal lastSignal = null;
+    private List<Integer> activeSignals = new ArrayList<>();
+    private Integer lastSignal = null;
 
     // API and helpers
     private Api api;
@@ -188,35 +188,27 @@ public class OrderFlowStrategyEnhanced implements
     private static final int UPDATE_INTERVAL_MS = 1000;  // Update every 1 second
 
     @Override
-    public void initialize(Api api, InitialState initialState) {
+    public void initialize(String alias, InstrumentInfo info, Api api, InitialState initialState) {
         this.api = api;
-        this.alias = api.getAlias();
+        this.alias = alias;
+        this.pips = (int) info.pips;
 
         log("========== OrderFlowStrategyEnhanced.initialize() ==========");
         log("Instrument: " + alias);
-
-        InstrumentInfo instrumentInfo = api.getInstrumentInfo(alias);
-        if (instrumentInfo != null) {
-            pips = instrumentInfo.pipsSize;
-            log("Pip size: " + pips);
-        }
+        log("Pip size: " + pips);
 
         // Create indicators
-        icebergBidIndicator = api.registerIndicator("Iceberg BUY", GraphType.PRICE_MARKER);
+        icebergBidIndicator = api.registerIndicator("Iceberg BUY", GraphType.PRIMARY);
         icebergBidIndicator.setColor(Color.GREEN);
-        icebergBidIndicator.setIndicatorStyle(Indicator.Style.HEAD_WITH_LABEL);
 
-        icebergAskIndicator = api.registerIndicator("Iceberg SELL", GraphType.PRICE_MARKER);
+        icebergAskIndicator = api.registerIndicator("Iceberg SELL", GraphType.PRIMARY);
         icebergAskIndicator.setColor(Color.RED);
-        icebergAskIndicator.setIndicatorStyle(Indicator.Style.HEAD_WITH_LABEL);
 
-        spoofIndicator = api.registerIndicator("Spoof/FADE", GraphType.PRICE_MARKER);
+        spoofIndicator = api.registerIndicator("Spoof/FADE", GraphType.PRIMARY);
         spoofIndicator.setColor(Color.MAGENTA);
-        spoofIndicator.setIndicatorStyle(Indicator.Style.HEAD_WITH_LABEL);
 
-        absorptionIndicator = api.registerIndicator("Absorption", GraphType.PRICE_MARKER);
+        absorptionIndicator = api.registerIndicator("Absorption", GraphType.PRIMARY);
         absorptionIndicator.setColor(Color.YELLOW);
-        absorptionIndicator.setIndicatorStyle(Indicator.Style.HEAD_WITH_LABEL);
 
         // Initialize log files
         try {
@@ -326,14 +318,14 @@ public class OrderFlowStrategyEnhanced implements
         gbc.gridy = 8; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Max Position:"), gbc);
         gbc.gridx = 1;
-        JSpinner maxPosSpinner = new JSpinner(new SpinnerNumberModel(maxPosition, 1, 10, 1));
+        JSpinner maxPosSpinner = new JSpinner(new SpinnerNumberModel(maxPosition.intValue(), 1, 10, 1));
         maxPosSpinner.addChangeListener(e -> maxPosition = (Integer) maxPosSpinner.getValue());
         settingsPanel.add(maxPosSpinner, gbc);
 
         gbc.gridx = 0; gbc.gridy = 9;
         settingsPanel.add(new JLabel("Daily Loss Limit:"), gbc);
         gbc.gridx = 1;
-        JSpinner lossLimitSpinner = new JSpinner(new SpinnerNumberModel(dailyLossLimit, 100.0, 5000.0, 100.0));
+        JSpinner lossLimitSpinner = new JSpinner(new SpinnerNumberModel(dailyLossLimit.intValue(), 100.0, 5000.0, 100.0));
         lossLimitSpinner.addChangeListener(e -> dailyLossLimit = (Double) lossLimitSpinner.getValue());
         settingsPanel.add(lossLimitSpinner, gbc);
 
@@ -532,9 +524,8 @@ public class OrderFlowStrategyEnhanced implements
             // Current activity
             activeSignalsLabel.setText(String.valueOf(activeSignals.size()));
             if (lastSignal != null) {
-                lastSignalScoreLabel.setText(lastSignal.score + "/10");
-                long timeAgo = System.currentTimeMillis() - lastSignal.timestamp;
-                lastSignalTimeLabel.setText(formatTimeAgo(timeAgo));
+                lastSignalScoreLabel.setText("SIZE: " + lastSignal);
+                lastSignalTimeLabel.setText("Recent");
             }
 
             // Adaptive thresholds
@@ -737,7 +728,6 @@ public class OrderFlowStrategyEnhanced implements
         checkForIceberg(isBid, price);
     }
 
-    @Override
     public void replace(String orderId, boolean isBid, int price, int size) {
         OrderInfo info = orders.get(orderId);
         if (info != null) {
@@ -747,7 +737,16 @@ public class OrderFlowStrategyEnhanced implements
     }
 
     @Override
-    public void cancel(String orderId, boolean isBid, int price) {
+    public void replace(String orderId, int price, int size) {
+        OrderInfo info = orders.get(orderId);
+        if (info != null) {
+            info.price = price;
+            info.size = size;
+        }
+    }
+
+    @Override
+    public void cancel(String orderId) {
         OrderInfo info = orders.remove(orderId);
         if (info != null) {
             List<String> atPrice = priceLevels.get(info.price);
@@ -787,9 +786,9 @@ public class OrderFlowStrategyEnhanced implements
 
         if (ordersAtPrice.size() >= adaptiveOrderThreshold) {
             long now = System.currentTimeMillis();
-            Long lastSignal = lastIcebergSignalTime.get(price);
+            Long lastSignalTimeAtPrice = lastIcebergSignalTime.get(price);
 
-            if (lastSignal == null || (now - lastSignal) >= ICEBERG_COOLDOWN_MS) {
+            if (lastSignalTimeAtPrice == null || (now - lastSignalTimeAtPrice) >= ICEBERG_COOLDOWN_MS) {
                 int totalSize = ordersAtPrice.stream()
                     .mapToInt(id -> orders.getOrDefault(id, new OrderInfo()).size)
                     .sum();
@@ -811,7 +810,7 @@ public class OrderFlowStrategyEnhanced implements
                     signalWriter.flush();
 
                     Indicator indicator = isBid ? icebergBidIndicator : icebergAskIndicator;
-                    indicator.mark(price, alias, totalSize);
+                    indicator.addPoint(price);
 
                     if (isBid) {
                         icebergCount.incrementAndGet();
@@ -819,15 +818,15 @@ public class OrderFlowStrategyEnhanced implements
                         icebergCount.incrementAndGet();
                     }
 
-                    lastSignal = new Signal(isBid ? "BUY" : "SELL", 12, now);
-                    activeSignals.add(lastSignal);
+                    lastSignal = Integer.valueOf(totalSize);  // Store size as last signal
+                    activeSignals.add(Integer.valueOf(totalSize));
                 }
             }
         }
     }
 
     @Override
-    public void onTrade(TradeInfo tradeInfo) {
+    public void onTrade(double price, int size, TradeInfo tradeInfo) {
         // Trade tracking implementation
     }
 

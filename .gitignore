@@ -15,3 +15,22 @@ hs_err_pid*
 .classpath
 .project
 .settings
+
+# Log files
+*_log.txt
+*.log
+
+# Signal files
+mbo_signals.txt
+
+# IDE files
+.idea/
+.claude/
+.DS_Store
+
+# Gradle
+Strategies/gradle/
+Strategies/.gradle/
+
+# Bookmap generated
+build/
