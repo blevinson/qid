@@ -811,8 +811,10 @@ public class OrderFlowStrategyEnhanced implements
                             recentOrderCounts.stream().mapToInt(Integer::intValue).average().orElse(0.0),
                             recentTotalSizes.stream().mapToInt(Integer::intValue).average().orElse(0.0)));
 
-                    signalWriter.println(signal);
-                    signalWriter.flush();
+                    if (signalWriter != null) {
+                        signalWriter.println(signal);
+                        signalWriter.flush();
+                    }
 
                     Indicator indicator = isBid ? icebergBidIndicator : icebergAskIndicator;
                     indicator.addPoint(price);
