@@ -15,6 +15,7 @@ public class SignalData {
     public int threshold;
     public boolean thresholdPassed;
     public long timestamp;
+    public int pips;  // Minimum price increment (pip size)
 
     // Score breakdown
     public ScoreBreakdown scoreBreakdown;

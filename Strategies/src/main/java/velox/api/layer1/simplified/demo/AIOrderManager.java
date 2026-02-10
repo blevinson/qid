@@ -1,0 +1,416 @@
+package velox.api.layer1.simplified.demo;
+
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * AI Order Manager
+ * Handles all AI order placement and management
+ */
+public class AIOrderManager {
+    private final OrderExecutor orderExecutor;
+    private final AIIntegrationLayer.AIStrategyLogger logger;
+
+    // Active positions tracking
+    private final Map<String, ActivePosition> activePositions = new ConcurrentHashMap<>();
+
+    // Configuration
+    private boolean breakEvenEnabled = true;
+    private boolean trailingStopEnabled = false;  // Disabled by default
+    private int breakEvenTicks = 3;
+    private int trailAmountTicks = 2;
+
+    // Risk limits
+    private int maxPositions = 1;
+    private double maxDailyLoss = 500.0;
+
+    // Statistics
+    private final AtomicInteger totalTrades = new AtomicInteger(0);
+    private final AtomicInteger winningTrades = new AtomicInteger(0);
+    private double dailyPnl = 0.0;
+
+    public AIOrderManager(OrderExecutor orderExecutor, AIIntegrationLayer.AIStrategyLogger logger) {
+        this.orderExecutor = orderExecutor;
+        this.logger = logger;
+    }
+
+    /**
+     * Execute AI decision to TAKE a signal
+     */
+    public String executeEntry(AIIntegrationLayer.AIDecision decision, SignalData signal) {
+        try {
+            // Check if we can add a position
+            if (activePositions.size() >= maxPositions) {
+                log("⚠️ MAX POSITIONS REACHED (%d), cannot take signal", maxPositions);
+                return null;
+            }
+
+            // Check daily loss limit
+            if (dailyPnl <= -maxDailyLoss) {
+                log("⚠️ DAILY LOSS LIMIT REACHED ($%.2f), stopping trading", dailyPnl);
+                return null;
+            }
+
+            // Calculate position size based on risk
+            int positionSize = calculatePositionSize(signal);
+
+            // Create position ID
+            String positionId = UUID.randomUUID().toString();
+
+            // Calculate break-even level
+            int breakEvenTrigger = decision.isLong ?
+                signal.price + (breakEvenTicks * signal.pips) :
+                signal.price - (breakEvenTicks * signal.pips);
+
+            int breakEvenStop = decision.isLong ?
+                signal.price + signal.pips :  // Entry + 1 tick
+                signal.price - signal.pips;   // Entry - 1 tick
+
+            // Create active position tracker
+            ActivePosition position = new ActivePosition(
+                positionId,
+                decision.isLong,
+                signal.price,
+                positionSize,
+                decision.stopLoss,
+                decision.takeProfit,
+                breakEvenTrigger,
+                breakEvenStop,
+                trailAmountTicks * signal.pips,
+                signal,
+                decision
+            );
+
+            // Place entry order
+            OrderExecutor.OrderSide entrySide = decision.isLong ?
+                OrderExecutor.OrderSide.BUY : OrderExecutor.OrderSide.SELL;
+
+            String entryOrderId = orderExecutor.placeEntry(
+                OrderExecutor.OrderType.STOP_MARKET,  // Use stop market for entry
+                entrySide,
+                signal.price,
+                positionSize
+            );
+
+            position.entryOrderId.set(entryOrderId);
+
+            // Place stop loss
+            OrderExecutor.OrderSide stopSide = decision.isLong ?
+                OrderExecutor.OrderSide.SELL : OrderExecutor.OrderSide.BUY;
+
+            String stopOrderId = orderExecutor.placeStopLoss(
+                stopSide,
+                decision.stopLoss,
+                positionSize
+            );
+
+            position.stopLossOrderId.set(stopOrderId);
+
+            // Place take profit
+            String targetOrderId = orderExecutor.placeTakeProfit(
+                stopSide,  // Same side as stop (opposite of entry)
+                decision.takeProfit,
+                positionSize
+            );
+
+            position.takeProfitOrderId.set(targetOrderId);
+
+            // Track position
+            activePositions.put(positionId, position);
+
+            log("🤖 AI ENTRY ORDER PLACED:");
+            log("   Position ID: %s", positionId.substring(0, 8));
+            log("   %s %d contract(s) @ %d", decision.isLong ? "LONG" : "SHORT", positionSize, signal.price);
+            log("   Stop Loss: %d (-$%.0f)", decision.stopLoss, signal.risk.stopLossValue);
+            log("   Take Profit: %d (+$%.0f)", decision.takeProfit, signal.risk.takeProfitValue);
+            log("   Break-even: %d (%d ticks profit)", breakEvenStop, breakEvenTicks);
+            log("   Reasoning: %s", decision.reasoning);
+
+            return positionId;
+
+        } catch (Exception e) {
+            log("❌ Failed to execute entry: %s", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Handle AI decision to SKIP a signal
+     */
+    public void executeSkip(AIIntegrationLayer.AIDecision decision, SignalData signal) {
+        log("⚪ AI SKIP:");
+        log("   %s @ %d (Score: %d)", signal.direction, signal.price, signal.score);
+        log("   Reasoning: %s", decision.reasoning);
+        log("   Confidence: %d%%", decision.confidence);
+    }
+
+    /**
+     * Monitor positions and make adjustments
+     * Called on each price update
+     */
+    public void onPriceUpdate(int currentPrice, long timestamp) {
+        for (ActivePosition position : activePositions.values()) {
+            if (position.isClosed.get()) continue;
+
+            // Update performance metrics
+            position.updatePerformanceMetrics(currentPrice);
+
+            // Check if stop loss was hit
+            if (position.isStopLossHit(currentPrice)) {
+                closePosition(position.id, currentPrice, "Stop Loss Hit", null);
+                continue;
+            }
+
+            // Check if take profit was hit
+            if (position.isTakeProfitHit(currentPrice)) {
+                closePosition(position.id, currentPrice, "Take Profit Hit", null);
+                continue;
+            }
+
+            // Check break-even trigger
+            if (breakEvenEnabled && position.shouldTriggerBreakEven(currentPrice)) {
+                moveStopToBreakEven(position);
+            }
+
+            // Check trailing stop
+            if (trailingStopEnabled && position.shouldTrailStop(currentPrice)) {
+                trailStop(position, currentPrice);
+            }
+        }
+    }
+
+    /**
+     * Move stop loss to break-even
+     */
+    private void moveStopToBreakEven(ActivePosition position) {
+        try {
+            int newStopPrice = position.breakEvenStopPrice;
+
+            // Modify stop loss order
+            String newStopOrderId = orderExecutor.modifyStopLoss(
+                position.stopLossOrderId.get(),
+                newStopPrice,
+                position.quantity
+            );
+
+            if (newStopOrderId != null) {
+                position.stopLossOrderId.set(newStopOrderId);
+                position.stopLossPrice.set(newStopPrice);
+                position.breakEvenMoved.set(true);
+
+                log("🟡 BREAK-EVEN TRIGGERED:");
+                log("   Position: %s", position.id.substring(0, 8));
+                log("   Stop moved: %d → %d",
+                    position.breakEvenTriggerPrice, newStopPrice);
+                log("   Now risking only 1 tick");
+            }
+        } catch (Exception e) {
+            log("❌ Failed to move stop to break-even: %s", e.getMessage());
+        }
+    }
+
+    /**
+     * Trail stop loss
+     */
+    private void trailStop(ActivePosition position, int currentPrice) {
+        try {
+            int newStopPrice = position.calculateTrailStop(currentPrice);
+
+            // Modify stop loss order
+            String newStopOrderId = orderExecutor.modifyStopLoss(
+                position.stopLossOrderId.get(),
+                newStopPrice,
+                position.quantity
+            );
+
+            if (newStopOrderId != null) {
+                int oldStop = position.stopLossPrice.get();
+                position.stopLossOrderId.set(newStopOrderId);
+                position.stopLossPrice.set(newStopPrice);
+
+                double lockedProfit = position.isLong ?
+                    (currentPrice - newStopPrice) * 12.5 :
+                    (newStopPrice - currentPrice) * 12.5;
+
+                log("📍 TRAILING STOP:");
+                log("   Position: %s", position.id.substring(0, 8));
+                log("   Stop trailed: %d → %d", oldStop, newStopPrice);
+                log("   Locked in profit: $%.2f", lockedProfit);
+            }
+        } catch (Exception e) {
+            log("❌ Failed to trail stop: %s", e.getMessage());
+        }
+    }
+
+    /**
+     * Close position
+     */
+    public void closePosition(String positionId, int exitPrice, String reason, String triggerOrderId) {
+        ActivePosition position = activePositions.get(positionId);
+        if (position == null || position.isClosed.get()) return;
+
+        try {
+            // Cancel existing orders
+            if (position.stopLossOrderId.get() != null) {
+                orderExecutor.cancelOrder(position.stopLossOrderId.get());
+            }
+            if (position.takeProfitOrderId.get() != null) {
+                orderExecutor.cancelOrder(position.takeProfitOrderId.get());
+            }
+
+            // Close position at market
+            OrderExecutor.OrderSide closeSide = position.isLong ?
+                OrderExecutor.OrderSide.SELL : OrderExecutor.OrderSide.BUY;
+
+            String exitOrderId = orderExecutor.closePosition(closeSide, position.quantity);
+
+            // Mark position as closed
+            position.close(exitPrice, reason, exitOrderId != null ? exitOrderId : triggerOrderId);
+
+            // Update statistics
+            double pnl = position.getRealizedPnl();
+            dailyPnl += pnl;
+            totalTrades.incrementAndGet();
+            if (pnl > 0) {
+                winningTrades.incrementAndGet();
+            }
+
+            // Log closure
+            String emoji = pnl > 0 ? "💎" : "🛑";
+            log("%s POSITION CLOSED:", emoji);
+            log("   Position ID: %s", positionId.substring(0, 8));
+            log("   %s %d @ %d → %d",
+                position.isLong ? "LONG" : "SHORT",
+                position.quantity,
+                position.entryPrice,
+                exitPrice);
+            log("   Reason: %s", reason);
+            log("   P&L: $%.2f", pnl);
+            log("   Time in trade: %d seconds", position.getTimeInPosition() / 1000);
+            log("   Max Favorable: $%.2f", position.maxUnrealizedPnl.get() / 100.0);
+            log("   Max Adverse: -$%.2f", Math.abs(position.maxAdverseExcursion.get() / 100.0));
+
+            // Log daily summary
+            log("📊 Daily Summary:");
+            log("   Daily P&L: $%.2f", dailyPnl);
+            log("   Trades Today: %d", totalTrades.get());
+            log("   Win Rate: %.1f%%", getWinRate());
+
+        } catch (Exception e) {
+            log("❌ Failed to close position: %s", e.getMessage());
+        }
+    }
+
+    /**
+     * Early exit based on AI analysis
+     * Can be called when AI detects changing conditions
+     */
+    public void earlyExit(String positionId, String reason) {
+        ActivePosition position = activePositions.get(positionId);
+        if (position == null || position.isClosed.get()) return;
+
+        int currentPrice = position.isLong ?
+            position.highestPrice.get() :
+            position.lowestPrice.get();
+
+        closePosition(positionId, currentPrice, "Early Exit: " + reason, null);
+    }
+
+    /**
+     * Cancel pending entry order
+     * Can be called if AI changes mind before fill
+     */
+    public boolean cancelEntry(String positionId) {
+        ActivePosition position = activePositions.get(positionId);
+        if (position == null) return false;
+
+        try {
+            boolean cancelled = orderExecutor.cancelOrder(position.entryOrderId.get());
+            if (cancelled) {
+                activePositions.remove(positionId);
+                log("❌ ENTRY ORDER CANCELLED:");
+                log("   Position ID: %s", positionId.substring(0, 8));
+                log("   Order cancelled before fill");
+            }
+            return cancelled;
+        } catch (Exception e) {
+            log("❌ Failed to cancel entry: %s", e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Calculate position size based on risk
+     */
+    private int calculatePositionSize(SignalData signal) {
+        if (signal.account == null || signal.risk == null) {
+            return 1;  // Default to 1 contract
+        }
+
+        double accountRisk = signal.account.accountSize * (signal.risk.totalRiskPercent / 100.0);
+        double stopRisk = signal.risk.stopLossValue;
+
+        int contracts = (int) Math.floor(accountRisk / stopRisk);
+
+        // Apply limits
+        contracts = Math.max(1, contracts);  // Minimum 1
+        contracts = Math.min(signal.account.maxContracts, contracts);  // Maximum
+
+        return contracts;
+    }
+
+    /**
+     * Get win rate
+     */
+    public double getWinRate() {
+        int total = totalTrades.get();
+        if (total == 0) return 0.0;
+        return (winningTrades.get() * 100.0) / total;
+    }
+
+    /**
+     * Get daily P&L
+     */
+    public double getDailyPnl() {
+        return dailyPnl;
+    }
+
+    /**
+     * Reset daily statistics
+     */
+    public void resetDailyStats() {
+        dailyPnl = 0.0;
+    }
+
+    /**
+     * Get active positions count
+     */
+    public int getActivePositionCount() {
+        return activePositions.size();
+    }
+
+    /**
+     * Check if can take new position
+     */
+    public boolean canTakeNewPosition() {
+        return activePositions.size() < maxPositions && dailyPnl > -maxDailyLoss;
+    }
+
+    /**
+     * Log helper
+     */
+    private void log(String message, Object... args) {
+        if (logger != null) {
+            logger.log(String.format(message, args));
+        }
+    }
+
+    /**
+     * Clean up closed positions (call periodically)
+     */
+    public void cleanupClosedPositions() {
+        activePositions.entrySet().removeIf(entry -> entry.getValue().isClosed.get());
+    }
+}
