@@ -3,6 +3,7 @@ package velox.api.layer1.simplified.demo;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
+import java.awt.image.BufferedImage;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -63,7 +64,7 @@ public class OrderFlowStrategyEnhanced implements
     CustomSettingsPanelProvider {
 
     // ========== VERSION ==========
-    private static final String VERSION = "v0.02.00";
+    private static final String VERSION = "v0.02.01";
 
     // ========== PARAMETERS ==========
     @Parameter(name = "Iceberg Min Orders")
@@ -1083,11 +1084,12 @@ public class OrderFlowStrategyEnhanced implements
                     }
 
                     // Add marker point at signal price
-                    // NOTE: Simplified API connects points with lines. For true discrete
-                    // markers, we would need ScreenSpacePainter (advanced API).
-                    // This is a limitation of the current simplified API approach.
+                    // Using addIcon() for discrete markers without connecting lines
                     Indicator markerIndicator = isBid ? icebergBuyMarker : icebergSellMarker;
-                    markerIndicator.addPoint(price);
+
+                    // Create custom icon for this signal
+                    BufferedImage icon = isBid ? createBuyIcon() : createSellIcon();
+                    markerIndicator.addIcon(price, icon, 3, 3);
 
                     if (isBid) {
                         icebergCount.incrementAndGet();
@@ -1635,5 +1637,64 @@ public class OrderFlowStrategyEnhanced implements
             this.score = score;
             this.timestamp = timestamp;
         }
+    }
+
+    // ========== ICON CREATION METHODS ==========
+    // Create custom icons for iceberg signals (discrete markers, no connecting lines)
+
+    /**
+     * Create BUY icon (green circle with arrow up)
+     */
+    private BufferedImage createBuyIcon() {
+        BufferedImage icon = new BufferedImage(30, 30, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = icon.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+        // Green circle background
+        g.setColor(new Color(0, 200, 0, 200));
+        g.fillOval(2, 2, 26, 26);
+
+        // White arrow pointing up
+        g.setColor(Color.WHITE);
+        g.setStroke(new BasicStroke(3));
+        int[] xPoints = {15, 8, 22};
+        int[] yPoints = {6, 20, 20};
+        g.fillPolygon(xPoints, yPoints, 3);
+
+        // Border
+        g.setColor(new Color(0, 150, 0));
+        g.setStroke(new BasicStroke(2));
+        g.drawOval(2, 2, 26, 26);
+
+        g.dispose();
+        return icon;
+    }
+
+    /**
+     * Create SELL icon (red circle with arrow down)
+     */
+    private BufferedImage createSellIcon() {
+        BufferedImage icon = new BufferedImage(30, 30, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = icon.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+        // Red circle background
+        g.setColor(new Color(200, 0, 0, 200));
+        g.fillOval(2, 2, 26, 26);
+
+        // White arrow pointing down
+        g.setColor(Color.WHITE);
+        g.setStroke(new BasicStroke(3));
+        int[] xPoints = {15, 8, 22};
+        int[] yPoints = {24, 10, 10};
+        g.fillPolygon(xPoints, yPoints, 3);
+
+        // Border
+        g.setColor(new Color(150, 0, 0));
+        g.setStroke(new BasicStroke(2));
+        g.drawOval(2, 2, 26, 26);
+
+        g.dispose();
+        return icon;
     }
 }
