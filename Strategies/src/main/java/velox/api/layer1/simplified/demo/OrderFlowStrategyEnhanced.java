@@ -364,10 +364,10 @@ public class OrderFlowStrategyEnhanced implements
             }
         }, 0, UPDATE_INTERVAL_MS, TimeUnit.MILLISECONDS);
 
-        // Generate performance report every 5 minutes
+        // Generate performance report every 5 minutes (silent, file only)
         updateExecutor.scheduleAtFixedRate(() -> {
             try {
-                generatePerformanceReport();
+                generatePerformanceReport(false);  // false = no popup, file only
             } catch (Exception e) {
                 System.err.println("Error generating performance report: " + e.getMessage());
             }
@@ -1789,16 +1789,28 @@ public class OrderFlowStrategyEnhanced implements
     }
 
     /**
-     * Generate performance report for all tracked signals
+     * Generate performance report for all tracked signals (manual - shows popup)
      */
     private void generatePerformanceReport() {
+        generatePerformanceReport(true);
+    }
+
+    /**
+     * Generate performance report for all tracked signals
+     * @param showPopup true to show dialog, false for silent (file only)
+     */
+    private void generatePerformanceReport(boolean showPopup) {
         if (trackedSignals.isEmpty()) {
-            JOptionPane.showMessageDialog(statsPanel,
-                "📊 No signals tracked yet.\n\n" +
-                "Wait for iceberg signals to be detected,\n" +
-                "then click Report again to see performance data.",
-                "Performance Report",
-                JOptionPane.INFORMATION_MESSAGE);
+            if (showPopup) {
+                SwingUtilities.invokeLater(() -> {
+                    JOptionPane.showMessageDialog(statsPanel,
+                        "📊 No signals tracked yet.\n\n" +
+                        "Wait for iceberg signals to be detected,\n" +
+                        "then click Report again to see performance data.",
+                        "Performance Report",
+                        JOptionPane.INFORMATION_MESSAGE);
+                });
+            }
             log("📊 No signals tracked yet");
             return;
         }
@@ -1867,16 +1879,19 @@ public class OrderFlowStrategyEnhanced implements
             }
         }
 
-        // Show popup dialog
-        SwingUtilities.invokeLater(() -> {
-            JOptionPane.showMessageDialog(statsPanel,
-                report.toString(),
-                "Performance Report",
-                JOptionPane.INFORMATION_MESSAGE);
-        });
+        // Show popup dialog only for manual reports
+        if (showPopup) {
+            SwingUtilities.invokeLater(() -> {
+                JOptionPane.showMessageDialog(statsPanel,
+                    report.toString(),
+                    "Performance Report",
+                    JOptionPane.INFORMATION_MESSAGE);
+            });
+        }
 
-        // Also log to console
-        log("📊 ========== PERFORMANCE REPORT ==========");
+        // Always log to file (both manual and automatic)
+        String reportType = showPopup ? "MANUAL" : "AUTOMATIC";
+        log("📊 ========== PERFORMANCE REPORT (" + reportType + ") ==========");
         log(String.format("   Total Signals: %d", totalSignals));
         log(String.format("   Open Signals: %d", openSignals));
         log(String.format("   Closed Signals: %d", closedSignals));
