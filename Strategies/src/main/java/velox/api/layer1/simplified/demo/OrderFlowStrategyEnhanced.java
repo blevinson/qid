@@ -327,7 +327,9 @@ public class OrderFlowStrategyEnhanced implements
         adaptOrderLabel.setToolTipText("Dynamic threshold based on recent order activity");
         settingsPanel.add(adaptOrderLabel, gbc);
         gbc.gridx = 1;
-        JSpinner adaptOrderSpinner = new JSpinner(new SpinnerNumberModel(adaptiveOrderThreshold, 5, 100, 5));
+        // Clamp value to valid range to handle saved settings
+        int safeOrderThreshold = Math.max(1, Math.min(adaptiveOrderThreshold, 100));
+        JSpinner adaptOrderSpinner = new JSpinner(new SpinnerNumberModel(safeOrderThreshold, 1, 100, 5));
         adaptOrderSpinner.setToolTipText("Auto-adjusts based on market conditions (default: 25)");
         adaptOrderSpinner.addChangeListener(e -> adaptiveOrderThreshold = (Integer) adaptOrderSpinner.getValue());
         settingsPanel.add(adaptOrderSpinner, gbc);
@@ -337,7 +339,9 @@ public class OrderFlowStrategyEnhanced implements
         adaptSizeLabel.setToolTipText("Dynamic size threshold based on recent activity");
         settingsPanel.add(adaptSizeLabel, gbc);
         gbc.gridx = 1;
-        JSpinner adaptSizeSpinner = new JSpinner(new SpinnerNumberModel(adaptiveSizeThreshold, 10, 500, 25));
+        // Clamp value to valid range to handle saved settings
+        int safeSizeThreshold = Math.max(1, Math.min(adaptiveSizeThreshold, 500));
+        JSpinner adaptSizeSpinner = new JSpinner(new SpinnerNumberModel(safeSizeThreshold, 1, 500, 25));
         adaptSizeSpinner.setToolTipText("Auto-adjusts based on market conditions (default: 100)");
         adaptSizeSpinner.addChangeListener(e -> adaptiveSizeThreshold = (Integer) adaptSizeSpinner.getValue());
         settingsPanel.add(adaptSizeSpinner, gbc);
