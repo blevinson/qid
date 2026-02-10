@@ -501,6 +501,11 @@ public class OrderFlowStrategyEnhanced implements
 
     private void updateStatsPanel() {
         SwingUtilities.invokeLater(() -> {
+            // Check if panels have been created yet
+            if (totalTradesLabel == null) {
+                return; // Panels not initialized yet, skip update
+            }
+
             // All-time metrics
             totalTradesLabel.setText(String.valueOf(totalTrades.get()));
             double winRate = totalTrades.get() > 0 ?
