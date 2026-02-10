@@ -516,10 +516,15 @@ public class OrderFlowStrategyEnhanced implements
             totalPnLLabel.setText(String.format("$%,.2f", pnl / 100.0));
             totalPnLLabel.setForeground(pnl >= 0 ? new Color(0, 150, 0) : Color.RED);
 
-            // Today's metrics
-            todayTradesLabel.setText(String.valueOf(todayTrades.size()));
-            double todayWinRate = !todayTrades.isEmpty() ?
-                (todayTrades.stream().filter(t -> t.pnl > 0).count() * 100.0 / todayTrades.size()) : 0.0;
+            // Today's metrics - make copy to avoid ConcurrentModificationException
+            int todayTradeCount = todayTrades.size();
+            todayTradesLabel.setText(String.valueOf(todayTradeCount));
+            double todayWinRate = 0.0;
+            if (todayTradeCount > 0) {
+                List<Trade> todayTradesCopy = new ArrayList<>(todayTrades);
+                long winners = todayTradesCopy.stream().filter(t -> t.pnl > 0).count();
+                todayWinRate = winners * 100.0 / todayTradeCount;
+            }
             todayWinRateLabel.setText(String.format("%.1f%%", todayWinRate));
 
             todayPnLLabel.setText(String.format("$%,.2f", todayPnL));
@@ -533,11 +538,25 @@ public class OrderFlowStrategyEnhanced implements
                 lastSignalTimeLabel.setText("Recent");
             }
 
-            // Adaptive thresholds
-            avgOrderCountLabel.setText(String.format("%.1f",
-                recentOrderCounts.stream().mapToInt(Integer::intValue).average().orElse(0.0)));
-            avgOrderSizeLabel.setText(String.format("%.1f",
-                recentTotalSizes.stream().mapToInt(Integer::intValue).average().orElse(0.0)));
+            // Adaptive thresholds - make copies to avoid ConcurrentModificationException
+            double avgOrders = 0.0;
+            double avgSizes = 0.0;
+            try {
+                avgOrders = new LinkedList<>(recentOrderCounts)
+                    .stream()
+                    .mapToInt(Integer::intValue)
+                    .average()
+                    .orElse(0.0);
+                avgSizes = new LinkedList<>(recentTotalSizes)
+                    .stream()
+                    .mapToInt(Integer::intValue)
+                    .average()
+                    .orElse(0.0);
+            } catch (Exception e) {
+                // Use cached values if concurrent modification occurs
+            }
+            avgOrderCountLabel.setText(String.format("%.1f", avgOrders));
+            avgOrderSizeLabel.setText(String.format("%.1f", avgSizes));
             currentThresholdLabel.setText(String.format("%d orders, %d size",
                 adaptiveOrderThreshold, adaptiveSizeThreshold));
 
