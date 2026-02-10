@@ -63,12 +63,33 @@ public class OrderFlowStrategyEnhanced implements
     BboListener,
     CustomSettingsPanelProvider {
 
-    // ========== VERSION ==========
-    private static final String VERSION = "v0.02.01";
+    // ========== PERFORMANCE TRACKING ==========
+    private Map<Integer, SignalPerformance> trackedSignals = new ConcurrentHashMap<>();
+    private static final long SIGNAL_TRACKING_MS = 5 * 60 * 1000;  // Track for 5 minutes
+
+    private static class SignalPerformance {
+        long timestamp;
+        boolean isBid;
+        int entryPrice;
+        int score;
+        int totalSize;
+        double cvdAtSignal;
+        String trendAtSignal;
+        int emaAlignmentAtSignal;
+
+        // Outcome tracking
+        Integer exitPrice;
+        Long exitTimestamp;
+        Integer ticksMoved;
+        Boolean profitable;  // null = still open
+
+        // Confluence data at signal time
+        String confluenceBreakdown;
+    }
 
     // ========== PARAMETERS ==========
     @Parameter(name = "Iceberg Min Orders")
-    private Integer icebergMinOrders = 20;  // Increased from 5 to reduce false signals
+    private Integer icebergMinOrders = 10;  // Reduced from 20 to catch more signals
 
     @Parameter(name = "Spoof Max Age (ms)")
     private Integer spoofMaxAge = 500;
@@ -333,6 +354,8 @@ public class OrderFlowStrategyEnhanced implements
 
     private void startUpdateTimer() {
         updateExecutor = Executors.newSingleThreadScheduledExecutor();
+
+        // Update stats panel every second
         updateExecutor.scheduleAtFixedRate(() -> {
             try {
                 SwingUtilities.invokeLater(this::updateStatsPanel);
@@ -340,6 +363,15 @@ public class OrderFlowStrategyEnhanced implements
                 System.err.println("Error updating stats panel: " + e.getMessage());
             }
         }, 0, UPDATE_INTERVAL_MS, TimeUnit.MILLISECONDS);
+
+        // Generate performance report every 5 minutes
+        updateExecutor.scheduleAtFixedRate(() -> {
+            try {
+                generatePerformanceReport();
+            } catch (Exception e) {
+                System.err.println("Error generating performance report: " + e.getMessage());
+            }
+        }, 5, 5, TimeUnit.MINUTES);  // Start after 5 minutes, then every 5 minutes
     }
 
     // ========== CUSTOM PANELS ==========
@@ -521,7 +553,7 @@ public class OrderFlowStrategyEnhanced implements
         gbc.gridx = 1; gbc.gridy = 18; gbc.gridwidth = 1;
         gbc.anchor = GridBagConstraints.EAST;
         gbc.weightx = 1.0;
-        JLabel versionLabel = new JLabel(VERSION);
+        JLabel versionLabel = new JLabel("v0.03.00 (Performance Tracking)");
         versionLabel.setFont(new Font("Arial", Font.ITALIC, 10));
         versionLabel.setForeground(Color.GRAY);
         settingsPanel.add(versionLabel, gbc);
@@ -617,9 +649,9 @@ public class OrderFlowStrategyEnhanced implements
 
         gbc.gridwidth = 1;
         gbc.gridx = 0; gbc.gridy = row;
-        statsPanel.add(new JLabel("Active Signals:"), gbc);
+        statsPanel.add(new JLabel("Tracked Signals:"), gbc);
         gbc.gridx = 1;
-        activeSignalsLabel = new JLabel("0");
+        activeSignalsLabel = new JLabel("0 / 0");
         statsPanel.add(activeSignalsLabel, gbc);
         row++;
 
@@ -680,6 +712,10 @@ public class OrderFlowStrategyEnhanced implements
         askAIButton = new JButton("🤖 Ask AI");
         askAIButton.addActionListener(e -> askAICoach());
         statsPanel.add(askAIButton, gbc);
+        gbc.gridx = 2;
+        JButton reportButton = new JButton("📊 Report");
+        reportButton.addActionListener(e -> generatePerformanceReport());
+        statsPanel.add(reportButton, gbc);
         row++;
 
         gbc.gridx = 0; gbc.gridy = row;
@@ -723,7 +759,11 @@ public class OrderFlowStrategyEnhanced implements
             todayDrawdownLabel.setText(String.format("$%,.2f", todayMaxDrawdown));
 
             // Current activity
-            activeSignalsLabel.setText(String.valueOf(activeSignals.size()));
+            int trackedCount = trackedSignals.size();
+            int openCount = (int) trackedSignals.values().stream()
+                .filter(p -> p.profitable == null)
+                .count();
+            activeSignalsLabel.setText(openCount + " / " + trackedCount);
             if (lastSignal != null) {
                 lastSignalScoreLabel.setText("SIZE: " + lastSignal);
                 lastSignalTimeLabel.setText("Recent");
@@ -1090,6 +1130,34 @@ public class OrderFlowStrategyEnhanced implements
                     // Create custom icon for this signal
                     BufferedImage icon = isBid ? createBuyIcon() : createSellIcon();
                     markerIndicator.addIcon(price, icon, 3, 3);
+
+                    // ========== PERFORMANCE TRACKING ==========
+                    SignalPerformance perf = new SignalPerformance();
+                    perf.timestamp = now;
+                    perf.isBid = isBid;
+                    perf.entryPrice = price;
+                    perf.score = calculateConfluenceScore(isBid, price, totalSize);
+                    perf.totalSize = totalSize;
+                    perf.cvdAtSignal = cvdCalculator.getCVD();
+                    perf.trendAtSignal = perf.cvdAtSignal > 0 ? "BULLISH" : "BEARISH";
+                    perf.emaAlignmentAtSignal = ema9.isInitialized() && ema21.isInitialized() && ema50.isInitialized() ? 3 : 0;
+                    perf.profitable = null;  // Still open
+
+                    // Build confluence breakdown for analysis
+                    perf.confluenceBreakdown = String.format(
+                        "Score:%d|Iceberg:%d|CVD:%.0f|Trend:%s|EMA:%d/3|VWAP:%s|VP:%.0f%%",
+                        perf.score,
+                        Math.min(40, totalSize * 2),
+                        perf.cvdAtSignal,
+                        perf.trendAtSignal,
+                        perf.emaAlignmentAtSignal,
+                        vwapCalculator.isInitialized() ? vwapCalculator.getRelationship(price) : "UNKNOWN",
+                        volumeProfile.getVolumeNearPrice(price).volumeRatio * 100
+                    );
+
+                    trackedSignals.put(price, perf);
+                    log(String.format("📊 TRACKING: %s @ %d | Score: %d | %s",
+                        isBid ? "BUY" : "SELL", price, perf.score, perf.confluenceBreakdown));
 
                     if (isBid) {
                         icebergCount.incrementAndGet();
@@ -1559,6 +1627,9 @@ public class OrderFlowStrategyEnhanced implements
         }
         previousClose = price;  // Will be updated on next trade
 
+        // ========== PERFORMANCE TRACKING: CHECK SIGNAL OUTCOMES ==========
+        checkSignalOutcomes((int)price);
+
         // Monitor positions on each trade
         if (aiOrderManager != null) {
             aiOrderManager.onPriceUpdate((int)price, System.currentTimeMillis());
@@ -1636,6 +1707,156 @@ public class OrderFlowStrategyEnhanced implements
             this.type = type;
             this.score = score;
             this.timestamp = timestamp;
+        }
+    }
+
+    // ========== PERFORMANCE TRACKING METHODS ==========
+
+    /**
+     * Check tracked signals and record outcomes when price moves significantly
+     */
+    private void checkSignalOutcomes(int currentPrice) {
+        long now = System.currentTimeMillis();
+
+        // Check each tracked signal
+        for (Map.Entry<Integer, SignalPerformance> entry : trackedSignals.entrySet()) {
+            SignalPerformance perf = entry.getValue();
+
+            // Skip if signal already closed
+            if (perf.profitable != null) {
+                continue;
+            }
+
+            int signalPrice = perf.entryPrice;
+
+            // Calculate ticks moved based on signal direction
+            int ticksMoved;
+            if (perf.isBid) {
+                // BUY signal: profit when price goes up
+                ticksMoved = currentPrice - signalPrice;
+            } else {
+                // SELL signal: profit when price goes down
+                ticksMoved = signalPrice - currentPrice;
+            }
+
+            // Check if price moved significantly (10 ticks = $125 for ES)
+            final int SIGNIFICANT_MOVE_TICKS = 10;
+
+            if (Math.abs(ticksMoved) >= SIGNIFICANT_MOVE_TICKS) {
+                // Record outcome
+                perf.exitPrice = currentPrice;
+                perf.exitTimestamp = now;
+                perf.ticksMoved = ticksMoved;
+                perf.profitable = ticksMoved > 0;
+
+                long durationMs = perf.exitTimestamp - perf.timestamp;
+                double durationSeconds = durationMs / 1000.0;
+
+                log(String.format("📊 SIGNAL OUTCOME: %s @ %d → %d | %d ticks | %.1fs | %s",
+                    perf.isBid ? "BUY" : "SELL",
+                    perf.entryPrice,
+                    perf.exitPrice,
+                    perf.ticksMoved,
+                    durationSeconds,
+                    perf.profitable ? "✅ PROFIT" : "❌ LOSS"));
+
+                log(String.format("   Details: %s", perf.confluenceBreakdown));
+            }
+
+            // Check if signal timed out (5 minutes)
+            if (now - perf.timestamp > SIGNAL_TRACKING_MS) {
+                // Mark as timeout - closed at current price even if not significant move
+                perf.exitPrice = currentPrice;
+                perf.exitTimestamp = now;
+                perf.ticksMoved = ticksMoved;
+                perf.profitable = ticksMoved > 0;
+
+                log(String.format("⏰ SIGNAL TIMEOUT: %s @ %d → %d | %d ticks | %s",
+                    perf.isBid ? "BUY" : "SELL",
+                    perf.entryPrice,
+                    perf.exitPrice,
+                    perf.ticksMoved,
+                    perf.profitable ? "✅ PROFIT" : "❌ LOSS"));
+            }
+        }
+
+        // Clean up old closed signals (older than 1 hour)
+        trackedSignals.entrySet().removeIf(entry -> {
+            SignalPerformance perf = entry.getValue();
+            return perf.profitable != null &&
+                   (now - perf.exitTimestamp) > (60 * 60 * 1000);
+        });
+    }
+
+    /**
+     * Generate performance report for all tracked signals
+     */
+    private void generatePerformanceReport() {
+        if (trackedSignals.isEmpty()) {
+            log("📊 No signals tracked yet");
+            return;
+        }
+
+        int totalSignals = trackedSignals.size();
+        int closedSignals = 0;
+        int profitableSignals = 0;
+        int losingSignals = 0;
+        int openSignals = 0;
+        int totalTicksMoved = 0;
+
+        for (SignalPerformance perf : trackedSignals.values()) {
+            if (perf.profitable != null) {
+                closedSignals++;
+                if (perf.profitable) {
+                    profitableSignals++;
+                } else {
+                    losingSignals++;
+                }
+                totalTicksMoved += perf.ticksMoved;
+            } else {
+                openSignals++;
+            }
+        }
+
+        double winRate = closedSignals > 0 ? (profitableSignals * 100.0 / closedSignals) : 0;
+        double avgTicks = closedSignals > 0 ? (totalTicksMoved * 1.0 / closedSignals) : 0;
+
+        log("📊 ========== PERFORMANCE REPORT ==========");
+        log(String.format("   Total Signals: %d", totalSignals));
+        log(String.format("   Open Signals: %d", openSignals));
+        log(String.format("   Closed Signals: %d", closedSignals));
+        log(String.format("   Profitable: %d | Losing: %d", profitableSignals, losingSignals));
+        log(String.format("   Win Rate: %.1f%%", winRate));
+        log(String.format("   Avg Ticks/Signal: %.1f", avgTicks));
+        log("==========================================");
+
+        // Score distribution analysis
+        Map<String, Integer> scoreDistribution = new HashMap<>();
+        Map<String, Integer> scoreWins = new HashMap<>();
+
+        for (SignalPerformance perf : trackedSignals.values()) {
+            if (perf.profitable != null) {
+                String scoreRange;
+                if (perf.score >= 100) scoreRange = "100+";
+                else if (perf.score >= 80) scoreRange = "80-99";
+                else if (perf.score >= 60) scoreRange = "60-79";
+                else scoreRange = "<60";
+
+                scoreDistribution.merge(scoreRange, 1, Integer::sum);
+                if (perf.profitable) {
+                    scoreWins.merge(scoreRange, 1, Integer::sum);
+                }
+            }
+        }
+
+        log("📊 Win Rate by Score Range:");
+        for (String range : Arrays.asList("100+", "80-99", "60-79", "<60")) {
+            int total = scoreDistribution.getOrDefault(range, 0);
+            int wins = scoreWins.getOrDefault(range, 0);
+            if (total > 0) {
+                double rangeWinRate = (wins * 100.0) / total;
+                log(String.format("   %s: %.1f%% (%d/%d)", range, rangeWinRate, wins, total));
+            }
         }
     }
 
