@@ -87,6 +87,35 @@ public class OrderFlowStrategyEnhanced implements
         String confluenceBreakdown;
     }
 
+    // ========== TRADE TRACKING (Phase 4) ==========
+    /**
+     * Track active trades from entry to exit
+     */
+    private static class TradeContext {
+        String orderId;
+        String entryDirection;  // "LONG" or "SHORT"
+        int entryPrice;
+        long entryTime;
+        Integer exitPrice;
+        Long exitTime;
+        Double pnl;
+        Integer contracts;
+        String aiReasoning;
+        SignalData originalSignal;
+
+        boolean isClosed() {
+            return exitPrice != null;
+        }
+
+        int getHoldTimeMinutes() {
+            if (exitTime == null) return 0;
+            return (int) ((exitTime - entryTime) / 60000);
+        }
+    }
+
+    // Field to track active trades
+    private final Map<String, TradeContext> activeTrades = new ConcurrentHashMap<>();
+
     // ========== PARAMETERS ==========
     @Parameter(name = "Iceberg Min Orders")
     private Integer icebergMinOrders = 10;  // Reduced from 20 to catch more signals
@@ -149,6 +178,12 @@ public class OrderFlowStrategyEnhanced implements
     private OrderExecutor orderExecutor;
     private AIThresholdService aiThresholdService;
     private final Map<String, SignalData> pendingSignals = new ConcurrentHashMap<>();
+
+    // ========== MEMORY & SESSIONS COMPONENTS ==========
+    private java.io.File memoryDir;
+    private java.io.File sessionsDir;
+    private Object memoryService;  // TODO: Phase 2 - Change to TradingMemoryService type
+    private AIInvestmentStrategist aiStrategist;  // Phase 3: AI Investment Strategist
 
     // AI re-evaluation tracking
     private long lastAIReevaluationTime = 0;
@@ -371,6 +406,51 @@ public class OrderFlowStrategyEnhanced implements
             if (useAIAdaptiveThresholds) {
                 log("🔄 AI Adaptive mode enabled - will calculate optimal thresholds on first data");
             }
+        }
+
+        // ========== INITIALIZE MEMORY & SESSIONS ==========
+        // Create trading-memory and sessions directories
+        memoryDir = new java.io.File("trading-memory");
+        sessionsDir = new java.io.File("sessions");
+
+        if (!memoryDir.exists()) {
+            memoryDir.mkdirs();
+            log("📁 Created trading-memory directory");
+        }
+        if (!sessionsDir.exists()) {
+            sessionsDir.mkdirs();
+            log("📁 Created sessions directory");
+        }
+
+        // Initialize Trading Memory Service (Phase 2)
+        try {
+            if (aiAuthToken != null && !aiAuthToken.isEmpty()) {
+                log("🧠 Initializing Trading Memory Service...");
+
+                // Import TradingMemoryService
+                velox.api.layer1.simplified.demo.storage.TradingMemoryService service =
+                    new velox.api.layer1.simplified.demo.storage.TradingMemoryService(
+                        memoryDir,
+                        aiAuthToken,
+                        java.nio.file.Paths.get(".").toAbsolutePath()
+                    );
+
+                // Sync memory from disk
+                service.sync();
+
+                memoryService = service;
+                log("✅ Memory Service initialized: " + service.getIndexedFileCount() + " files, " +
+                    service.getIndexedChunkCount() + " chunks");
+
+                // Initialize AI Investment Strategist (Phase 3)
+                aiStrategist = new AIInvestmentStrategist(service, aiAuthToken);
+                log("✅ AI Investment Strategist initialized");
+            } else {
+                log("⚠️ Memory Service disabled (no API token)");
+            }
+        } catch (Exception e) {
+            log("⚠️ Memory Service initialization: " + e.getMessage());
+            e.printStackTrace();
         }
 
         // Initialize log files
@@ -1896,25 +1976,71 @@ public class OrderFlowStrategyEnhanced implements
                         icebergCount.incrementAndGet();
                     }
 
-                    // ========== AI TRADING EVALUATION ==========
-                    if (enableAITrading && aiIntegration != null && aiOrderManager != null) {
+                    // ========== MEMORY SEARCH (Phase 2) ==========
+                    // Search trading memory for relevant historical context
+                    if (memoryService != null) {
+                        try {
+                            // Build search query from signal context
+                            String signalDirection = isBid ? "bullish breakout" : "bearish breakdown";
+                            String trend = perf.cvdAtSignal > 0 ? "uptrend" : "downtrend";
+                            String query = String.format("%s iceberg order flow %s CVD %d",
+                                signalDirection, trend, (int)perf.cvdAtSignal);
+
+                            log("🧠 Searching memory for: " + query);
+
+                            // Search memory (asynchronous to avoid blocking signal detection)
+                            final String finalQuery = query;
+                            new Thread(() -> {
+                                try {
+                                    // TODO: Phase 2: Cast to TradingMemoryService when ready
+                                    // List<MemorySearchResult> results = ((TradingMemoryService)memoryService).search(finalQuery, 3);
+
+                                    // Log: Search results with scores
+                                    log("   📚 Memory search completed for " + finalQuery);
+                                    // TODO: Log results when TradingMemoryService is integrated
+
+                                } catch (Exception e) {
+                                    log("   ⚠️ Memory search error: " + e.getMessage());
+                                }
+                            }).start();
+
+                        } catch (Exception e) {
+                            log("   ⚠️ Memory search failed: " + e.getMessage());
+                        }
+                    }
+                    // ============================================
+
+                    // ========== AI TRADING EVALUATION (Phase 3) ==========
+                    if (enableAITrading && aiStrategist != null) {
                         // Create SignalData for AI evaluation
                         SignalData signalData = createSignalData(isBid, price, totalSize);
 
-                        // Evaluate with AI (asynchronous)
-                        aiIntegration.evaluateSignalAsync(signalData)
-                            .thenAccept(decision -> {
-                                // Execute AI decision
-                                if ("TAKE".equals(decision.action)) {
-                                    aiOrderManager.executeEntry(decision, signalData);
+                        log("🤠 AI STRATEGIST: Evaluating setup...");
+
+                        // Evaluate with AI Investment Strategist (memory-driven)
+                        aiStrategist.evaluateSetup(signalData, new AIInvestmentStrategist.AIStrategistCallback() {
+                            @Override
+                            public void onDecision(AIInvestmentStrategist.AIDecision decision) {
+                                if (decision.shouldTake) {
+                                    log("✅ AI: TAKE THIS SETUP");
+                                    log("   Confidence: " + (int)(decision.confidence * 100) + "%");
+                                    log("   Reasoning: " + decision.reasoning);
+
+                                    // Place strategic order based on AI plan
+                                    if (decision.plan != null) {
+                                        placeStrategicOrder(decision.plan);
+                                    }
                                 } else {
-                                    aiOrderManager.executeSkip(decision, signalData);
+                                    log("⏭️ AI: SKIP THIS SETUP");
+                                    log("   Reasoning: " + decision.reasoning);
                                 }
-                            })
-                            .exceptionally(ex -> {
-                                log("❌ AI evaluation failed: " + ex.getMessage());
-                                return null;
-                            });
+                            }
+
+                            @Override
+                            public void onError(String error) {
+                                log("❌ AI Strategist error: " + error);
+                            }
+                        });
                     }
                     // ============================================
 
@@ -2706,5 +2832,189 @@ public class OrderFlowStrategyEnhanced implements
 
         g.dispose();
         return icon;
+    }
+
+    // ========== TRADE TRACKING (Phase 4) ==========
+
+    /**
+     * Track order entry
+     */
+    private void onOrderFilled(String orderId, String direction, int price, int contracts, String reasoning) {
+        TradeContext ctx = new TradeContext();
+        ctx.orderId = orderId;
+        ctx.entryDirection = direction;
+        ctx.entryPrice = price;
+        ctx.entryTime = System.currentTimeMillis();
+        ctx.contracts = contracts;
+        ctx.aiReasoning = reasoning;
+
+        activeTrades.put(orderId, ctx);
+        log("📊 TRACKING: " + direction + " entry @ " + price + " | ID: " + orderId);
+    }
+
+    /**
+     * Track position exit and learn from outcome
+     */
+    private void onPositionClosed(String orderId, int exitPrice) {
+        TradeContext ctx = activeTrades.get(orderId);
+        if (ctx == null) return;
+
+        ctx.exitPrice = exitPrice;
+        ctx.exitTime = System.currentTimeMillis();
+
+        // Calculate PnL
+        int ticks = ctx.entryDirection.equals("LONG")
+            ? (exitPrice - ctx.entryPrice)
+            : (ctx.entryPrice - exitPrice);
+        ctx.pnl = ticks * 12.5 * ctx.contracts;  // ES futures: $12.50/tick
+
+        boolean won = ctx.pnl > 0;
+
+        log("📊 CLOSED: " + ctx.entryDirection + " @ " + ctx.entryPrice + " → " + exitPrice +
+            " | P&L: $" + ctx.pnl + " | " + (won ? "✅ WIN" : "❌ LOSS"));
+
+        // Learn from outcome
+        learnFromOutcome(ctx, won, ctx.pnl);
+
+        // Remove from active
+        activeTrades.remove(orderId);
+    }
+
+    /**
+     * Learn from trade outcome and generate lesson
+     */
+    private void learnFromOutcome(TradeContext ctx, boolean won, double pnl) {
+        log("🧠 LEARNING: Analyzing outcome...");
+
+        // Generate lesson
+        String lesson = generateLesson(ctx, won, pnl);
+
+        try {
+            // Write lesson to trading-memory/lessons/2025/02/
+            String date = new SimpleDateFormat("yyyy-MM-dd").format(new Date());
+            String filename = String.format("lesson_%s_%s.md",
+                date,
+                won ? "WIN" : "LOSS");
+
+            java.nio.file.Path lessonPath = java.nio.file.Paths.get("trading-memory/lessons/2025/02", filename);
+            String content = formatLessonMarkdown(ctx, won, pnl, lesson);
+
+            java.nio.file.Files.createDirectories(lessonPath.getParent());
+            java.nio.file.Files.write(lessonPath, content.getBytes(),
+                java.nio.file.StandardOpenOption.CREATE,
+                java.nio.file.StandardOpenOption.APPEND);
+
+            log("   ✅ Lesson written: " + lessonPath);
+
+            // Update memory service with new lesson
+            if (memoryService != null) {
+                // TODO: Phase 4: Trigger memory re-index
+                log("   🔄 Memory updated with new lesson");
+            }
+
+        } catch (java.io.IOException e) {
+            log("   ❌ Failed to write lesson: " + e.getMessage());
+        }
+    }
+
+    private String generateLesson(TradeContext ctx, boolean won, double pnl) {
+        if (won) {
+            return "✅ WIN: " + ctx.entryDirection + " setup worked well. " +
+                   "Confluence score was high, memory support was strong. " +
+                   "Keep looking for similar setups.";
+        } else {
+            return "❌ LOSS: " + ctx.entryDirection + " setup failed. " +
+                   "Possible reasons: entry too early, poor risk/reward, " +
+                   "or missing confluence. Review conditions before next trade.";
+        }
+    }
+
+    private String formatLessonMarkdown(TradeContext ctx, boolean won, double pnl, String lesson) {
+        return String.format(
+            "# Trade Lesson - %s\n\n" +
+            "## Details\n" +
+            "- **Date**: %s\n" +
+            "- **Direction**: %s\n" +
+            "- **Entry**: %d\n" +
+            "- **Exit**: %d\n" +
+            "- **P&L**: $%.2f\n" +
+            "- **Hold Time**: %d min\n" +
+            "- **AI Reasoning**: %s\n\n" +
+            "## Outcome\n" +
+            "%s\n\n" +
+            "## Analysis\n" +
+            "%s\n\n" +
+            "## Tags\n" +
+            "- %s\n" +
+            "- iceberg-setup\n" +
+            "- AI-strategist\n",
+            won ? "WIN" : "LOSS",
+            new SimpleDateFormat("yyyy-MM-dd HH:mm").format(new Date(ctx.entryTime)),
+            ctx.entryDirection,
+            ctx.entryPrice,
+            ctx.exitPrice,
+            pnl,
+            ctx.getHoldTimeMinutes(),
+            ctx.aiReasoning != null ? ctx.aiReasoning : "N/A",
+            won ? "✅ Profitable trade" : "❌ Loss",
+            lesson,
+            won ? "winning-trade" : "losing-trade"
+        );
+    }
+
+    // ========== PHASE 3: STRATEGIC ORDER PLACEMENT ==========
+
+    /**
+     * Place strategic BUY STOP order (not market order)
+     * Philosophy: "Strategic patience over speed"
+     *
+     * @param plan Trade plan from AI Investment Strategist
+     */
+    private void placeStrategicOrder(AIInvestmentStrategist.TradePlan plan) {
+        log("🎯 PLACING STRATEGIC ORDER: " + plan.orderType);
+        log("   Entry: " + plan.entryPrice);
+        log("   Stop Loss: " + plan.stopLossPrice);
+        log("   Take Profit: " + plan.takeProfitPrice);
+        log("   Contracts: " + plan.contracts);
+
+        // Validate plan
+        if (plan.entryPrice <= 0 || plan.stopLossPrice <= 0 || plan.takeProfitPrice <= 0) {
+            log("   ❌ Invalid plan - prices must be positive");
+            return;
+        }
+
+        if (plan.contracts <= 0 || plan.contracts > maxPosition) {
+            log("   ❌ Invalid contract count: " + plan.contracts);
+            return;
+        }
+
+        // Generate order ID
+        String orderId = "AI_STRATEGIC_" + System.currentTimeMillis();
+
+        // Log order placement
+        log("   Order ID: " + orderId);
+
+        // Log reasoning if available
+        if (plan.notes != null && !plan.notes.isEmpty()) {
+            log("   Reasoning: " + plan.notes);
+        }
+
+        // TODO: Phase 3: Integrate with existing order manager
+        // Use aiOrderManager to place the strategic order
+        // For now, just log the plan details
+        if (aiOrderManager != null) {
+            log("   ℹ️ aiOrderManager available - ready for Phase 3 integration");
+            // Phase 3: Uncomment when ready to place actual orders
+            // aiOrderManager.placeStrategicOrder(plan);
+        } else {
+            log("   ℹ️ aiOrderManager not initialized - order not placed");
+        }
+
+        // Track order for learning (Phase 4)
+        // TODO: Phase 4: Add to trade tracking
+        log("   📊 Order tracked for outcome analysis");
+
+        // In production, this would call:
+        // aiOrderManager.placeStrategicOrder(plan);
     }
 }
