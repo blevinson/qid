@@ -132,7 +132,7 @@ public class OrderFlowStrategyEnhanced implements
     private Integer confluenceThreshold = 50;
 
     @Parameter(name = "AI Auth Token")
-    private String aiAuthToken = "";
+    private String aiAuthToken = "8a4f5b950ea142c98746d5a320666414.Yf1MQwtkwfuDbyHw";
 
     // ========== INDICATORS (Layer 1: Detection Markers) ==========
     // NOTE: Using separate indicators for each marker to avoid connecting lines
@@ -147,7 +147,7 @@ public class OrderFlowStrategyEnhanced implements
     private AIIntegrationLayer aiIntegration;
     private AIOrderManager aiOrderManager;
     private OrderExecutor orderExecutor;
-    // private AIThresholdService aiThresholdService;  // TODO: Enable when Java 17 + Gson available
+    private AIThresholdService aiThresholdService;
     private final Map<String, SignalData> pendingSignals = new ConcurrentHashMap<>();
 
     // AI re-evaluation tracking
@@ -207,9 +207,19 @@ public class OrderFlowStrategyEnhanced implements
 
     // AI Threshold UI Components
     private JCheckBox aiAdaptiveModeCheckBox;
+    private JButton aiChatButton;
     private JButton aiReevaluateButton;
     private JTextArea aiPromptTextArea;
     private JLabel aiStatusIndicator;
+
+    // AI Chat Panel Components
+    private JFrame chatWindow;
+    private JTextArea chatHistoryArea;
+    private JTextField chatInputField;
+    private JButton chatSendButton;
+    private JButton chatClearButton;
+    private JButton chatOpenButton;
+    private List<String[]> chatMessages = new ArrayList<>();  // Store [role, message] pairs
 
     // ========== STATE ==========
     private Map<String, OrderInfo> orders = new HashMap<>();
@@ -355,18 +365,15 @@ public class OrderFlowStrategyEnhanced implements
         }
 
         // Initialize AI Threshold Service if token provided
-        // TODO: Enable when Java 17 + Gson available
-        /*
         if (aiAuthToken != null && !aiAuthToken.isEmpty()) {
             aiThresholdService = new AIThresholdService(aiAuthToken);
-            log("🤖 AI Threshold Service initialized");
+            log("🤖 AI Chat Service initialized");
 
             // Trigger initial AI threshold calculation if AI adaptive mode is enabled
             if (useAIAdaptiveThresholds) {
                 log("🔄 AI Adaptive mode enabled - will calculate optimal thresholds on first data");
             }
         }
-        */
 
         // Initialize log files
         try {
@@ -494,7 +501,29 @@ public class OrderFlowStrategyEnhanced implements
         gbc.gridx = 0; gbc.gridy = 7; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "AI Adaptive Thresholds", gbc);
 
-        gbc.gridy = 8; gbc.gridwidth = 1;
+        gbc.gridy = 8; gbc.gridwidth = 2;
+        settingsPanel.add(new JLabel("AI Auth Token:"), gbc);
+        gbc.gridy = 9; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL;
+        JTextField aiTokenField = new JTextField();
+        aiTokenField.setText(aiAuthToken);
+        aiTokenField.setToolTipText("Your Claude API token for z.ai (leave empty to disable AI features)");
+        aiTokenField.addFocusListener(new java.awt.event.FocusAdapter() {
+            public void focusLost(java.awt.event.FocusEvent e) {
+                aiAuthToken = aiTokenField.getText();
+                // Reinitialize AI service if token changed
+                if (aiAuthToken != null && !aiAuthToken.isEmpty()) {
+                    aiThresholdService = new AIThresholdService(aiAuthToken);
+                    log("🤖 AI Auth Token updated - Service initialized");
+                } else {
+                    aiThresholdService = null;
+                    log("⚠️ AI Auth Token cleared - Service disabled");
+                }
+            }
+        });
+        settingsPanel.add(aiTokenField, gbc);
+        gbc.fill = GridBagConstraints.NONE;  // Reset fill
+
+        gbc.gridx = 0; gbc.gridy = 10; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Use AI Adaptive:"), gbc);
         gbc.gridx = 1;
         aiAdaptiveModeCheckBox = new JCheckBox();
@@ -503,35 +532,45 @@ public class OrderFlowStrategyEnhanced implements
         aiAdaptiveModeCheckBox.addActionListener(e -> updateAIAdaptiveMode());
         settingsPanel.add(aiAdaptiveModeCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 9; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 11; gbc.gridwidth = 2;
         settingsPanel.add(new JLabel("AI Status:"), gbc);
-        gbc.gridy = 10;
+        gbc.gridy = 12;
         aiStatusIndicator = new JLabel("🔴 AI Disabled");
         aiStatusIndicator.setForeground(Color.GRAY);
         settingsPanel.add(aiStatusIndicator, gbc);
 
-        gbc.gridy = 11; gbc.gridwidth = 2;
-        settingsPanel.add(new JLabel("Custom Prompt (optional):"), gbc);
-        gbc.gridy = 12;
-        aiPromptTextArea = new JTextArea(3, 20);
-        aiPromptTextArea.setText("Optimize thresholds for current market conditions");
+        gbc.gridy = 13; gbc.gridwidth = 2;
+        settingsPanel.add(new JLabel("AI Chat (ask anything):"), gbc);
+        gbc.gridy = 14; gbc.fill = GridBagConstraints.HORIZONTAL;
+        aiPromptTextArea = new JTextArea(4, 20);
+        aiPromptTextArea.setText("What should I watch for in today's market?");
         aiPromptTextArea.setLineWrap(true);
         aiPromptTextArea.setWrapStyleWord(true);
         JScrollPane promptScrollPane = new JScrollPane(aiPromptTextArea);
+        promptScrollPane.setPreferredSize(new Dimension(400, 80));
+        promptScrollPane.setMinimumSize(new Dimension(300, 60));
         settingsPanel.add(promptScrollPane, gbc);
+        gbc.fill = GridBagConstraints.NONE;  // Reset fill
 
-        gbc.gridy = 13; gbc.gridwidth = 1;
-        aiReevaluateButton = new JButton("🔄 Re-evaluate Thresholds");
-        aiReevaluateButton.setToolTipText("Ask AI to recalculate optimal thresholds based on current conditions");
-        aiReevaluateButton.setEnabled(!useAIAdaptiveThresholds || aiAuthToken != null && !aiAuthToken.isEmpty());
+        gbc.gridy = 15; gbc.gridwidth = 1;
+        JButton aiChatButton = new JButton("💬 Ask AI");
+        aiChatButton.setToolTipText("Ask Claude AI any trading question");
+        aiChatButton.setEnabled(aiAuthToken != null && !aiAuthToken.isEmpty());
+        aiChatButton.addActionListener(e -> triggerAIChat());
+        settingsPanel.add(aiChatButton, gbc);
+
+        gbc.gridy = 16; gbc.gridwidth = 1;
+        aiReevaluateButton = new JButton("🔄 Optimize Thresholds");
+        aiReevaluateButton.setToolTipText("Ask AI to optimize trading thresholds based on market conditions");
+        aiReevaluateButton.setEnabled(aiAuthToken != null && !aiAuthToken.isEmpty());
         aiReevaluateButton.addActionListener(e -> triggerAIReevaluation());
         settingsPanel.add(aiReevaluateButton, gbc);
 
         // Safety Controls section
-        gbc.gridx = 0; gbc.gridy = 14; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 17; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Safety Controls", gbc);
 
-        gbc.gridy = 15; gbc.gridwidth = 1;
+        gbc.gridy = 18; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Simulation Mode Only:"), gbc);
         gbc.gridx = 1;
         simModeCheckBox = new JCheckBox();
@@ -539,7 +578,7 @@ public class OrderFlowStrategyEnhanced implements
         simModeCheckBox.addActionListener(e -> updateSimMode());
         settingsPanel.add(simModeCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 16;
+        gbc.gridx = 0; gbc.gridy = 19;
         settingsPanel.add(new JLabel("Enable Auto-Execution:"), gbc);
         gbc.gridx = 1;
         autoExecCheckBox = new JCheckBox();
@@ -548,17 +587,17 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(autoExecCheckBox, gbc);
 
         // Risk Management section
-        gbc.gridx = 0; gbc.gridy = 17; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 20; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Risk Management", gbc);
 
-        gbc.gridy = 18; gbc.gridwidth = 1;
+        gbc.gridy = 21; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Max Position:"), gbc);
         gbc.gridx = 1;
         JSpinner maxPosSpinner = new JSpinner(new SpinnerNumberModel(maxPosition.intValue(), 1, 10, 1));
         maxPosSpinner.addChangeListener(e -> maxPosition = (Integer) maxPosSpinner.getValue());
         settingsPanel.add(maxPosSpinner, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 19;
+        gbc.gridx = 0; gbc.gridy = 22;
         settingsPanel.add(new JLabel("Daily Loss Limit:"), gbc);
         gbc.gridx = 1;
         JSpinner lossLimitSpinner = new JSpinner(new SpinnerNumberModel(dailyLossLimit.intValue(), 100.0, 5000.0, 100.0));
@@ -566,13 +605,20 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(lossLimitSpinner, gbc);
 
         // Apply button
-        gbc.gridx = 0; gbc.gridy = 17; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 23; gbc.gridwidth = 2;
         JButton applyButton = new JButton("Apply Settings");
         applyButton.addActionListener(e -> applySettings());
         settingsPanel.add(applyButton, gbc);
 
+        // Open AI Chat button
+        gbc.gridx = 0; gbc.gridy = 24; gbc.gridwidth = 2;
+        chatOpenButton = new JButton("💬 Open AI Chat Window");
+        chatOpenButton.setToolTipText("Open floating AI Chat window (stays open when you close settings)");
+        chatOpenButton.addActionListener(e -> openAIChatWindow());
+        settingsPanel.add(chatOpenButton, gbc);
+
         // Version label (bottom right)
-        gbc.gridx = 1; gbc.gridy = 18; gbc.gridwidth = 1;
+        gbc.gridx = 1; gbc.gridy = 25; gbc.gridwidth = 1;
         gbc.anchor = GridBagConstraints.EAST;
         gbc.weightx = 1.0;
         JLabel versionLabel = new JLabel("Order Flow Enhanced");
@@ -746,6 +792,185 @@ public class OrderFlowStrategyEnhanced implements
         statsPanel.add(exportButton, gbc);
     }
 
+    private void openAIChatWindow() {
+        // If window already exists, bring it to front
+        if (chatWindow != null && chatWindow.isVisible()) {
+            chatWindow.toFront();
+            chatWindow.setState(Frame.NORMAL);
+            return;
+        }
+
+        // Create new window
+        createAIChatWindow();
+        chatWindow.setVisible(true);
+    }
+
+    private void createAIChatWindow() {
+        chatWindow = new JFrame("💬 AI Chat - Trading Assistant");
+        chatWindow.setDefaultCloseOperation(JFrame.HIDE_ON_CLOSE);  // Don't exit when closed
+        chatWindow.setSize(700, 600);
+        chatWindow.setMinimumSize(new Dimension(500, 400));
+
+        // Try to position on the right side of screen
+        try {
+            java.awt.GraphicsDevice gd = java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment().getDefaultScreenDevice();
+            int screenWidth = gd.getDisplayMode().getWidth();
+            int screenHeight = gd.getDisplayMode().getHeight();
+            chatWindow.setLocation(screenWidth - 750, 50);
+        } catch (Exception e) {
+            // Default to center if positioning fails
+            chatWindow.setLocationRelativeTo(null);
+        }
+
+        chatWindow.setLayout(new BorderLayout(5, 5));
+
+        // Chat history area (top)
+        chatHistoryArea = new JTextArea();
+        chatHistoryArea.setEditable(false);
+        chatHistoryArea.setWrapStyleWord(true);
+        chatHistoryArea.setLineWrap(true);
+        chatHistoryArea.setFont(new Font("SansSerif", Font.PLAIN, 12));
+        JScrollPane historyScrollPane = new JScrollPane(chatHistoryArea);
+        historyScrollPane.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_ALWAYS);
+
+        // Input area (bottom)
+        JPanel inputPanel = new JPanel(new BorderLayout(5, 5));
+
+        chatInputField = new JTextField();
+        chatInputField.setFont(new Font("SansSerif", Font.PLAIN, 13));
+        chatInputField.setToolTipText("Type your message and press Enter to send");
+
+        chatSendButton = new JButton("Send 💬");
+        chatSendButton.setToolTipText("Send message to AI");
+
+        chatClearButton = new JButton("Clear 🗑️");
+        chatClearButton.setToolTipText("Clear chat history");
+
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 0));
+        buttonPanel.add(chatClearButton);
+        buttonPanel.add(chatSendButton);
+
+        inputPanel.add(new JLabel("Message:"), BorderLayout.WEST);
+        inputPanel.add(chatInputField, BorderLayout.CENTER);
+        inputPanel.add(buttonPanel, BorderLayout.EAST);
+
+        // Add components to window
+        chatWindow.add(historyScrollPane, BorderLayout.CENTER);
+        chatWindow.add(inputPanel, BorderLayout.SOUTH);
+
+        // Add initial welcome message
+        appendChatMessage("System", "Welcome to AI Chat! Ask me anything about trading, order flow, or market analysis.\n\nThis window stays open even when you close the Settings panel.\n\nType your message below and click Send or press Enter.");
+
+        // Event listeners
+        chatInputField.addActionListener(e -> sendChatMessage());
+        chatSendButton.addActionListener(e -> sendChatMessage());
+        chatClearButton.addActionListener(e -> clearChatHistory());
+
+        // Window listener - reset window reference when closed
+        chatWindow.addWindowListener(new java.awt.event.WindowAdapter() {
+            @Override
+            public void windowClosed(java.awt.event.WindowEvent e) {
+                log("💬 AI Chat window closed");
+            }
+
+            @Override
+            public void windowClosing(java.awt.event.WindowEvent e) {
+                log("💬 AI Chat window closing (can be reopened from Settings)");
+            }
+        });
+    }
+
+    private void sendChatMessage() {
+        String userMessage = chatInputField.getText().trim();
+        if (userMessage.isEmpty()) {
+            return;
+        }
+
+        // Check if AI service is available
+        if (aiThresholdService == null) {
+            appendChatMessage("System", "⚠️ AI Service not available. Please check your AI Auth Token in Settings.");
+            return;
+        }
+
+        // Add user message to chat
+        appendChatMessage("You", userMessage);
+        chatInputField.setText("");
+
+        // Show typing indicator
+        appendChatMessage("AI", "Thinking...");
+
+        // Send to AI asynchronously
+        aiThresholdService.chat(userMessage)
+            .thenAcceptAsync(response -> {
+                // Remove "Thinking..." and add actual response
+                SwingUtilities.invokeLater(() -> {
+                    // Remove last line (Thinking...)
+                    String currentText = chatHistoryArea.getText();
+                    int lastNewline = currentText.lastIndexOf("AI: Thinking...");
+                    if (lastNewline != -1) {
+                        String newText = currentText.substring(0, lastNewline);
+                        chatHistoryArea.setText(newText);
+                    }
+
+                    // Add AI response
+                    appendChatMessage("AI", response);
+                });
+            }, SwingUtilities::invokeLater)
+            .exceptionally(ex -> {
+                SwingUtilities.invokeLater(() -> {
+                    // Remove "Thinking..."
+                    String currentText = chatHistoryArea.getText();
+                    int lastNewline = currentText.lastIndexOf("AI: Thinking...");
+                    if (lastNewline != -1) {
+                        String newText = currentText.substring(0, lastNewline);
+                        chatHistoryArea.setText(newText);
+                    }
+
+                    appendChatMessage("System", "❌ Error: " + ex.getMessage());
+                });
+                return null;
+            });
+    }
+
+    private void appendChatMessage(String role, String message) {
+        SwingUtilities.invokeLater(() -> {
+            String timestamp = new SimpleDateFormat("HH:mm:ss").format(new Date());
+
+            // Format message based on role
+            String formattedMsg;
+            if (role.equals("You")) {
+                formattedMsg = String.format("[%s] You: %s\n", timestamp, message);
+            } else if (role.equals("AI")) {
+                formattedMsg = String.format("[%s] AI: %s\n", timestamp, message);
+            } else {
+                formattedMsg = String.format("[%s] %s\n\n", timestamp, message);
+            }
+
+            chatHistoryArea.append(formattedMsg);
+
+            // Auto-scroll to bottom
+            chatHistoryArea.setCaretPosition(chatHistoryArea.getDocument().getLength());
+
+            // Store message
+            chatMessages.add(new String[]{role, message});
+        });
+    }
+
+    private void clearChatHistory() {
+        SwingUtilities.invokeLater(() -> {
+            int confirm = JOptionPane.showConfirmDialog(chatWindow,
+                "Are you sure you want to clear the chat history?",
+                "Clear Chat",
+                JOptionPane.YES_NO_OPTION);
+
+            if (confirm == JOptionPane.YES_OPTION) {
+                chatHistoryArea.setText("");
+                chatMessages.clear();
+                appendChatMessage("System", "Chat history cleared.\n\nAsk me anything about trading!");
+            }
+        });
+    }
+
     // ========== PANEL UPDATE METHODS ==========
 
     private void updateStatsPanel() {
@@ -841,15 +1066,27 @@ public class OrderFlowStrategyEnhanced implements
     }
 
     private void showAlert(String title, String message) {
-        SwingUtilities.invokeLater(() ->
-            JOptionPane.showMessageDialog(statsPanel, message, title, JOptionPane.ERROR_MESSAGE)
-        );
+        SwingUtilities.invokeLater(() -> {
+            JTextArea textArea = new JTextArea(message);
+            textArea.setEditable(false);
+            textArea.setWrapStyleWord(true);
+            textArea.setLineWrap(true);
+            JScrollPane scrollPane = new JScrollPane(textArea);
+            scrollPane.setPreferredSize(new Dimension(400, 150));
+            JOptionPane.showMessageDialog(statsPanel, scrollPane, title, JOptionPane.ERROR_MESSAGE);
+        });
     }
 
     private void showWarning(String title, String message) {
-        SwingUtilities.invokeLater(() ->
-            JOptionPane.showMessageDialog(statsPanel, message, title, JOptionPane.WARNING_MESSAGE)
-        );
+        SwingUtilities.invokeLater(() -> {
+            JTextArea textArea = new JTextArea(message);
+            textArea.setEditable(false);
+            textArea.setWrapStyleWord(true);
+            textArea.setLineWrap(true);
+            JScrollPane scrollPane = new JScrollPane(textArea);
+            scrollPane.setPreferredSize(new Dimension(400, 150));
+            JOptionPane.showMessageDialog(statsPanel, scrollPane, title, JOptionPane.WARNING_MESSAGE);
+        });
     }
 
     // ========== SETTINGS UPDATE METHODS ==========
@@ -924,15 +1161,6 @@ public class OrderFlowStrategyEnhanced implements
         boolean selected = aiAdaptiveModeCheckBox.isSelected();
         useAIAdaptiveThresholds = selected;
 
-        // TODO: Enable when Java 17 + Gson available
-        SwingUtilities.invokeLater(() -> aiAdaptiveModeCheckBox.setSelected(false));
-        showAlert("AI Feature Coming Soon",
-            "AI Adaptive Thresholds requires Java 17.\n\n" +
-            "Please install Java 17 to use this feature.\n" +
-            "See docs/AI_ADAPTIVE_THRESHOLDS_README.md for details.");
-        return;
-
-        /*
         if (aiThresholdService == null) {
             SwingUtilities.invokeLater(() -> aiAdaptiveModeCheckBox.setSelected(false));
             showAlert("AI Not Available",
@@ -954,18 +1182,58 @@ public class OrderFlowStrategyEnhanced implements
             aiStatusIndicator.setForeground(Color.GRAY);
             log("🎛️ AI Adaptive Mode: DISABLED (using manual settings)");
         }
-        */
+    }
+
+    private void triggerAIChat() {
+        if (aiThresholdService == null) {
+            showAlert("AI Not Available",
+                "AI Service is not initialized.\n\n" +
+                "Please set your 'AI Auth Token' parameter and restart.");
+            return;
+        }
+
+        // Get prompt from textbox
+        final String userPrompt;
+        String promptText = aiPromptTextArea.getText().trim();
+        if (promptText.isEmpty()) {
+            userPrompt = "What trading advice do you have for current market conditions?";
+        } else {
+            userPrompt = promptText;
+        }
+
+        // Update status
+        aiStatusIndicator.setText("🔄 Thinking...");
+        aiStatusIndicator.setForeground(Color.BLUE);
+
+        log("💬 Sending chat prompt to AI...");
+
+        // Send prompt to AI and get raw response
+        aiThresholdService.chat(userPrompt)
+            .thenAcceptAsync(response -> {
+                log("✅ AI response received");
+
+                // Show raw response in dialog
+                SwingUtilities.invokeLater(() -> {
+                    showAIResponseDialog(userPrompt, response);
+
+                    // Update status
+                    aiStatusIndicator.setText("🟢 Ready");
+                    aiStatusIndicator.setForeground(new Color(0, 150, 0));
+                });
+            }, SwingUtilities::invokeLater)
+            .exceptionally(ex -> {
+                String errorMsg = "AI chat failed: " + ex.getMessage();
+                log("❌ " + errorMsg);
+                SwingUtilities.invokeLater(() -> {
+                    showAlert("AI Error", errorMsg);
+                    aiStatusIndicator.setText("❌ Error");
+                    aiStatusIndicator.setForeground(Color.RED);
+                });
+                return null;
+            });
     }
 
     private void triggerAIReevaluation() {
-        // TODO: Enable when Java 17 + Gson available
-        showAlert("AI Feature Coming Soon",
-            "AI Adaptive Thresholds requires Java 17.\n\n" +
-            "Please install Java 17 to use this feature.\n" +
-            "See docs/AI_ADAPTIVE_THRESHOLDS_README.md for details.");
-        return;
-
-        /*
         if (aiThresholdService == null) {
             showAlert("AI Not Available",
                 "AI Threshold Service is not initialized.\n\n" +
@@ -975,10 +1243,10 @@ public class OrderFlowStrategyEnhanced implements
 
         // Disable button during calculation
         aiReevaluateButton.setEnabled(false);
-        aiStatusIndicator.setText("🔄 Calculating...");
+        aiStatusIndicator.setText("🔄 Optimizing...");
         aiStatusIndicator.setForeground(Color.BLUE);
 
-        log("🔄 Triggering AI threshold re-evaluation...");
+        log("🔄 Triggering AI threshold optimization...");
 
         // Build market context
         AIThresholdService.MarketContext context = buildMarketContext();
@@ -1008,21 +1276,43 @@ public class OrderFlowStrategyEnhanced implements
                 });
             }, SwingUtilities::invokeLater)
             .exceptionally(ex -> {
-                String errorMsg = "AI calculation failed: " + ex.getMessage();
+                String errorMsg = "AI optimization failed: " + ex.getMessage();
                 log("❌ " + errorMsg);
                 SwingUtilities.invokeLater(() -> {
-                    showAlert("AI Calculation Failed", errorMsg);
+                    showAlert("AI Optimization Failed", errorMsg);
                     aiReevaluateButton.setEnabled(true);
                     aiStatusIndicator.setText("❌ Error");
                     aiStatusIndicator.setForeground(Color.RED);
                 });
                 return null;
             });
-        */
     }
 
-    // TODO: Enable when Java 17 + Gson available
-    /*
+    private void showAIResponseDialog(String prompt, String response) {
+        // Create dialog with prompt and response
+        StringBuilder text = new StringBuilder();
+        text.append("YOUR QUESTION:\n");
+        text.append(prompt);
+        text.append("\n\n");
+        text.append("─".repeat(60));
+        text.append("\n\n");
+        text.append("AI RESPONSE:\n");
+        text.append(response);
+
+        JTextArea textArea = new JTextArea(text.toString());
+        textArea.setEditable(false);
+        textArea.setWrapStyleWord(true);
+        textArea.setLineWrap(true);
+        textArea.setFont(new Font("SansSerif", Font.PLAIN, 13));
+        JScrollPane scrollPane = new JScrollPane(textArea);
+        scrollPane.setPreferredSize(new Dimension(600, 500));
+
+        JOptionPane.showMessageDialog(settingsPanel,
+            scrollPane,
+            "AI Response",
+            JOptionPane.INFORMATION_MESSAGE);
+    }
+
     private AIThresholdService.MarketContext buildMarketContext() {
         AIThresholdService.MarketContext context = new AIThresholdService.MarketContext(alias);
 
@@ -1030,14 +1320,14 @@ public class OrderFlowStrategyEnhanced implements
         context.currentPrice = getCurrentPrice();
         context.totalVolume = totalVolume.get();
         context.cvd = cvdCalculator.getCVD();
-        context.trend = determineTrend().name;
+        context.trend = "NEUTRAL";  // Simplified - can be enhanced later
         context.emaAlignment = getEMAAlignmentCount();
         context.isVolatile = isVolatileMarket();
         context.timeOfDay = getCurrentTimeOfDay();
 
         // Performance stats
         context.totalSignals = icebergCount.get() + spoofCount.get() + absorptionCount.get();
-        context.winningSignals = todayWinCount.get();
+        context.winningSignals = winningTrades.get();  // Use winningTrades instead of todayWinCount
         context.winRate = context.totalSignals > 0 ?
             (double) context.winningSignals / context.totalSignals : 0.0;
         context.recentSignals = getRecentSignalCount(10); // Last 10 minutes
@@ -1063,7 +1353,7 @@ public class OrderFlowStrategyEnhanced implements
 
         log("✅ AI thresholds applied successfully");
 
-        // Show details dialog
+        // Show details dialog with copyable text
         StringBuilder details = new StringBuilder();
         details.append("AI Analysis Complete\n\n");
         details.append("Confidence: ").append(rec.confidence).append("\n\n");
@@ -1078,16 +1368,22 @@ public class OrderFlowStrategyEnhanced implements
             details.append("• ").append(factor).append("\n");
         }
 
-        SwingUtilities.invokeLater(() ->
+        SwingUtilities.invokeLater(() -> {
+            JTextArea textArea = new JTextArea(details.toString());
+            textArea.setEditable(false);
+            textArea.setWrapStyleWord(true);
+            textArea.setLineWrap(true);
+            textArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
+            JScrollPane scrollPane = new JScrollPane(textArea);
+            scrollPane.setPreferredSize(new Dimension(500, 300));
             JOptionPane.showMessageDialog(settingsPanel,
-                details.toString(),
+                scrollPane,
                 "AI Threshold Recommendations",
-                JOptionPane.INFORMATION_MESSAGE)
-        );
+                JOptionPane.INFORMATION_MESSAGE);
+        });
 
         lastAIReevaluationTime = System.currentTimeMillis();
     }
-    */
 
     // Helper methods for market context
     private double getCurrentPrice() {
@@ -1189,10 +1485,20 @@ public class OrderFlowStrategyEnhanced implements
             writer.println("  Max Drawdown: $" + String.format("%.2f", todayMaxDrawdown));
             writer.close();
 
-            JOptionPane.showMessageDialog(statsPanel,
-                "✅ Data exported successfully!\n\n" +
+            // Show copyable export message
+            String exportMsg = "✅ Data exported successfully!\n\n" +
                 "Trades: " + tradesFile + "\n" +
-                "Report: " + reportFile,
+                "Report: " + reportFile;
+
+            JTextArea textArea = new JTextArea(exportMsg);
+            textArea.setEditable(false);
+            textArea.setWrapStyleWord(true);
+            textArea.setLineWrap(true);
+            JScrollPane scrollPane = new JScrollPane(textArea);
+            scrollPane.setPreferredSize(new Dimension(400, 120));
+
+            JOptionPane.showMessageDialog(statsPanel,
+                scrollPane,
                 "Export Complete",
                 JOptionPane.INFORMATION_MESSAGE);
 
@@ -2126,11 +2432,18 @@ public class OrderFlowStrategyEnhanced implements
             }
         }
 
-        // Show popup dialog only for manual reports
+        // Show popup dialog only for manual reports (with copyable text)
         if (showPopup) {
             SwingUtilities.invokeLater(() -> {
+                JTextArea textArea = new JTextArea(report.toString());
+                textArea.setEditable(false);
+                textArea.setWrapStyleWord(false);  // Don't wrap - keep table format
+                textArea.setLineWrap(false);
+                textArea.setFont(new Font("Monospaced", Font.PLAIN, 11));
+                JScrollPane scrollPane = new JScrollPane(textArea);
+                scrollPane.setPreferredSize(new Dimension(600, 400));
                 JOptionPane.showMessageDialog(statsPanel,
-                    report.toString(),
+                    scrollPane,
                     "Performance Report",
                     JOptionPane.INFORMATION_MESSAGE);
             });

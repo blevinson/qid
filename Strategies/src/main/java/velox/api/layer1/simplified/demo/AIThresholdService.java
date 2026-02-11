@@ -22,7 +22,7 @@ public class AIThresholdService {
     private final String apiKey;
     private final HttpClient httpClient;
     private final Gson gson;
-    private final String apiUrl = "https://z.ai/v1/messages";
+    private final String apiUrl = "https://api.z.ai/api/anthropic/v1/messages";
 
     // AI response cache
     private String lastAnalysis;
@@ -237,7 +237,7 @@ public class AIThresholdService {
      */
     private String callClaudeAPI(String systemPrompt, String userPrompt) throws Exception {
         JsonObject requestBody = new JsonObject();
-        requestBody.addProperty("model", "claude-3-5-sonnet-20241022");
+        requestBody.addProperty("model", "glm-4.7");
         requestBody.addProperty("max_tokens", 1024);
         requestBody.addProperty("system", systemPrompt);
 
@@ -324,5 +324,51 @@ public class AIThresholdService {
     public void clearCache() {
         lastAnalysis = null;
         lastAnalysisTime = 0;
+    }
+
+    /**
+     * Simple chat interface - send a prompt and get raw AI response
+     */
+    public CompletableFuture<String> chat(String userPrompt) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                String systemPrompt = "You are a helpful trading assistant. Provide clear, concise responses to trading-related questions.";
+
+                JsonObject requestBody = new JsonObject();
+                requestBody.addProperty("model", "glm-4.7");
+                requestBody.addProperty("max_tokens", 2048);
+                requestBody.addProperty("system", systemPrompt);
+
+                JsonObject message = new JsonObject();
+                message.addProperty("role", "user");
+                message.addProperty("content", userPrompt);
+                requestBody.add("messages", gson.toJsonTree(new Object[]{message}));
+
+                HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(apiUrl))
+                    .header("x-api-key", apiKey)
+                    .header("anthropic-version", "2023-06-01")
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(requestBody.toString()))
+                    .timeout(Duration.ofSeconds(30))
+                    .build();
+
+                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+                if (response.statusCode() != 200) {
+                    throw new Exception("API call failed: " + response.statusCode() + " " + response.body());
+                }
+
+                JsonObject jsonResponse = gson.fromJson(response.body(), JsonObject.class);
+
+                // Extract content from response
+                return jsonResponse.getAsJsonArray("content")
+                    .get(0).getAsJsonObject()
+                    .get("text").getAsString();
+
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to get AI response: " + e.getMessage(), e);
+            }
+        });
     }
 }
