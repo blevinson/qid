@@ -314,8 +314,8 @@ public class OrderFlowStrategyEnhanced implements
         if (enableAITrading && aiAuthToken != null && !aiAuthToken.isEmpty()) {
             log("🤖 Initializing AI Trading System...");
 
-            // Create order executor with logger wrapper
-            orderExecutor = new SimpleOrderExecutor(new AIIntegrationLayer.AIStrategyLogger() {
+            // Create order executor with logger wrapper using real Bookmap API
+            orderExecutor = new BookmapOrderExecutor(api, alias, new AIIntegrationLayer.AIStrategyLogger() {
                 @Override
                 public void log(String message, Object... args) {
                     OrderFlowStrategyEnhanced.this.log(message);
