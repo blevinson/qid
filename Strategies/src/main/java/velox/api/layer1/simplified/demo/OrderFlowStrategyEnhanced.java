@@ -544,11 +544,52 @@ public class OrderFlowStrategyEnhanced implements
         aiChatButton.addActionListener(e -> openAIChatWindow());
         settingsPanel.add(aiChatButton, gbc);
 
-        // Safety Controls section
+        gbc.gridy = 16; gbc.gridwidth = 1;
+        aiReevaluateButton = new JButton("🔄 Optimize Thresholds");
+        aiReevaluateButton.setToolTipText("Ask AI to optimize trading thresholds based on market conditions");
+        aiReevaluateButton.setEnabled(aiAuthToken != null && !aiAuthToken.isEmpty());
+        aiReevaluateButton.addActionListener(e -> triggerAIReevaluation());
+        settingsPanel.add(aiReevaluateButton, gbc);
+
+        // AI Investment Strategist section
         gbc.gridx = 0; gbc.gridy = 17; gbc.gridwidth = 2;
-        addSeparator(settingsPanel, "Safety Controls", gbc);
+        addSeparator(settingsPanel, "AI Investment Strategist (Qid v2.0)", gbc);
 
         gbc.gridy = 18; gbc.gridwidth = 1;
+        settingsPanel.add(new JLabel("Enable AI Trading:"), gbc);
+        gbc.gridx = 1;
+        JCheckBox enableAITradingCheckBox = new JCheckBox();
+        enableAITradingCheckBox.setSelected(enableAITrading);
+        enableAITradingCheckBox.addActionListener(e -> {
+            enableAITrading = enableAITradingCheckBox.isSelected();
+            log("🤠 AI Trading " + (enableAITrading ? "ENABLED" : "DISABLED"));
+        });
+        settingsPanel.add(enableAITradingCheckBox, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 19;
+        settingsPanel.add(new JLabel("AI Mode:"), gbc);
+        gbc.gridx = 1;
+        String[] aiModes = {"MANUAL", "SEMI_AUTO", "FULL_AUTO"};
+        JComboBox<String> aiModeComboBox = new JComboBox<>(aiModes);
+        aiModeComboBox.setSelectedItem(aiMode);
+        aiModeComboBox.addActionListener(e -> {
+            aiMode = (String) aiModeComboBox.getSelectedItem();
+            log("🔄 AI Mode: " + aiMode);
+        });
+        settingsPanel.add(aiModeComboBox, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 20;
+        settingsPanel.add(new JLabel("Confluence Threshold:"), gbc);
+        gbc.gridx = 1;
+        JSpinner confThresholdSpinner = new JSpinner(new SpinnerNumberModel(confluenceThreshold.intValue(), 0, 135, 5));
+        confThresholdSpinner.addChangeListener(e -> confluenceThreshold = (Integer) confThresholdSpinner.getValue());
+        settingsPanel.add(confThresholdSpinner, gbc);
+
+        // Safety Controls section
+        gbc.gridx = 0; gbc.gridy = 21; gbc.gridwidth = 2;
+        addSeparator(settingsPanel, "Safety Controls", gbc);
+
+        gbc.gridy = 22; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Simulation Mode Only:"), gbc);
         gbc.gridx = 1;
         simModeCheckBox = new JCheckBox();
@@ -556,7 +597,7 @@ public class OrderFlowStrategyEnhanced implements
         simModeCheckBox.addActionListener(e -> updateSimMode());
         settingsPanel.add(simModeCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 19;
+        gbc.gridx = 0; gbc.gridy = 23;
         settingsPanel.add(new JLabel("Enable Auto-Execution:"), gbc);
         gbc.gridx = 1;
         autoExecCheckBox = new JCheckBox();
@@ -565,17 +606,17 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(autoExecCheckBox, gbc);
 
         // Risk Management section
-        gbc.gridx = 0; gbc.gridy = 20; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 24; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Risk Management", gbc);
 
-        gbc.gridy = 21; gbc.gridwidth = 1;
+        gbc.gridy = 25; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Max Position:"), gbc);
         gbc.gridx = 1;
         JSpinner maxPosSpinner = new JSpinner(new SpinnerNumberModel(maxPosition.intValue(), 1, 10, 1));
         maxPosSpinner.addChangeListener(e -> maxPosition = (Integer) maxPosSpinner.getValue());
         settingsPanel.add(maxPosSpinner, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 22;
+        gbc.gridx = 0; gbc.gridy = 26;
         settingsPanel.add(new JLabel("Daily Loss Limit:"), gbc);
         gbc.gridx = 1;
         JSpinner lossLimitSpinner = new JSpinner(new SpinnerNumberModel(dailyLossLimit.intValue(), 100.0, 5000.0, 100.0));
@@ -583,13 +624,23 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(lossLimitSpinner, gbc);
 
         // Apply button
-        gbc.gridx = 0; gbc.gridy = 23; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 27; gbc.gridwidth = 2;
         JButton applyButton = new JButton("Apply Settings");
         applyButton.addActionListener(e -> applySettings());
         settingsPanel.add(applyButton, gbc);
 
+<<<<<<< HEAD
+=======
+        // Open AI Chat button
+        gbc.gridx = 0; gbc.gridy = 28; gbc.gridwidth = 2;
+        chatOpenButton = new JButton("💬 Open AI Chat Window");
+        chatOpenButton.setToolTipText("Open floating AI Chat window (stays open when you close settings)");
+        chatOpenButton.addActionListener(e -> openAIChatWindow());
+        settingsPanel.add(chatOpenButton, gbc);
+
+>>>>>>> 9114b2e (feat: Add AI Investment Strategist controls to settings panel)
         // Version label (bottom right)
-        gbc.gridx = 1; gbc.gridy = 25; gbc.gridwidth = 1;
+        gbc.gridx = 1; gbc.gridy = 29; gbc.gridwidth = 1;
         gbc.anchor = GridBagConstraints.EAST;
         gbc.weightx = 1.0;
         JLabel versionLabel = new JLabel("Order Flow Enhanced");
