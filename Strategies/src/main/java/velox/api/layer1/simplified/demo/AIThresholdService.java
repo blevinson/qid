@@ -1,8 +1,7 @@
 package velox.api.layer1.simplified.demo;
 
-// TODO: Uncomment when Java 17 + Gson is available
-// import com.google.gson.Gson;
-// import com.google.gson.JsonObject;
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -10,6 +9,7 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * AI-driven threshold optimization service using Claude API
@@ -27,7 +27,7 @@ public class AIThresholdService {
     // AI response cache
     private String lastAnalysis;
     private long lastAnalysisTime;
-    private static final long ANALYSIS_CACHE_MS = TimeUnit.MINUTES.toMillis(5);
+    private static final long ANALYSIS_CACHE_MS = 5 * 60 * 1000;  // 5 minutes
 
     public interface ThresholdCallback {
         void onThresholdsCalculated(ThresholdRecommendation recommendation);
@@ -137,34 +137,34 @@ public class AIThresholdService {
      * Build system prompt for threshold optimization
      */
     private String buildSystemPrompt() {
-        return """You are an expert trading strategy optimizer specializing in order flow analysis.
-
-Your task is to analyze market conditions and recommend optimal threshold settings for an iceberg/spoof/absorption detection strategy.
-
-**Confluence Scoring System (max 135 points):**
-- Iceberg Detection: 40 points (2 points per order)
-- CVD Confirmation: 25 points
-- Volume Profile: 20 points
-- Volume Imbalance: 10 points
-- EMA Alignment: 15 points
-- VWAP: 10 points
-- Time of Day: 5-10 points
-- Size Bonus: 3-5 points
-
-**Threshold Guidelines:**
-1. Min Confluence Score: 60-100 (higher = fewer, higher-quality signals)
-2. Iceberg Min Orders: 10-30 (depends on instrument liquidity)
-3. Spoof Min Size: 15-50 (higher = fewer false positives)
-4. Absorption Min Size: 40-100 (large trades only)
-5. Threshold Multiplier: 2.0-4.0 (adjusts sensitivity)
-
-**Market Regime Considerations:**
-- Trending markets: Use lower thresholds (60-70) to catch continuation
-- Ranging markets: Use higher thresholds (80-90) for reversals
-- Volatile markets: Use higher thresholds (85-100) to avoid noise
-- Low volatility: Use moderate thresholds (70-80)
-
-**Always respond with valid JSON only:**""";
+        return "You are an expert trading strategy optimizer specializing in order flow analysis.\n" +
+            "\n" +
+            "Your task is to analyze market conditions and recommend optimal threshold settings for an iceberg/spoof/absorption detection strategy.\n" +
+            "\n" +
+            "**Confluence Scoring System (max 135 points):**\n" +
+            "- Iceberg Detection: 40 points (2 points per order)\n" +
+            "- CVD Confirmation: 25 points\n" +
+            "- Volume Profile: 20 points\n" +
+            "- Volume Imbalance: 10 points\n" +
+            "- EMA Alignment: 15 points\n" +
+            "- VWAP: 10 points\n" +
+            "- Time of Day: 5-10 points\n" +
+            "- Size Bonus: 3-5 points\n" +
+            "\n" +
+            "**Threshold Guidelines:**\n" +
+            "1. Min Confluence Score: 60-100 (higher = fewer, higher-quality signals)\n" +
+            "2. Iceberg Min Orders: 10-30 (depends on instrument liquidity)\n" +
+            "3. Spoof Min Size: 15-50 (higher = fewer false positives)\n" +
+            "4. Absorption Min Size: 40-100 (large trades only)\n" +
+            "5. Threshold Multiplier: 2.0-4.0 (adjusts sensitivity)\n" +
+            "\n" +
+            "**Market Regime Considerations:**\n" +
+            "- Trending markets: Use lower thresholds (60-70) to catch continuation\n" +
+            "- Ranging markets: Use higher thresholds (80-90) for reversals\n" +
+            "- Volatile markets: Use higher thresholds (85-100) to avoid noise\n" +
+            "- Low volatility: Use moderate thresholds (70-80)\n" +
+            "\n" +
+            "**Always respond with valid JSON only:**";
     }
 
     /**

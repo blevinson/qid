@@ -866,7 +866,6 @@ public class OrderFlowStrategyEnhanced implements
 
     private void updateAdaptiveMode() {
         boolean selected = adaptiveModeCheckBox.isSelected();
-        useAdaptiveThresholds = selected;
 
         if (selected) {
             // Switching to adaptive mode
@@ -1304,8 +1303,8 @@ public class OrderFlowStrategyEnhanced implements
             recentTotalSizes.removeFirst();
         }
 
-        // Only calculate adaptive thresholds if adaptive mode is enabled
-        if (!useAdaptiveThresholds) {
+        // Only calculate adaptive thresholds if AI adaptive mode is enabled
+        if (!useAIAdaptiveThresholds) {
             // Manual mode - keep current threshold values, just track stats
             return;
         }
