@@ -972,6 +972,39 @@ public class OrderFlowStrategyEnhanced implements
         });
     }
 
+    private String loadSkillContext() {
+        try {
+            // Try current directory first
+            java.nio.file.Path skillPath = java.nio.file.Paths.get("SKILL.md");
+
+            // If not found, try docs directory
+            if (!java.nio.file.Files.exists(skillPath)) {
+                skillPath = java.nio.file.Paths.get("docs/SKILL.md");
+            }
+
+            // If still not found, try parent directory
+            if (!java.nio.file.Files.exists(skillPath)) {
+                skillPath = java.nio.file.Paths.get("../SKILL.md");
+            }
+
+            if (java.nio.file.Files.exists(skillPath)) {
+                String content = new String(java.nio.file.Files.readAllBytes(skillPath));
+                log("📚 Loaded SKILL.md: " + skillPath + " (" + content.length() + " chars)");
+
+                // Return first 3000 chars to avoid token limits
+                if (content.length() > 3000) {
+                    return content.substring(0, 3000) + "\n\n...(truncated, full file: " + content.length() + " chars)";
+                }
+                return content;
+            } else {
+                log("⚠️ SKILL.md not found (tried: ./SKILL.md, docs/SKILL.md, ../SKILL.md)");
+            }
+        } catch (Exception e) {
+            log("⚠️ Error loading SKILL.md: " + e.getMessage());
+        }
+        return null;
+    }
+
     private void sendChatMessage() {
         String userMessage = chatInputField.getText().trim();
         if (userMessage.isEmpty()) {
@@ -991,37 +1024,90 @@ public class OrderFlowStrategyEnhanced implements
         // Show typing indicator
         appendChatMessage("AI", "Thinking...");
 
-        // Send to AI asynchronously
-        aiThresholdService.chat(userMessage)
-            .thenAcceptAsync(response -> {
-                // Remove "Thinking..." and add actual response
-                SwingUtilities.invokeLater(() -> {
-                    // Remove last line (Thinking...)
-                    String currentText = chatHistoryArea.getText();
-                    int lastNewline = currentText.lastIndexOf("AI: Thinking...");
-                    if (lastNewline != -1) {
-                        String newText = currentText.substring(0, lastNewline);
-                        chatHistoryArea.setText(newText);
-                    }
+        // Build enhanced prompt with memory context (async)
+        CompletableFuture.supplyAsync(() -> {
+            StringBuilder enhancedPrompt = new StringBuilder();
 
-                    // Add AI response
-                    appendChatMessage("AI", response);
-                });
-            }, SwingUtilities::invokeLater)
-            .exceptionally(ex -> {
-                SwingUtilities.invokeLater(() -> {
-                    // Remove "Thinking..."
-                    String currentText = chatHistoryArea.getText();
-                    int lastNewline = currentText.lastIndexOf("AI: Thinking...");
-                    if (lastNewline != -1) {
-                        String newText = currentText.substring(0, lastNewline);
-                        chatHistoryArea.setText(newText);
-                    }
+            // 1. Add SKILL.md context if available
+            String skillContext = loadSkillContext();
+            if (skillContext != null && !skillContext.isEmpty()) {
+                enhancedPrompt.append("=== SYSTEM CONTEXT (Qid Trading System) ===\n");
+                enhancedPrompt.append(skillContext);
+                enhancedPrompt.append("\n\n");
+                log("💬 Chat: Added SKILL.md context (" + skillContext.length() + " chars)");
+            } else {
+                log("⚠️ Chat: SKILL.md context not available");
+            }
 
-                    appendChatMessage("System", "❌ Error: " + ex.getMessage());
-                });
-                return null;
+            // 2. Search memory for relevant context
+            if (memoryService != null) {
+                try {
+                    enhancedPrompt.append("=== RELEVANT TRADING MEMORY ===\n");
+                    // Search memory with user's question
+                    java.util.List<velox.api.layer1.simplified.demo.memory.MemorySearchResult> memoryResults =
+                        ((velox.api.layer1.simplified.demo.storage.TradingMemoryService)memoryService).search(userMessage, 3);
+
+                    if (!memoryResults.isEmpty()) {
+                        log("💬 Chat: Found " + memoryResults.size() + " relevant memory chunks");
+                        for (velox.api.layer1.simplified.demo.memory.MemorySearchResult result : memoryResults) {
+                            enhancedPrompt.append(String.format("- [%.2f] %s (lines %d-%d from %s)\n",
+                                result.getScore(),
+                                result.getSnippet().substring(0, Math.min(200, result.getSnippet().length())),
+                                result.getStartLine(),
+                                result.getEndLine(),
+                                result.getPath()));
+                        }
+                    } else {
+                        enhancedPrompt.append("(No relevant memory found)\n");
+                        log("💬 Chat: No relevant memory found");
+                    }
+                    enhancedPrompt.append("\n");
+                } catch (Exception e) {
+                    enhancedPrompt.append("(Memory search unavailable: " + e.getMessage() + ")\n\n");
+                    log("⚠️ Chat: Memory search error: " + e.getMessage());
+                }
+            } else {
+                log("⚠️ Chat: Memory service not initialized");
+            }
+
+            // 3. Add user's question
+            enhancedPrompt.append("=== USER QUESTION ===\n");
+            enhancedPrompt.append(userMessage);
+
+            log("💬 Chat: Enhanced prompt length = " + enhancedPrompt.length() + " chars");
+
+            return enhancedPrompt.toString();
+        })
+        .thenCompose(enhancedPrompt -> aiThresholdService.chat(enhancedPrompt))
+        .thenAcceptAsync(response -> {
+            // Remove "Thinking..." and add actual response
+            SwingUtilities.invokeLater(() -> {
+                // Remove last line (Thinking...)
+                String currentText = chatHistoryArea.getText();
+                int lastNewline = currentText.lastIndexOf("AI: Thinking...");
+                if (lastNewline != -1) {
+                    String newText = currentText.substring(0, lastNewline);
+                    chatHistoryArea.setText(newText);
+                }
+
+                // Add AI response
+                appendChatMessage("AI", response);
             });
+        }, SwingUtilities::invokeLater)
+        .exceptionally(ex -> {
+            SwingUtilities.invokeLater(() -> {
+                // Remove "Thinking..."
+                String currentText = chatHistoryArea.getText();
+                int lastNewline = currentText.lastIndexOf("AI: Thinking...");
+                if (lastNewline != -1) {
+                    String newText = currentText.substring(0, lastNewline);
+                    chatHistoryArea.setText(newText);
+                }
+
+                appendChatMessage("System", "❌ Error: " + ex.getMessage());
+            });
+            return null;
+        });
     }
 
     private void appendChatMessage(String role, String message) {
