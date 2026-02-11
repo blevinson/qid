@@ -203,22 +203,20 @@ public class OrderFlowStrategyEnhanced implements
     private JLabel currentThresholdLabel;
     private JTextArea aiInsightsArea;
     private JButton exportButton;
-    private JButton askAIButton;
 
     // AI Threshold UI Components
     private JCheckBox aiAdaptiveModeCheckBox;
     private JButton aiChatButton;
     private JButton aiReevaluateButton;
-    private JTextArea aiPromptTextArea;
     private JLabel aiStatusIndicator;
 
     // AI Chat Panel Components
     private JFrame chatWindow;
-    private JTextArea chatHistoryArea;
+    private JEditorPane chatHistoryArea;
+    private StringBuilder chatHtmlContent;  // Maintain full HTML document
     private JTextField chatInputField;
     private JButton chatSendButton;
     private JButton chatClearButton;
-    private JButton chatOpenButton;
     private List<String[]> chatMessages = new ArrayList<>();  // Store [role, message] pairs
 
     // ========== STATE ==========
@@ -539,32 +537,12 @@ public class OrderFlowStrategyEnhanced implements
         aiStatusIndicator.setForeground(Color.GRAY);
         settingsPanel.add(aiStatusIndicator, gbc);
 
-        gbc.gridy = 13; gbc.gridwidth = 2;
-        settingsPanel.add(new JLabel("AI Chat (ask anything):"), gbc);
-        gbc.gridy = 14; gbc.fill = GridBagConstraints.HORIZONTAL;
-        aiPromptTextArea = new JTextArea(4, 20);
-        aiPromptTextArea.setText("What should I watch for in today's market?");
-        aiPromptTextArea.setLineWrap(true);
-        aiPromptTextArea.setWrapStyleWord(true);
-        JScrollPane promptScrollPane = new JScrollPane(aiPromptTextArea);
-        promptScrollPane.setPreferredSize(new Dimension(400, 80));
-        promptScrollPane.setMinimumSize(new Dimension(300, 60));
-        settingsPanel.add(promptScrollPane, gbc);
-        gbc.fill = GridBagConstraints.NONE;  // Reset fill
-
-        gbc.gridy = 15; gbc.gridwidth = 1;
-        JButton aiChatButton = new JButton("💬 Ask AI");
-        aiChatButton.setToolTipText("Ask Claude AI any trading question");
+        gbc.gridy = 14; gbc.gridwidth = 1;
+        JButton aiChatButton = new JButton("💬 Open AI Chat");
+        aiChatButton.setToolTipText("Open AI Chat window");
         aiChatButton.setEnabled(aiAuthToken != null && !aiAuthToken.isEmpty());
-        aiChatButton.addActionListener(e -> triggerAIChat());
+        aiChatButton.addActionListener(e -> openAIChatWindow());
         settingsPanel.add(aiChatButton, gbc);
-
-        gbc.gridy = 16; gbc.gridwidth = 1;
-        aiReevaluateButton = new JButton("🔄 Optimize Thresholds");
-        aiReevaluateButton.setToolTipText("Ask AI to optimize trading thresholds based on market conditions");
-        aiReevaluateButton.setEnabled(aiAuthToken != null && !aiAuthToken.isEmpty());
-        aiReevaluateButton.addActionListener(e -> triggerAIReevaluation());
-        settingsPanel.add(aiReevaluateButton, gbc);
 
         // Safety Controls section
         gbc.gridx = 0; gbc.gridy = 17; gbc.gridwidth = 2;
@@ -609,13 +587,6 @@ public class OrderFlowStrategyEnhanced implements
         JButton applyButton = new JButton("Apply Settings");
         applyButton.addActionListener(e -> applySettings());
         settingsPanel.add(applyButton, gbc);
-
-        // Open AI Chat button
-        gbc.gridx = 0; gbc.gridy = 24; gbc.gridwidth = 2;
-        chatOpenButton = new JButton("💬 Open AI Chat Window");
-        chatOpenButton.setToolTipText("Open floating AI Chat window (stays open when you close settings)");
-        chatOpenButton.addActionListener(e -> openAIChatWindow());
-        settingsPanel.add(chatOpenButton, gbc);
 
         // Version label (bottom right)
         gbc.gridx = 1; gbc.gridy = 25; gbc.gridwidth = 1;
@@ -777,10 +748,6 @@ public class OrderFlowStrategyEnhanced implements
 
         // Buttons
         gbc.gridx = 0; gbc.gridy = row; gbc.gridwidth = 1; gbc.gridheight = 1;
-        askAIButton = new JButton("🤖 Ask AI");
-        askAIButton.addActionListener(e -> askAICoach());
-        statsPanel.add(askAIButton, gbc);
-        gbc.gridx = 2;
         JButton reportButton = new JButton("📊 Report");
         reportButton.addActionListener(e -> generatePerformanceReport());
         statsPanel.add(reportButton, gbc);
@@ -824,12 +791,33 @@ public class OrderFlowStrategyEnhanced implements
 
         chatWindow.setLayout(new BorderLayout(5, 5));
 
-        // Chat history area (top)
-        chatHistoryArea = new JTextArea();
+        // Chat history area (top) - using JEditorPane with HTML/CSS support
+        chatHistoryArea = new JEditorPane();
         chatHistoryArea.setEditable(false);
-        chatHistoryArea.setWrapStyleWord(true);
-        chatHistoryArea.setLineWrap(true);
+        chatHistoryArea.setContentType("text/html");
         chatHistoryArea.setFont(new Font("SansSerif", Font.PLAIN, 12));
+
+        // Add custom CSS styling - DARK MODE (light text on dark background)
+        String css = "<style>" +
+            "body { font-family: SansSerif, Arial, sans-serif; font-size: 12px; color: #E0E0E0; padding: 8px; background: #1E1E1E; }" +
+            ".user-msg { color: #64B5F6; font-weight: bold; margin: 10px 0; }" +
+            ".ai-msg { color: #E0E0E0; margin: 10px 0; }" +
+            ".system-msg { color: #9E9E9E; font-style: italic; margin: 10px 0; }" +
+            ".timestamp { color: #757575; font-size: 11px; }" +
+            "code { background: #2D2D2D; color: #FFFFFF; padding: 2px 8px; border-radius: 4px; font-family: Monaco, monospace; }" +
+            "pre { background: #2D2D2D; padding: 12px; border-radius: 6px; overflow-x: auto; margin: 10px 0; border: 1px solid #3D3D3D; }" +
+            "strong { color: #FFFFFF; }" +
+            "em { color: #B0B0B0; }" +
+            "h1, h2, h3 { margin: 12px 0 8px 0; color: #FFFFFF; font-weight: bold; }" +
+            "ul, ol { margin: 8px 0; padding-left: 20px; }" +
+            "li { margin: 4px 0; }" +
+            "a { color: #64B5F6; text-decoration: underline; }" +
+            "hr { border: none; border-top: 1px solid #3D3D3D; margin: 12px 0; }" +
+            "</style>";
+
+        chatHtmlContent = new StringBuilder();
+        chatHtmlContent.append("<html><head>").append(css).append("</head><body>");
+
         JScrollPane historyScrollPane = new JScrollPane(chatHistoryArea);
         historyScrollPane.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_ALWAYS);
 
@@ -936,17 +924,42 @@ public class OrderFlowStrategyEnhanced implements
         SwingUtilities.invokeLater(() -> {
             String timestamp = new SimpleDateFormat("HH:mm:ss").format(new Date());
 
-            // Format message based on role
-            String formattedMsg;
-            if (role.equals("You")) {
-                formattedMsg = String.format("[%s] You: %s\n", timestamp, message);
-            } else if (role.equals("AI")) {
-                formattedMsg = String.format("[%s] AI: %s\n", timestamp, message);
+            // Parse markdown to HTML for AI messages
+            String formattedMessage = message;
+            if (role.equals("AI")) {
+                formattedMessage = parseMarkdownToHtml(message);
             } else {
-                formattedMsg = String.format("[%s] %s\n\n", timestamp, message);
+                // Escape HTML special characters for user messages
+                formattedMessage = message
+                    .replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;");
             }
 
-            chatHistoryArea.append(formattedMsg);
+            // Convert newlines to <br/>
+            formattedMessage = formattedMessage.replace("\n", "<br/>");
+
+            // Format message based on role with HTML/CSS
+            String htmlMsg;
+            if (role.equals("You")) {
+                htmlMsg = String.format(
+                    "<div class='user-msg'><span class='timestamp'>[%s]</span> <strong>You:</strong> %s</div>",
+                    timestamp, formattedMessage);
+            } else if (role.equals("AI")) {
+                htmlMsg = String.format(
+                    "<div class='ai-msg'><span class='timestamp'>[%s]</span> <strong>AI:</strong><br/>%s</div>",
+                    timestamp, formattedMessage);
+            } else {
+                htmlMsg = String.format(
+                    "<div class='system-msg'><span class='timestamp'>[%s]</span> %s</div>",
+                    timestamp, formattedMessage);
+            }
+
+            // Append to HTML content
+            chatHtmlContent.append(htmlMsg);
+
+            // Update JEditorPane with complete HTML document
+            chatHistoryArea.setText(chatHtmlContent.toString() + "</body></html>");
 
             // Auto-scroll to bottom
             chatHistoryArea.setCaretPosition(chatHistoryArea.getDocument().getLength());
@@ -954,6 +967,68 @@ public class OrderFlowStrategyEnhanced implements
             // Store message
             chatMessages.add(new String[]{role, message});
         });
+    }
+
+    /**
+     * Parse markdown to HTML for chat rendering
+     */
+    private String parseMarkdownToHtml(String markdown) {
+        String html = markdown;
+
+        // Escape HTML special characters first
+        html = html
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;");
+
+        // Parse inline code: `code` -> <code>code</code>
+        html = html.replaceAll("`([^`]+)`", "<code>$1</code>");
+
+        // Parse bold: **text** -> <strong>text</strong>
+        html = html.replaceAll("\\*\\*([^*]+?)\\*\\*", "<strong>$1</strong>");
+
+        // Parse italic: *text* -> <em>text</em>
+        html = html.replaceAll("\\*([^*]+?)\\*", "<em>$1</em>");
+
+        // Parse headers: ### text -> <h3>text</h3>
+        html = html.replaceAll("(?m)^###\\s+(.+)$", "<h3>$1</h3>");
+        html = html.replaceAll("(?m)^##\\s+(.+)$", "<h2>$1</h2>");
+        html = html.replaceAll("(?m)^#\\s+(.+)$", "<h1>$1</h1>");
+
+        // Parse bullet lists: lines starting with * -> <ul><li>...</li></ul>
+        String[] lines = html.split("<br/>");
+        StringBuilder result = new StringBuilder();
+        boolean inList = false;
+
+        for (String line : lines) {
+            String trimmed = line.trim();
+            boolean isBullet = trimmed.startsWith("* ") &&
+                                 !trimmed.startsWith("**") &&
+                                 !trimmed.contains("</strong>") &&
+                                 !trimmed.contains("</em>") &&
+                                 !trimmed.startsWith("<h");  // Exclude headers
+
+            if (isBullet) {
+                if (!inList) {
+                    result.append("<ul>");
+                    inList = true;
+                }
+                String item = trimmed.substring(2);
+                result.append("<li>").append(item).append("</li>");
+            } else {
+                if (inList) {
+                    result.append("</ul>");
+                    inList = false;
+                }
+                result.append(line);
+            }
+        }
+
+        if (inList) {
+            result.append("</ul>");
+        }
+
+        return result.toString();
     }
 
     private void clearChatHistory() {
@@ -964,7 +1039,26 @@ public class OrderFlowStrategyEnhanced implements
                 JOptionPane.YES_NO_OPTION);
 
             if (confirm == JOptionPane.YES_OPTION) {
-                chatHistoryArea.setText("");
+                // Reset HTML content
+                String css = "<style>" +
+                    "body { font-family: SansSerif, Arial, sans-serif; font-size: 12px; color: #E0E0E0; padding: 8px; background: #1E1E1E; }" +
+                    ".user-msg { color: #64B5F6; font-weight: bold; margin: 10px 0; }" +
+                    ".ai-msg { color: #E0E0E0; margin: 10px 0; }" +
+                    ".system-msg { color: #9E9E9E; font-style: italic; margin: 10px 0; }" +
+                    ".timestamp { color: #757575; font-size: 11px; }" +
+                    "code { background: #2D2D2D; color: #FFFFFF; padding: 2px 8px; border-radius: 4px; font-family: Monaco, monospace; }" +
+                    "pre { background: #2D2D2D; padding: 12px; border-radius: 6px; overflow-x: auto; margin: 10px 0; border: 1px solid #3D3D3D; }" +
+                    "strong { color: #FFFFFF; }" +
+                    "em { color: #B0B0B0; }" +
+                    "h1, h2, h3 { margin: 12px 0 8px 0; color: #FFFFFF; font-weight: bold; }" +
+                    "ul, ol { margin: 8px 0; padding-left: 20px; }" +
+                    "li { margin: 4px 0; }" +
+                    "a { color: #64B5F6; text-decoration: underline; }" +
+                    "hr { border: none; border-top: 1px solid #3D3D3D; margin: 12px 0; }" +
+                    "</style>";
+                chatHtmlContent = new StringBuilder();
+                chatHtmlContent.append("<html><head>").append(css).append("</head><body>");
+                chatHistoryArea.setText(chatHtmlContent.toString() + "</body></html>");
                 chatMessages.clear();
                 appendChatMessage("System", "Chat history cleared.\n\nAsk me anything about trading!");
             }
@@ -1192,14 +1286,8 @@ public class OrderFlowStrategyEnhanced implements
             return;
         }
 
-        // Get prompt from textbox
-        final String userPrompt;
-        String promptText = aiPromptTextArea.getText().trim();
-        if (promptText.isEmpty()) {
-            userPrompt = "What trading advice do you have for current market conditions?";
-        } else {
-            userPrompt = promptText;
-        }
+        // Default prompt
+        final String userPrompt = "What trading advice do you have for current market conditions?";
 
         // Update status
         aiStatusIndicator.setText("🔄 Thinking...");
@@ -1251,11 +1339,8 @@ public class OrderFlowStrategyEnhanced implements
         // Build market context
         AIThresholdService.MarketContext context = buildMarketContext();
 
-        // Get custom prompt from textbox
-        String customPrompt = aiPromptTextArea.getText().trim();
-        if (customPrompt.isEmpty()) {
-            customPrompt = "Optimize thresholds for current market conditions";
-        }
+        // Default custom prompt
+        String customPrompt = "Optimize thresholds for current market conditions";
 
         // Calculate thresholds asynchronously
         aiThresholdService.calculateThresholds(context, customPrompt)
@@ -1507,28 +1592,6 @@ public class OrderFlowStrategyEnhanced implements
         } catch (IOException e) {
             showAlert("Export Failed",
                 "Failed to export data: " + e.getMessage());
-        }
-    }
-
-    private void askAICoach() {
-        String question = JOptionPane.showInputDialog(statsPanel,
-            "Ask the AI Coach a question about:\n" +
-            "• Current market conditions\n" +
-            "• Recent trades\n" +
-            "• Strategy improvements\n" +
-            "• Risk management\n\n" +
-            "Your question:",
-            "Ask AI Coach",
-            JOptionPane.QUESTION_MESSAGE);
-
-        if (question != null && !question.isEmpty()) {
-            // For now, just display a placeholder
-            SwingUtilities.invokeLater(() -> {
-                aiInsightsArea.setText("🤖 AI Coach:\n" +
-                    "Question: " + question + "\n\n" +
-                    "AI integration coming soon!\n" +
-                    "This will connect to Claude SDK for intelligent analysis.");
-            });
         }
     }
 
