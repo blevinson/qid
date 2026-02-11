@@ -17,6 +17,9 @@ This document specifies how to adapt OpenClaw's memory and session patterns for 
 - **Semantic Search**: AI-powered retrieval of relevant historical trading context
 - **Cross-Session Learning**: AI can reference previous trades, signals, and outcomes
 
+**Primary Use Case:**
+This memory pattern enables the **AI Investment Strategizer** (see [AI_INVESTMENT_STRATEGIST_SPEC.md](AI_INVESTMENT_STRATEGIST_SPEC.md)) - a proactive trading agent that searches for setups, places strategic orders, and continuously learns from outcomes.
+
 ---
 
 ## Table of Contents
@@ -1186,6 +1189,12 @@ This specification provides a comprehensive roadmap for implementing OpenClaw's 
 
 ## References
 
+### Primary Documents
+- **AI Investment Strategizer**: [AI_INVESTMENT_STRATEGIST_SPEC.md](AI_INVESTMENT_STRATEGIST_SPEC.md) - Primary use case for memory pattern
+- **Phase 2 Order Management**: [ORDER_FLOW_STRATEGY_README.md](ORDER_FLOW_STRATEGY_README.md) - Order execution integration
+- **Trading Strategy Plan**: [TRADING_STRATEGY_PLAN.md](TRADING_STRATEGY_PLAN.md) - State machine and position logic
+
+### Technical Resources
 - **OpenClaw Source**: `/Users/brant/Projects/openclaw/src/`
 - **Bookmap API Docs**: [Bookmap L1 API Documentation](https://bookmap.com/docs/)
 - **Claude API**: [z.ai API Reference](https://z.ai/docs)
