@@ -553,7 +553,7 @@ public class OrderFlowStrategyEnhanced implements
         gbc.gridx = 1; gbc.gridy = 18; gbc.gridwidth = 1;
         gbc.anchor = GridBagConstraints.EAST;
         gbc.weightx = 1.0;
-        JLabel versionLabel = new JLabel("v0.03.00 (Performance Tracking)");
+        JLabel versionLabel = new JLabel("Order Flow Enhanced");
         versionLabel.setFont(new Font("Arial", Font.ITALIC, 10));
         versionLabel.setForeground(Color.GRAY);
         settingsPanel.add(versionLabel, gbc);
