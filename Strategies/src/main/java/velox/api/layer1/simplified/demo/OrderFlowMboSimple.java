@@ -43,8 +43,8 @@ import velox.gui.StrategyPanel;
  * - Magenta dots = Spoof signals
  * - Yellow dots = Absorption signals
  */
-@Layer1SimpleAttachable
-@Layer1StrategyName("Order Flow MBO")
+// @Layer1SimpleAttachable
+// @Layer1StrategyName("Order Flow MBO")  - Hidden from Bookmap list
 @Layer1ApiVersion(Layer1ApiVersionValue.VERSION2)
 public class OrderFlowMboSimple implements
     CustomModule,

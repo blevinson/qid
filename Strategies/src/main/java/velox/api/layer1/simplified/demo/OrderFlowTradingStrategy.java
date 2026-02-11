@@ -69,8 +69,8 @@ import velox.gui.StrategyPanel;
  * 4. Manage positions with stops/targets
  * 5. Collect data for optimization
  */
-@Layer1SimpleAttachable
-@Layer1StrategyName("Order Flow Trading")
+// @Layer1SimpleAttachable
+// @Layer1StrategyName("Order Flow Trading")  - Hidden from Bookmap list
 @Layer1ApiVersion(Layer1ApiVersionValue.VERSION2)
 public class OrderFlowTradingStrategy implements
     CustomModule,

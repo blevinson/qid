@@ -36,8 +36,8 @@ import velox.gui.StrategyPanel;
  * - Signal Counts (Absorption, Big Player, Retail Traps)
  * - Strategy Status
  */
-@Layer1SimpleAttachable
-@Layer1StrategyName("OF Strategy With Panel")
+// @Layer1SimpleAttachable
+// @Layer1StrategyName("OF Strategy With Panel")  - Hidden from Bookmap list
 @Layer1ApiVersion(Layer1ApiVersionValue.VERSION2)
 public class OrderFlowStrategyWithPanel implements
         CustomModule,

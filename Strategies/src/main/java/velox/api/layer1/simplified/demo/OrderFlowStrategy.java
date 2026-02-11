@@ -31,8 +31,8 @@ import velox.api.layer1.simplified.TradeDataListener;
  * - Delta: Aggressive buyers vs sellers imbalance
  * - Retail Trap: Price moves one way but delta moves opposite (potential reversal)
  */
-@Layer1SimpleAttachable
-@Layer1StrategyName("Order Flow Strategy")
+// @Layer1SimpleAttachable
+// @Layer1StrategyName("Order Flow Strategy")  - Hidden from Bookmap list
 @Layer1ApiVersion(Layer1ApiVersionValue.VERSION2)
 public class OrderFlowStrategy implements
         CustomModule,

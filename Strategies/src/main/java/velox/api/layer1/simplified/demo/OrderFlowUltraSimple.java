@@ -16,8 +16,8 @@ import velox.api.layer1.simplified.Indicator;
 import velox.api.layer1.simplified.InitialState;
 import velox.api.layer1.simplified.TradeDataListener;
 
-@Layer1SimpleAttachable
-@Layer1StrategyName("WHITE DOTS")
+// @Layer1SimpleAttachable
+// @Layer1StrategyName("WHITE DOTS")  - Hidden from Bookmap list
 @Layer1ApiVersion(Layer1ApiVersionValue.VERSION2)
 public class OrderFlowUltraSimple implements CustomModule, TradeDataListener, BboListener {
 

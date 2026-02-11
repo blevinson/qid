@@ -18,8 +18,8 @@ import velox.api.layer1.simplified.TradeDataListener;
 /**
  * Fresh Order Flow Test Strategy - No previous settings history
  */
-@Layer1SimpleAttachable
-@Layer1StrategyName("Order Flow Test 2026")
+// @Layer1SimpleAttachable
+// @Layer1StrategyName("Order Flow Test 2026")  - Hidden from Bookmap list
 @Layer1ApiVersion(Layer1ApiVersionValue.VERSION2)
 public class OrderFlowTestStrategy implements CustomModule, TradeDataListener {
 

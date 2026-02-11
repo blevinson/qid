@@ -21,8 +21,8 @@ import velox.api.layer1.simplified.Indicator;
  * Order Flow Icons - Simplified API version
  * Reads signal file and displays as BUY/SELL indicators
  */
-@Layer1SimpleAttachable
-@Layer1StrategyName("OF Icons Simple")
+// @Layer1SimpleAttachable
+// @Layer1StrategyName("OF Icons Simple")  - Hidden from Bookmap list
 @Layer1ApiVersion(Layer1ApiVersionValue.VERSION2)
 public class OrderFlowIconsSimple implements CustomModule {
 

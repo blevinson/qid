@@ -62,8 +62,8 @@ import velox.api.layer1.simplified.TradeDataListener;
  * - Recent swing highs/lows for structure-based levels
  * - Risk/Reward ratio (default 2:1)
  */
-@Layer1SimpleAttachable
-@Layer1StrategyName("OF Strategy with Trade Signals")
+// @Layer1SimpleAttachable
+// @Layer1StrategyName("OF Strategy with Trade Signals")  - Hidden from Bookmap list
 @Layer1ApiVersion(Layer1ApiVersionValue.VERSION2)
 public class OrderFlowStrategyWithSSP implements
         CustomModule,

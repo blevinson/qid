@@ -20,8 +20,8 @@ import velox.api.layer1.simplified.TradeDataListener;
 /**
  * Simple Order Flow 2026 - Tests if BBO and Trade listeners are working
  */
-@Layer1SimpleAttachable
-@Layer1StrategyName("Order Flow Simple 2026")
+// @Layer1SimpleAttachable
+// @Layer1StrategyName("Order Flow Simple 2026")  - Hidden from Bookmap list
 @Layer1ApiVersion(Layer1ApiVersionValue.VERSION2)
 public class OrderFlowStrategy2026Simple implements
         CustomModule,

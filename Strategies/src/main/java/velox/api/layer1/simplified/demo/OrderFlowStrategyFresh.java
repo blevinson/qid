@@ -20,8 +20,8 @@ import velox.api.layer1.simplified.TradeDataListener;
 /**
  * Order Flow Strategy Fresh - No history conflicts
  */
-@Layer1SimpleAttachable
-@Layer1StrategyName("OF Strategy Final")
+// @Layer1SimpleAttachable
+// @Layer1StrategyName("OF Strategy Final")  - Hidden from Bookmap list
 @Layer1ApiVersion(Layer1ApiVersionValue.VERSION2)
 public class OrderFlowStrategyFresh implements
         CustomModule,

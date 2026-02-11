@@ -16,8 +16,8 @@ import velox.api.layer1.simplified.InitialState;
 /**
  * Simple Order Flow Strategy - Minimal test version
  */
-@Layer1SimpleAttachable
-@Layer1StrategyName("Order Flow Strategy Simple")
+// @Layer1SimpleAttachable
+// @Layer1StrategyName("Order Flow Strategy Simple")  - Hidden from Bookmap list
 @Layer1ApiVersion(Layer1ApiVersionValue.VERSION2)
 public class OrderFlowStrategySimple implements CustomModule {
 

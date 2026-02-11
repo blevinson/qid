@@ -21,8 +21,8 @@ import velox.api.layer1.simplified.Indicator;
 import velox.api.layer1.simplified.InitialState;
 import velox.api.layer1.simplified.TradeDataListener;
 
-@Layer1SimpleAttachable
-@Layer1StrategyName("DIAGNOSTIC")
+// @Layer1SimpleAttachable
+// @Layer1StrategyName("DIAGNOSTIC")  - Hidden from Bookmap list
 @Layer1ApiVersion(Layer1ApiVersionValue.VERSION2)
 public class DiagnosticStrategy implements CustomModule, TradeDataListener, BboListener {
 
