@@ -37,6 +37,9 @@ dependencies {
     compileOnly group: 'com.ibm.icu', name: 'icu4j', version: '71.1'
     testImplementation group: 'com.ibm.icu', name: 'icu4j', version: '71.1'
 
+    // JSON processing for AI responses
+    implementation 'com.google.code.gson:gson:2.8.9'
+
     // Testing dependencies
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.9.3'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.9.3'

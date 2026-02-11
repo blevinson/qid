@@ -115,8 +115,11 @@ public class OrderFlowStrategyEnhanced implements
     private Boolean autoExecution = false;
 
     // ========== ADAPTIVE MODE PARAMETERS ==========
-    @Parameter(name = "Use Adaptive Thresholds")
-    private Boolean useAdaptiveThresholds = true;  // Default: adaptive mode enabled
+    @Parameter(name = "Use AI Adaptive Thresholds")
+    private Boolean useAIAdaptiveThresholds = false;  // Default: AI mode disabled
+
+    @Parameter(name = "AI Re-evaluation Interval (min)")
+    private Integer aiReevaluationInterval = 30;  // Re-evaluate every 30 minutes
 
     // ========== AI TRADING PARAMETERS ==========
     @Parameter(name = "Enable AI Trading")
@@ -144,7 +147,11 @@ public class OrderFlowStrategyEnhanced implements
     private AIIntegrationLayer aiIntegration;
     private AIOrderManager aiOrderManager;
     private OrderExecutor orderExecutor;
+    private AIThresholdService aiThresholdService;
     private final Map<String, SignalData> pendingSignals = new ConcurrentHashMap<>();
+
+    // AI re-evaluation tracking
+    private long lastAIReevaluationTime = 0;
 
     // ========== ENHANCED CONFLUENCE INDICATORS ==========
     private final CVDCalculator cvdCalculator = new CVDCalculator();
@@ -198,9 +205,20 @@ public class OrderFlowStrategyEnhanced implements
     private JButton exportButton;
     private JButton askAIButton;
 
+    // AI Threshold UI Components
+    private JCheckBox aiAdaptiveModeCheckBox;
+    private JButton aiReevaluateButton;
+    private JTextArea aiPromptTextArea;
+    private JLabel aiStatusIndicator;
+
     // ========== STATE ==========
     private Map<String, OrderInfo> orders = new HashMap<>();
     private Map<Integer, List<String>> priceLevels = new HashMap<>();
+
+    // Market state tracking
+    private double lastKnownPrice = 0;
+    private double priceVolatility = 0;
+    private AtomicLong totalVolume = new AtomicLong(0);
 
     // Signal counts
     private final AtomicInteger icebergCount = new AtomicInteger(0);
@@ -336,6 +354,17 @@ public class OrderFlowStrategyEnhanced implements
             log("ℹ️ AI Trading disabled");
         }
 
+        // Initialize AI Threshold Service if token provided
+        if (aiAuthToken != null && !aiAuthToken.isEmpty()) {
+            aiThresholdService = new AIThresholdService(aiAuthToken);
+            log("🤖 AI Threshold Service initialized");
+
+            // Trigger initial AI threshold calculation if AI adaptive mode is enabled
+            if (useAIAdaptiveThresholds) {
+                log("🔄 AI Adaptive mode enabled - will calculate optimal thresholds on first data");
+            }
+        }
+
         // Initialize log files
         try {
             logWriter = new PrintWriter(new FileWriter(LOG_FILE, true));
@@ -460,58 +489,46 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(absorbSizeSpinner, gbc);
 
         gbc.gridx = 0; gbc.gridy = 7; gbc.gridwidth = 2;
-        addSeparator(settingsPanel, "Adaptive Thresholds", gbc);
+        addSeparator(settingsPanel, "AI Adaptive Thresholds", gbc);
 
         gbc.gridy = 8; gbc.gridwidth = 1;
-        settingsPanel.add(new JLabel("Use Adaptive Thresholds:"), gbc);
+        settingsPanel.add(new JLabel("Use AI Adaptive:"), gbc);
         gbc.gridx = 1;
-        adaptiveModeCheckBox = new JCheckBox();
-        adaptiveModeCheckBox.setSelected(useAdaptiveThresholds);
-        adaptiveModeCheckBox.setToolTipText("When enabled, automatically calculates thresholds. When disabled, use manual values below.");
-        adaptiveModeCheckBox.addActionListener(e -> updateAdaptiveMode());
-        settingsPanel.add(adaptiveModeCheckBox, gbc);
+        aiAdaptiveModeCheckBox = new JCheckBox();
+        aiAdaptiveModeCheckBox.setSelected(useAIAdaptiveThresholds);
+        aiAdaptiveModeCheckBox.setToolTipText("When enabled, AI analyzes market conditions and optimizes thresholds automatically");
+        aiAdaptiveModeCheckBox.addActionListener(e -> updateAIAdaptiveMode());
+        settingsPanel.add(aiAdaptiveModeCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 9;
-        JLabel adaptOrderLabel = new JLabel("Adaptive Order Thresh:");
-        adaptOrderLabel.setToolTipText("Dynamic threshold based on recent order activity");
-        settingsPanel.add(adaptOrderLabel, gbc);
-        gbc.gridx = 1;
-        // Clamp value to valid range to handle saved settings
-        int safeOrderThreshold = Math.max(1, Math.min(adaptiveOrderThreshold, 100));
-        adaptOrderSpinner = new JSpinner(new SpinnerNumberModel(safeOrderThreshold, 1, 100, 5));
-        adaptOrderSpinner.setToolTipText("Auto-adjusts based on market conditions (default: 25)");
-        adaptOrderSpinner.setEnabled(!useAdaptiveThresholds);  // Disabled in adaptive mode
-        adaptOrderSpinner.addChangeListener(e -> {
-            if (!useAdaptiveThresholds) {
-                adaptiveOrderThreshold = (Integer) adaptOrderSpinner.getValue();
-                log("📊 Manual Order Threshold: " + adaptiveOrderThreshold);
-            }
-        });
-        settingsPanel.add(adaptOrderSpinner, gbc);
+        gbc.gridx = 0; gbc.gridy = 9; gbc.gridwidth = 2;
+        settingsPanel.add(new JLabel("AI Status:"), gbc);
+        gbc.gridy = 10;
+        aiStatusIndicator = new JLabel("🔴 AI Disabled");
+        aiStatusIndicator.setForeground(Color.GRAY);
+        settingsPanel.add(aiStatusIndicator, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 10;
-        JLabel adaptSizeLabel = new JLabel("Adaptive Size Thresh:");
-        adaptSizeLabel.setToolTipText("Dynamic size threshold based on recent activity");
-        settingsPanel.add(adaptSizeLabel, gbc);
-        gbc.gridx = 1;
-        // Clamp value to valid range to handle saved settings
-        int safeSizeThreshold = Math.max(1, Math.min(adaptiveSizeThreshold, 500));
-        adaptSizeSpinner = new JSpinner(new SpinnerNumberModel(safeSizeThreshold, 1, 500, 25));
-        adaptSizeSpinner.setToolTipText("Auto-adjusts based on market conditions (default: 100)");
-        adaptSizeSpinner.setEnabled(!useAdaptiveThresholds);  // Disabled in adaptive mode
-        adaptSizeSpinner.addChangeListener(e -> {
-            if (!useAdaptiveThresholds) {
-                adaptiveSizeThreshold = (Integer) adaptSizeSpinner.getValue();
-                log("📊 Manual Size Threshold: " + adaptiveSizeThreshold);
-            }
-        });
-        settingsPanel.add(adaptSizeSpinner, gbc);
+        gbc.gridy = 11; gbc.gridwidth = 2;
+        settingsPanel.add(new JLabel("Custom Prompt (optional):"), gbc);
+        gbc.gridy = 12;
+        aiPromptTextArea = new JTextArea(3, 20);
+        aiPromptTextArea.setText("Optimize thresholds for current market conditions");
+        aiPromptTextArea.setLineWrap(true);
+        aiPromptTextArea.setWrapStyleWord(true);
+        JScrollPane promptScrollPane = new JScrollPane(aiPromptTextArea);
+        settingsPanel.add(promptScrollPane, gbc);
+
+        gbc.gridy = 13; gbc.gridwidth = 1;
+        aiReevaluateButton = new JButton("🔄 Re-evaluate Thresholds");
+        aiReevaluateButton.setToolTipText("Ask AI to recalculate optimal thresholds based on current conditions");
+        aiReevaluateButton.setEnabled(!useAIAdaptiveThresholds || aiAuthToken != null && !aiAuthToken.isEmpty());
+        aiReevaluateButton.addActionListener(e -> triggerAIReevaluation());
+        settingsPanel.add(aiReevaluateButton, gbc);
 
         // Safety Controls section
-        gbc.gridx = 0; gbc.gridy = 11; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 14; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Safety Controls", gbc);
 
-        gbc.gridy = 12; gbc.gridwidth = 1;
+        gbc.gridy = 15; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Simulation Mode Only:"), gbc);
         gbc.gridx = 1;
         simModeCheckBox = new JCheckBox();
@@ -519,7 +536,7 @@ public class OrderFlowStrategyEnhanced implements
         simModeCheckBox.addActionListener(e -> updateSimMode());
         settingsPanel.add(simModeCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 13;
+        gbc.gridx = 0; gbc.gridy = 16;
         settingsPanel.add(new JLabel("Enable Auto-Execution:"), gbc);
         gbc.gridx = 1;
         autoExecCheckBox = new JCheckBox();
@@ -528,17 +545,17 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(autoExecCheckBox, gbc);
 
         // Risk Management section
-        gbc.gridx = 0; gbc.gridy = 14; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 17; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Risk Management", gbc);
 
-        gbc.gridy = 15; gbc.gridwidth = 1;
+        gbc.gridy = 18; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Max Position:"), gbc);
         gbc.gridx = 1;
         JSpinner maxPosSpinner = new JSpinner(new SpinnerNumberModel(maxPosition.intValue(), 1, 10, 1));
         maxPosSpinner.addChangeListener(e -> maxPosition = (Integer) maxPosSpinner.getValue());
         settingsPanel.add(maxPosSpinner, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 16;
+        gbc.gridx = 0; gbc.gridy = 19;
         settingsPanel.add(new JLabel("Daily Loss Limit:"), gbc);
         gbc.gridx = 1;
         JSpinner lossLimitSpinner = new JSpinner(new SpinnerNumberModel(dailyLossLimit.intValue(), 100.0, 5000.0, 100.0));
@@ -899,6 +916,205 @@ public class OrderFlowStrategyEnhanced implements
         }
         autoExecution = selected;
         log("🤖 Auto-Execution: " + (autoExecution ? "ENABLED ⚠️" : "DISABLED"));
+    }
+
+    private void updateAIAdaptiveMode() {
+        boolean selected = aiAdaptiveModeCheckBox.isSelected();
+        useAIAdaptiveThresholds = selected;
+
+        if (aiThresholdService == null) {
+            SwingUtilities.invokeLater(() -> aiAdaptiveModeCheckBox.setSelected(false));
+            showAlert("AI Not Available",
+                "AI Threshold Service requires an AI Auth Token.\n\n" +
+                "Please set your 'AI Auth Token' parameter first.");
+            return;
+        }
+
+        if (selected) {
+            aiStatusIndicator.setText("🟢 AI Active");
+            aiStatusIndicator.setForeground(new Color(0, 150, 0));
+            log("🤖 AI Adaptive Mode: ENABLED");
+            log("   AI will analyze market conditions and optimize thresholds");
+
+            // Trigger initial calculation
+            triggerAIReevaluation();
+        } else {
+            aiStatusIndicator.setText("🔴 AI Disabled");
+            aiStatusIndicator.setForeground(Color.GRAY);
+            log("🎛️ AI Adaptive Mode: DISABLED (using manual settings)");
+        }
+    }
+
+    private void triggerAIReevaluation() {
+        if (aiThresholdService == null) {
+            showAlert("AI Not Available",
+                "AI Threshold Service is not initialized.\n\n" +
+                "Please set your 'AI Auth Token' parameter and restart.");
+            return;
+        }
+
+        // Disable button during calculation
+        aiReevaluateButton.setEnabled(false);
+        aiStatusIndicator.setText("🔄 Calculating...");
+        aiStatusIndicator.setForeground(Color.BLUE);
+
+        log("🔄 Triggering AI threshold re-evaluation...");
+
+        // Build market context
+        AIThresholdService.MarketContext context = buildMarketContext();
+
+        // Get custom prompt from textbox
+        String customPrompt = aiPromptTextArea.getText().trim();
+        if (customPrompt.isEmpty()) {
+            customPrompt = "Optimize thresholds for current market conditions";
+        }
+
+        // Calculate thresholds asynchronously
+        aiThresholdService.calculateThresholds(context, customPrompt)
+            .thenAcceptAsync(recommendation -> {
+                // Apply AI recommendations
+                applyAIRecommendations(recommendation);
+
+                // Re-enable button
+                SwingUtilities.invokeLater(() -> {
+                    aiReevaluateButton.setEnabled(true);
+                    if (useAIAdaptiveThresholds) {
+                        aiStatusIndicator.setText("🟢 AI Active");
+                        aiStatusIndicator.setForeground(new Color(0, 150, 0));
+                    } else {
+                        aiStatusIndicator.setText("✅ Updated");
+                        aiStatusIndicator.setForeground(new Color(0, 100, 200));
+                    }
+                });
+            }, SwingUtilities::invokeLater)
+            .exceptionally(ex -> {
+                String errorMsg = "AI calculation failed: " + ex.getMessage();
+                log("❌ " + errorMsg);
+                SwingUtilities.invokeLater(() -> {
+                    showAlert("AI Calculation Failed", errorMsg);
+                    aiReevaluateButton.setEnabled(true);
+                    aiStatusIndicator.setText("❌ Error");
+                    aiStatusIndicator.setForeground(Color.RED);
+                });
+                return null;
+            });
+    }
+
+    private AIThresholdService.MarketContext buildMarketContext() {
+        AIThresholdService.MarketContext context = new AIThresholdService.MarketContext(alias);
+
+        // Current market state
+        context.currentPrice = getCurrentPrice();
+        context.totalVolume = totalVolume.get();
+        context.cvd = cvdCalculator.getCVD();
+        context.trend = determineTrend().name;
+        context.emaAlignment = getEMAAlignmentCount();
+        context.isVolatile = isVolatileMarket();
+        context.timeOfDay = getCurrentTimeOfDay();
+
+        // Performance stats
+        context.totalSignals = icebergCount.get() + spoofCount.get() + absorptionCount.get();
+        context.winningSignals = todayWinCount.get();
+        context.winRate = context.totalSignals > 0 ?
+            (double) context.winningSignals / context.totalSignals : 0.0;
+        context.recentSignals = getRecentSignalCount(10); // Last 10 minutes
+        context.avgScore = getAverageSignalScore();
+
+        return context;
+    }
+
+    private void applyAIRecommendations(AIThresholdService.ThresholdRecommendation rec) {
+        log("🤖 AI Threshold Recommendations:");
+        log("   Min Confluence Score: " + rec.minConfluenceScore);
+        log("   Iceberg Min Orders: " + rec.icebergMinOrders);
+        log("   Spoof Min Size: " + rec.spoofMinSize);
+        log("   Absorption Min Size: " + rec.absorptionMinSize);
+        log("   Threshold Multiplier: " + rec.thresholdMultiplier);
+        log("   Confidence: " + rec.confidence);
+        log("   Reasoning: " + rec.reasoning);
+
+        // Apply recommendations
+        icebergMinOrders = rec.icebergMinOrders;
+        spoofMinSize = rec.spoofMinSize;
+        absorptionMinSize = rec.absorptionMinSize;
+
+        log("✅ AI thresholds applied successfully");
+
+        // Show details dialog
+        StringBuilder details = new StringBuilder();
+        details.append("AI Analysis Complete\n\n");
+        details.append("Confidence: ").append(rec.confidence).append("\n\n");
+        details.append("New Thresholds:\n");
+        details.append("• Min Confluence Score: ").append(rec.minConfluenceScore).append("\n");
+        details.append("• Iceberg Min Orders: ").append(rec.icebergMinOrders).append("\n");
+        details.append("• Spoof Min Size: ").append(rec.spoofMinSize).append("\n");
+        details.append("• Absorption Min Size: ").append(rec.absorptionMinSize).append("\n\n");
+        details.append("Reasoning:\n").append(rec.reasoning).append("\n\n");
+        details.append("Factors:\n");
+        for (String factor : rec.factors) {
+            details.append("• ").append(factor).append("\n");
+        }
+
+        SwingUtilities.invokeLater(() ->
+            JOptionPane.showMessageDialog(settingsPanel,
+                details.toString(),
+                "AI Threshold Recommendations",
+                JOptionPane.INFORMATION_MESSAGE)
+        );
+
+        lastAIReevaluationTime = System.currentTimeMillis();
+    }
+
+    // Helper methods for market context
+    private double getCurrentPrice() {
+        // Return last known price or 0
+        return lastKnownPrice > 0 ? lastKnownPrice : 0.0;
+    }
+
+    private int getEMAAlignmentCount() {
+        int count = 0;
+        double price = getCurrentPrice();
+
+        if (ema9.isInitialized() && price > ema9.getEMA()) count++;
+        if (ema21.isInitialized() && price > ema21.getEMA()) count++;
+        if (ema50.isInitialized() && price > ema50.getEMA()) count++;
+
+        return count;
+    }
+
+    private boolean isVolatileMarket() {
+        // Simple volatility check: price movement in last minute
+        return priceVolatility > 0.5; // > 0.5% movement = volatile
+    }
+
+    private String getCurrentTimeOfDay() {
+        int hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
+        if (hour >= 9 && hour < 12) return "Morning";
+        if (hour >= 12 && hour < 15) return "Midday";
+        if (hour >= 15 && hour < 18) return "Afternoon";
+        return "Evening";
+    }
+
+    private int getRecentSignalCount(int minutes) {
+        // Count signals in last N minutes
+        long cutoffTime = System.currentTimeMillis() - (minutes * 60 * 1000L);
+        int count = 0;
+        for (SignalPerformance perf : trackedSignals.values()) {
+            if (perf.timestamp > cutoffTime) count++;
+        }
+        return count;
+    }
+
+    private double getAverageSignalScore() {
+        if (trackedSignals.isEmpty()) return 0.0;
+
+        double total = 0;
+        int count = 0;
+        for (SignalPerformance perf : trackedSignals.values()) {
+            total += perf.score;
+            count++;
+        }
+        return count > 0 ? total / count : 0.0;
     }
 
     private void applySettings() {
