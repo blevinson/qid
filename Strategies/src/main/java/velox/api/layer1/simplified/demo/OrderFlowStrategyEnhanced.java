@@ -696,7 +696,7 @@ public class OrderFlowStrategyEnhanced implements
         gbc.gridx = 1; gbc.gridy = 28; gbc.gridwidth = 1;
         gbc.anchor = GridBagConstraints.EAST;
         gbc.weightx = 1.0;
-        JLabel versionLabel = new JLabel("Qid v2.0 - AI Trading with Memory");
+        JLabel versionLabel = new JLabel("Qid v2.1 - AI Trading with Memory");
         versionLabel.setFont(new Font("Arial", Font.ITALIC, 10));
         versionLabel.setForeground(Color.GRAY);
         settingsPanel.add(versionLabel, gbc);
