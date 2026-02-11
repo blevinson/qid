@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.ConcurrentHashMap;
 
 import javax.swing.*;
+import java.nio.file.Path;
 
 import velox.api.layer1.annotations.Layer1ApiVersion;
 import velox.api.layer1.annotations.Layer1ApiVersionValue;
@@ -155,6 +156,8 @@ public class OrderFlowStrategyEnhanced implements
     private AIOrderManager aiOrderManager;
     private OrderExecutor orderExecutor;
     private AIThresholdService aiThresholdService;
+    private Object memoryService;  // TradingMemoryService - initialized as Object to avoid loading issues
+    private AIInvestmentStrategist aiStrategist;
     private final Map<String, SignalData> pendingSignals = new ConcurrentHashMap<>();
 
     // AI re-evaluation tracking
@@ -385,6 +388,41 @@ public class OrderFlowStrategyEnhanced implements
             log("   Confluence Threshold: " + confluenceThreshold);
         } else {
             log("ℹ️ AI Trading disabled");
+        }
+
+        // Initialize Memory & Sessions (Phase 1)
+        try {
+            if (aiAuthToken != null && !aiAuthToken.isEmpty()) {
+                log("🧠 Initializing Memory Service...");
+
+                // Get memory directory from user home
+                String userHome = System.getProperty("user.home");
+                Path memoryDir = java.nio.file.Paths.get(userHome, ".qid", "trading-memory");
+
+                // Import TradingMemoryService
+                velox.api.layer1.simplified.demo.storage.TradingMemoryService service =
+                    new velox.api.layer1.simplified.demo.storage.TradingMemoryService(
+                        memoryDir.toFile(),
+                        aiAuthToken,
+                        java.nio.file.Paths.get(".").toAbsolutePath()
+                    );
+
+                // Sync memory from disk
+                service.sync();
+
+                memoryService = service;
+                log("✅ Memory Service initialized: " + service.getIndexedFileCount() + " files, " +
+                    service.getIndexedChunkCount() + " chunks");
+
+                // Initialize AI Investment Strategist (Phase 3)
+                aiStrategist = new AIInvestmentStrategist(service, aiAuthToken);
+                log("✅ AI Investment Strategist initialized");
+            } else {
+                log("⚠️ Memory Service disabled (no API token)");
+            }
+        } catch (Exception e) {
+            log("⚠️ Memory Service initialization: " + e.getMessage());
+            e.printStackTrace();
         }
 
         // Initialize AI Threshold Service if token provided
