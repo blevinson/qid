@@ -210,6 +210,8 @@ public class OrderFlowStrategyEnhanced implements
     // Cooldown tracking
     private Map<Integer, Long> lastIcebergSignalTime = new HashMap<>();
     private static final long ICEBERG_COOLDOWN_MS = 10000;
+    private long lastGlobalSignalTime = 0;  // Global cooldown across all price levels
+    private static final long GLOBAL_SIGNAL_COOLDOWN_MS = 2000;  // 2 seconds between ANY signals
     private String lastSignalDirection = null;
     private static final long SIGNAL_DIRECTION_COOLDOWN_MS = 30000;
 
@@ -1100,13 +1102,18 @@ public class OrderFlowStrategyEnhanced implements
             long now = System.currentTimeMillis();
             Long lastSignalTimeAtPrice = lastIcebergSignalTime.get(price);
 
-            if (lastSignalTimeAtPrice == null || (now - lastSignalTimeAtPrice) >= ICEBERG_COOLDOWN_MS) {
+            // Check BOTH per-price cooldown AND global signal cooldown
+            boolean priceCooldownPassed = lastSignalTimeAtPrice == null || (now - lastSignalTimeAtPrice) >= ICEBERG_COOLDOWN_MS;
+            boolean globalCooldownPassed = (now - lastGlobalSignalTime) >= GLOBAL_SIGNAL_COOLDOWN_MS;
+
+            if (priceCooldownPassed && globalCooldownPassed) {
                 int totalSize = ordersAtPrice.stream()
                     .mapToInt(id -> orders.getOrDefault(id, new OrderInfo()).size)
                     .sum();
 
                 if (totalSize >= adaptiveSizeThreshold) {
                     lastIcebergSignalTime.put(price, now);
+                    lastGlobalSignalTime = now;  // Update global cooldown timer
 
                     String direction = isBid ? "BUY" : "SELL";
                     String signal = String.format("ICEBERG|%s|%d|%d",
