@@ -147,7 +147,7 @@ public class OrderFlowStrategyEnhanced implements
     private AIIntegrationLayer aiIntegration;
     private AIOrderManager aiOrderManager;
     private OrderExecutor orderExecutor;
-    private AIThresholdService aiThresholdService;
+    // private AIThresholdService aiThresholdService;  // TODO: Enable when Java 17 + Gson available
     private final Map<String, SignalData> pendingSignals = new ConcurrentHashMap<>();
 
     // AI re-evaluation tracking
@@ -355,6 +355,8 @@ public class OrderFlowStrategyEnhanced implements
         }
 
         // Initialize AI Threshold Service if token provided
+        // TODO: Enable when Java 17 + Gson available
+        /*
         if (aiAuthToken != null && !aiAuthToken.isEmpty()) {
             aiThresholdService = new AIThresholdService(aiAuthToken);
             log("🤖 AI Threshold Service initialized");
@@ -364,6 +366,7 @@ public class OrderFlowStrategyEnhanced implements
                 log("🔄 AI Adaptive mode enabled - will calculate optimal thresholds on first data");
             }
         }
+        */
 
         // Initialize log files
         try {
@@ -922,6 +925,15 @@ public class OrderFlowStrategyEnhanced implements
         boolean selected = aiAdaptiveModeCheckBox.isSelected();
         useAIAdaptiveThresholds = selected;
 
+        // TODO: Enable when Java 17 + Gson available
+        SwingUtilities.invokeLater(() -> aiAdaptiveModeCheckBox.setSelected(false));
+        showAlert("AI Feature Coming Soon",
+            "AI Adaptive Thresholds requires Java 17.\n\n" +
+            "Please install Java 17 to use this feature.\n" +
+            "See docs/AI_ADAPTIVE_THRESHOLDS_README.md for details.");
+        return;
+
+        /*
         if (aiThresholdService == null) {
             SwingUtilities.invokeLater(() -> aiAdaptiveModeCheckBox.setSelected(false));
             showAlert("AI Not Available",
@@ -943,9 +955,18 @@ public class OrderFlowStrategyEnhanced implements
             aiStatusIndicator.setForeground(Color.GRAY);
             log("🎛️ AI Adaptive Mode: DISABLED (using manual settings)");
         }
+        */
     }
 
     private void triggerAIReevaluation() {
+        // TODO: Enable when Java 17 + Gson available
+        showAlert("AI Feature Coming Soon",
+            "AI Adaptive Thresholds requires Java 17.\n\n" +
+            "Please install Java 17 to use this feature.\n" +
+            "See docs/AI_ADAPTIVE_THRESHOLDS_README.md for details.");
+        return;
+
+        /*
         if (aiThresholdService == null) {
             showAlert("AI Not Available",
                 "AI Threshold Service is not initialized.\n\n" +
@@ -998,8 +1019,11 @@ public class OrderFlowStrategyEnhanced implements
                 });
                 return null;
             });
+        */
     }
 
+    // TODO: Enable when Java 17 + Gson available
+    /*
     private AIThresholdService.MarketContext buildMarketContext() {
         AIThresholdService.MarketContext context = new AIThresholdService.MarketContext(alias);
 
@@ -1064,6 +1088,7 @@ public class OrderFlowStrategyEnhanced implements
 
         lastAIReevaluationTime = System.currentTimeMillis();
     }
+    */
 
     // Helper methods for market context
     private double getCurrentPrice() {

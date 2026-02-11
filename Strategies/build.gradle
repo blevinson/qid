@@ -38,7 +38,8 @@ dependencies {
     testImplementation group: 'com.ibm.icu', name: 'icu4j', version: '71.1'
 
     // JSON processing for AI responses
-    implementation 'com.google.code.gson:gson:2.8.9'
+    // TODO: Uncomment when Java 17 is available
+    // implementation 'com.google.code.gson:gson:2.8.9'
 
     // Testing dependencies
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.9.3'
