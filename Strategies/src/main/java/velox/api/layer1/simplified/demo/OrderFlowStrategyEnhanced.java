@@ -61,7 +61,8 @@ public class OrderFlowStrategyEnhanced implements
     MarketByOrderDepthDataListener,
     TradeDataListener,
     BboListener,
-    CustomSettingsPanelProvider {
+    CustomSettingsPanelProvider,
+    AIOrderManager.AIMarkerCallback {
 
     // ========== PERFORMANCE TRACKING ==========
     private Map<Integer, SignalPerformance> trackedSignals = new ConcurrentHashMap<>();
@@ -142,6 +143,12 @@ public class OrderFlowStrategyEnhanced implements
     private int icebergMarkerCount = 0;     // Track number of markers
     private Indicator spoofingMarker;       // MAGENTA triangle markers
     private Indicator absorptionMarker;     // YELLOW square markers
+
+    // ========== INDICATORS (Layer 2: AI Action Markers) ==========
+    private Indicator aiLongEntryMarker;    // CYAN circle markers
+    private Indicator aiShortEntryMarker;   // PINK circle markers
+    private Indicator aiExitMarker;         // SL/TP/BE markers
+    private Indicator aiSkipMarker;         // WHITE circle markers
 
     // ========== AI COMPONENTS ==========
     private AIIntegrationLayer aiIntegration;
@@ -310,6 +317,19 @@ public class OrderFlowStrategyEnhanced implements
         absorptionMarker = api.registerIndicator("Absorption Markers", GraphType.PRIMARY);
         absorptionMarker.setColor(Color.YELLOW);
 
+        // Create AI action MARKER indicators (Layer 2)
+        aiLongEntryMarker = api.registerIndicator("🔵 AI LONG ENTRY", GraphType.PRIMARY);
+        aiLongEntryMarker.setColor(Color.CYAN);
+
+        aiShortEntryMarker = api.registerIndicator("🟣 AI SHORT ENTRY", GraphType.PRIMARY);
+        aiShortEntryMarker.setColor(Color.PINK);
+
+        aiExitMarker = api.registerIndicator("AI Exits (SL/TP/BE)", GraphType.PRIMARY);
+        aiExitMarker.setColor(Color.ORANGE);
+
+        aiSkipMarker = api.registerIndicator("⚪ AI SKIPS", GraphType.PRIMARY);
+        aiSkipMarker.setColor(Color.WHITE);
+
         // Initialize AI components if enabled
         if (enableAITrading && aiAuthToken != null && !aiAuthToken.isEmpty()) {
             log("🤖 Initializing AI Trading System...");
@@ -343,13 +363,13 @@ public class OrderFlowStrategyEnhanced implements
             );
             aiIntegration.setSessionPlan(sessionPlan);
 
-            // Create AI order manager with logger wrapper
+            // Create AI order manager with logger wrapper and marker callback
             aiOrderManager = new AIOrderManager(orderExecutor, new AIIntegrationLayer.AIStrategyLogger() {
                 @Override
                 public void log(String message, Object... args) {
                     OrderFlowStrategyEnhanced.this.log(message);
                 }
-            });
+            }, this);  // Pass 'this' as the marker callback
             aiOrderManager.breakEvenEnabled = true;
             aiOrderManager.breakEvenTicks = 3;
             aiOrderManager.maxPositions = maxPosition;
@@ -2591,5 +2611,84 @@ public class OrderFlowStrategyEnhanced implements
 
         g.dispose();
         return icon;
+    }
+
+    // ========== AI MARKER CALLBACK IMPLEMENTATION ==========
+
+    @Override
+    public void onEntryMarker(boolean isLong, int price, int score, String reasoning) {
+        try {
+            // Create icon based on direction
+            BufferedImage icon = isLong ?
+                AIMarkerIcons.createLongEntryIcon() :   // CYAN circle
+                AIMarkerIcons.createShortEntryIcon();   // PINK circle
+
+            // Select appropriate indicator
+            Indicator markerIndicator = isLong ? aiLongEntryMarker : aiShortEntryMarker;
+
+            // Add marker to chart
+            markerIndicator.addIcon(price, icon, 3, 3);
+
+            log("📍 AI ENTRY MARKER: " + (isLong ? "LONG" : "SHORT") +
+                " @ " + price + " (Score: " + score + ")");
+        } catch (Exception e) {
+            log("❌ Failed to place entry marker: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public void onSkipMarker(int price, int score, String reasoning) {
+        try {
+            // Create skip icon (WHITE circle)
+            BufferedImage icon = AIMarkerIcons.createSkipIcon();
+
+            // Add marker to chart
+            aiSkipMarker.addIcon(price, icon, 3, 3);
+
+            log("⚪ AI SKIP MARKER @ " + price + " (Score: " + score +
+                ", Reason: " + reasoning + ")");
+        } catch (Exception e) {
+            log("❌ Failed to place skip marker: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public void onExitMarker(int price, String reason, double pnl, boolean isWin) {
+        try {
+            // Create icon based on exit reason
+            BufferedImage icon;
+            if (reason.contains("Stop Loss")) {
+                icon = AIMarkerIcons.createStopLossIcon();  // ORANGE X
+            } else if (reason.contains("Take Profit")) {
+                icon = AIMarkerIcons.createTakeProfitIcon();  // BLUE diamond
+            } else {
+                icon = AIMarkerIcons.createStopLossIcon();  // Default to ORANGE X
+            }
+
+            // Add marker to chart
+            aiExitMarker.addIcon(price, icon, 3, 3);
+
+            String emoji = isWin ? "💎" : "🛑";
+            log(emoji + " AI EXIT MARKER @ " + price + " (P&L: $" +
+                String.format("%.2f", pnl) + ", Reason: " + reason + ")");
+        } catch (Exception e) {
+            log("❌ Failed to place exit marker: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public void onBreakEvenMarker(int newStopPrice, int triggerPrice) {
+        try {
+            // Create break-even icon (YELLOW square)
+            BufferedImage icon = AIMarkerIcons.createBreakEvenIcon();
+
+            // Add marker to chart
+            aiExitMarker.addIcon(newStopPrice, icon, 3, 3);
+
+            log("🟡 AI BREAK-EVEN MARKER @ " + newStopPrice +
+                " (Stop moved from " + triggerPrice + ")");
+        } catch (Exception e) {
+            log("❌ Failed to place break-even marker: " + e.getMessage());
+        }
     }
 }

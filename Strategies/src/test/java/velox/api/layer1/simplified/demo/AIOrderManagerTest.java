@@ -33,7 +33,8 @@ public class AIOrderManagerTest {
     void setUp() {
         orderExecutor = new TestOrderExecutor();
         logger = new TestStrategyLogger();
-        orderManager = new AIOrderManager(orderExecutor, logger);
+        // Pass null for marker callback in tests (not needed for unit tests)
+        orderManager = new AIOrderManager(orderExecutor, logger, null);
     }
 
     @Test
