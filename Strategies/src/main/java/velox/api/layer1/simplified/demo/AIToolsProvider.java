@@ -5,6 +5,14 @@ import java.util.function.Supplier;
 import java.util.function.BiFunction;
 
 /**
+ * Functional interface for three-argument consumers
+ */
+@FunctionalInterface
+interface TriConsumer<T, U, V> {
+    void accept(T t, U u, V v);
+}
+
+/**
  * AI Tools Provider
  * Provides tools that the AI can call to get real-time trading data
  * and make adjustments to the trading system
@@ -34,6 +42,9 @@ public class AIToolsProvider {
 
     // Threshold adjustment callback (strategy handles actual adjustment)
     private BiFunction<String, Integer, Boolean> thresholdAdjuster;
+
+    // Notification callback (strategy handles actual notification)
+    private TriConsumer<String, String, String> notificationCallback;
 
     // Recent adjustments for feedback
     private final List<Map<String, Object>> recentAdjustments = new ArrayList<>();
@@ -215,6 +226,34 @@ public class AIToolsProvider {
                 "required": []
             }
         }
+        """,
+        """
+        {
+            "name": "notify_user",
+            "description": "Send a notification to the user. Use this to alert the user about important events, recommendations, or when human input is needed. The notification appears in the chat panel.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "The message to display to the user"
+                    },
+                    "priority": {
+                        "type": "string",
+                        "enum": ["high", "normal", "low"],
+                        "description": "Priority level. High = urgent/alert, normal = standard, low = informational",
+                        "default": "normal"
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": ["trade_alert", "signal_detected", "threshold_change", "risk_warning", "info"],
+                        "description": "Category of notification for styling",
+                        "default": "info"
+                    }
+                },
+                "required": ["message"]
+            }
+        }
         """
     };
 
@@ -230,6 +269,7 @@ public class AIToolsProvider {
     public void setThresholdsSupplier(Supplier<Map<String, Integer>> supplier) { this.thresholdsSupplier = supplier; }
     public void setPerformanceSupplier(Supplier<Map<String, Object>> supplier) { this.performanceSupplier = supplier; }
     public void setThresholdAdjuster(BiFunction<String, Integer, Boolean> adjuster) { this.thresholdAdjuster = adjuster; }
+    public void setNotificationCallback(TriConsumer<String, String, String> callback) { this.notificationCallback = callback; }
 
     // ========== TOOL EXECUTION ==========
 
@@ -255,6 +295,7 @@ public class AIToolsProvider {
                 case "adjust_threshold" -> adjustThreshold(arguments);
                 case "get_recent_adjustments" -> getRecentAdjustments(arguments);
                 case "recommend_improvements" -> recommendImprovements(arguments);
+                case "notify_user" -> notifyUser(arguments);
                 default -> "{\"error\": \"Unknown tool: " + toolName + "\"}";
             };
         } catch (Exception e) {
@@ -361,13 +402,16 @@ public class AIToolsProvider {
         }
 
         return String.format(
-            "{\"session_id\": \"%s\", \"phase\": \"%s\", \"trades\": %s, \"wins\": %s, \"losses\": %s, \"pnl\": %s, \"warmup_complete\": %s}",
+            "{\"session_id\": \"%s\", \"phase\": \"%s\", \"minutes\": %s, \"trades\": %s, \"wins\": %s, \"losses\": %s, \"pnl\": %s, \"win_rate\": %s, \"active_positions\": %s, \"warmup_complete\": %s}",
             session.getOrDefault("sessionId", ""),
             session.getOrDefault("phase", ""),
+            session.getOrDefault("minutesIntoSession", 0),
             session.getOrDefault("trades", 0),
             session.getOrDefault("wins", 0),
             session.getOrDefault("losses", 0),
             session.getOrDefault("pnl", 0),
+            session.getOrDefault("winRate", 0.0),
+            session.getOrDefault("activePositions", 0),
             session.getOrDefault("warmupComplete", false)
         );
     }
@@ -642,6 +686,37 @@ public class AIToolsProvider {
         sb.append("]");
         sb.append("}");
         return sb.toString();
+    }
+
+    /**
+     * Send a notification to the user
+     * AI can use this to push alerts, recommendations, or requests for input
+     */
+    private String notifyUser(Map<String, Object> arguments) {
+        if (arguments == null) {
+            return "{\"success\": false, \"error\": \"Missing arguments\"}";
+        }
+
+        String message = (String) arguments.get("message");
+        if (message == null || message.trim().isEmpty()) {
+            return "{\"success\": false, \"error\": \"Missing message\"}";
+        }
+
+        String priority = (String) arguments.getOrDefault("priority", "normal");
+        String category = (String) arguments.getOrDefault("category", "info");
+
+        // Call the notification callback if available
+        if (notificationCallback != null) {
+            try {
+                notificationCallback.accept(category, message, priority);
+                return String.format("{\"success\": true, \"category\": \"%s\", \"priority\": \"%s\"}",
+                    category, priority);
+            } catch (Exception e) {
+                return "{\"success\": false, \"error\": \"" + e.getMessage().replace("\"", "\\\"") + "\"}";
+            }
+        } else {
+            return "{\"success\": false, \"error\": \"Notification system not configured\"}";
+        }
     }
 
     /**

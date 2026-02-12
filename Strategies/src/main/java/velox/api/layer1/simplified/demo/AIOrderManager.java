@@ -415,6 +415,27 @@ public class AIOrderManager {
     }
 
     /**
+     * Get total trades count
+     */
+    public int getTotalTrades() {
+        return totalTrades.get();
+    }
+
+    /**
+     * Get winning trades count
+     */
+    public int getWinningTrades() {
+        return winningTrades.get();
+    }
+
+    /**
+     * Get losing trades count
+     */
+    public int getLosingTrades() {
+        return totalTrades.get() - winningTrades.get();
+    }
+
+    /**
      * Check if can take new position
      */
     public boolean canTakeNewPosition() {

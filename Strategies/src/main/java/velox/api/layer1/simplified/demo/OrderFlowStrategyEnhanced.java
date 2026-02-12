@@ -150,6 +150,19 @@ public class OrderFlowStrategyEnhanced implements
     @Parameter(name = "AI Auth Token")
     private String aiAuthToken = "8a4f5b950ea142c98746d5a320666414.Yf1MQwtkwfuDbyHw";
 
+    // ========== NOTIFICATION SETTINGS ==========
+    @Parameter(name = "Enable Event Notifications")
+    private Boolean enableEventNotifications = true;  // Trade/signal events
+
+    @Parameter(name = "Enable AI Notifications")
+    private Boolean enableAINotifications = true;  // AI can push alerts
+
+    @Parameter(name = "Enable Periodic Updates")
+    private Boolean enablePeriodicUpdates = false;  // Periodic status reports
+
+    @Parameter(name = "Periodic Update Interval (min)")
+    private Integer periodicUpdateIntervalMinutes = 15;  // How often to send updates
+
     // ========== SETTINGS PERSISTENCE (Native Bookmap API) ==========
     /**
      * Settings class for Bookmap native persistence
@@ -296,6 +309,26 @@ public class OrderFlowStrategyEnhanced implements
     private JButton chatClearButton;
     private List<String[]> chatMessages = new ArrayList<>();  // Store [role, message] pairs
 
+    // Approve/Reject buttons for SEMI_AUTO mode
+    private JPanel approvalPanel;
+    private JButton approveButton;
+    private JButton rejectButton;
+    private JLabel approvalLabel;
+
+    // Pending trade request (for SEMI_AUTO approval)
+    private static class PendingTradeRequest {
+        String requestId;
+        boolean isBuy;
+        int quantity;
+        double price;
+        String signalType;
+        int score;
+        long timestamp;
+        Runnable onApprove;
+        Runnable onReject;
+    }
+    private PendingTradeRequest pendingTradeRequest = null;
+
     // ========== STATE ==========
     private Map<String, OrderInfo> orders = new HashMap<>();
     private Map<Integer, List<String>> priceLevels = new HashMap<>();
@@ -427,56 +460,11 @@ public class OrderFlowStrategyEnhanced implements
         aiTakeProfitLine = api.registerIndicator("💎 AI Take Profit", GraphType.PRIMARY);
         aiTakeProfitLine.setColor(Color.GREEN);
 
-        // Initialize AI components if enabled
+        // Initialize AI components if enabled at startup
         if (enableAITrading && aiAuthToken != null && !aiAuthToken.isEmpty()) {
-            log("🤖 Initializing AI Trading System...");
-
-            // Create order executor with logger wrapper using real Bookmap API
-            orderExecutor = new BookmapOrderExecutor(api, alias, new AIIntegrationLayer.AIStrategyLogger() {
-                @Override
-                public void log(String message, Object... args) {
-                    OrderFlowStrategyEnhanced.this.log(message);
-                }
-            });
-
-            // Create AI integration layer with logger wrapper
-            aiIntegration = new AIIntegrationLayer(aiAuthToken, new AIIntegrationLayer.AIStrategyLogger() {
-                @Override
-                public void log(String message, Object... args) {
-                    OrderFlowStrategyEnhanced.this.log(message);
-                }
-            });
-
-            // Set trading session plan
-            String sessionPlan = String.format(
-                "Trading Plan for %s:\n" +
-                "- Max %d trades per day\n" +
-                "- Risk 1%% per trade\n" +
-                "- 1:2 reward-risk ratio\n" +
-                "- Break-even at +3 ticks\n" +
-                "- Focus on quality over quantity\n" +
-                "- Current mode: %s",
-                alias, maxPosition, aiMode
-            );
-            aiIntegration.setSessionPlan(sessionPlan);
-
-            // Create AI order manager with logger wrapper and marker callback
-            aiOrderManager = new AIOrderManager(orderExecutor, new AIIntegrationLayer.AIStrategyLogger() {
-                @Override
-                public void log(String message, Object... args) {
-                    OrderFlowStrategyEnhanced.this.log(message);
-                }
-            }, this);  // Pass 'this' as the marker callback
-            aiOrderManager.breakEvenEnabled = true;
-            aiOrderManager.breakEvenTicks = 3;
-            aiOrderManager.maxPositions = maxPosition;
-            aiOrderManager.maxDailyLoss = dailyLossLimit;
-
-            log("✅ AI Trading System initialized");
-            log("   Mode: " + aiMode);
-            log("   Confluence Threshold: " + confluenceThreshold);
+            initializeAIComponents();
         } else {
-            log("ℹ️ AI Trading disabled");
+            log("ℹ️ AI Trading disabled (enable in settings)");
         }
 
         // Initialize Memory & Sessions (Phase 1)
@@ -810,6 +798,11 @@ public class OrderFlowStrategyEnhanced implements
         enableAITradingCheckBox.addActionListener(e -> {
             enableAITrading = enableAITradingCheckBox.isSelected();
             log("🤖 AI Trading " + (enableAITrading ? "ENABLED" : "DISABLED"));
+
+            // Initialize AI components if enabling and not already initialized
+            if (enableAITrading && aiOrderManager == null) {
+                initializeAIComponents();
+            }
         });
         settingsPanel.add(enableAITradingCheckBox, gbc);
 
@@ -870,14 +863,66 @@ public class OrderFlowStrategyEnhanced implements
         lossLimitSpinner.addChangeListener(e -> dailyLossLimit = (Double) lossLimitSpinner.getValue());
         settingsPanel.add(lossLimitSpinner, gbc);
 
-        // Apply button
+        // Notifications section
         gbc.gridx = 0; gbc.gridy = 27; gbc.gridwidth = 2;
+        addSeparator(settingsPanel, "Notifications", gbc);
+
+        gbc.gridy = 28; gbc.gridwidth = 1;
+        settingsPanel.add(new JLabel("Event Notifications:"), gbc);
+        gbc.gridx = 1;
+        JCheckBox eventNotifCheckBox = new JCheckBox();
+        eventNotifCheckBox.setSelected(enableEventNotifications);
+        eventNotifCheckBox.setToolTipText("Show notifications for trades and signals");
+        eventNotifCheckBox.addActionListener(e -> enableEventNotifications = eventNotifCheckBox.isSelected());
+        settingsPanel.add(eventNotifCheckBox, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 29;
+        settingsPanel.add(new JLabel("AI Notifications:"), gbc);
+        gbc.gridx = 1;
+        JCheckBox aiNotifCheckBox = new JCheckBox();
+        aiNotifCheckBox.setSelected(enableAINotifications);
+        aiNotifCheckBox.setToolTipText("Allow AI to push alerts and notifications");
+        aiNotifCheckBox.addActionListener(e -> enableAINotifications = aiNotifCheckBox.isSelected());
+        settingsPanel.add(aiNotifCheckBox, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 30;
+        settingsPanel.add(new JLabel("Periodic Updates:"), gbc);
+        gbc.gridx = 1;
+        JCheckBox periodicNotifCheckBox = new JCheckBox();
+        periodicNotifCheckBox.setSelected(enablePeriodicUpdates);
+        periodicNotifCheckBox.setToolTipText("Receive periodic status updates from AI");
+        periodicNotifCheckBox.addActionListener(e -> {
+            enablePeriodicUpdates = periodicNotifCheckBox.isSelected();
+            if (enablePeriodicUpdates) {
+                startPeriodicUpdateTimer();
+            } else {
+                stopPeriodicUpdateTimer();
+            }
+        });
+        settingsPanel.add(periodicNotifCheckBox, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 31;
+        settingsPanel.add(new JLabel("Update Interval (min):"), gbc);
+        gbc.gridx = 1;
+        JSpinner periodicIntervalSpinner = new JSpinner(new SpinnerNumberModel(periodicUpdateIntervalMinutes.intValue(), 5, 60, 5));
+        periodicIntervalSpinner.setToolTipText("How often to receive periodic updates");
+        periodicIntervalSpinner.addChangeListener(e -> {
+            periodicUpdateIntervalMinutes = (Integer) periodicIntervalSpinner.getValue();
+            if (enablePeriodicUpdates) {
+                stopPeriodicUpdateTimer();
+                startPeriodicUpdateTimer();
+            }
+        });
+        settingsPanel.add(periodicIntervalSpinner, gbc);
+
+        // Apply button
+        gbc.gridx = 0; gbc.gridy = 32; gbc.gridwidth = 2;
         JButton applyButton = new JButton("Apply Settings");
         applyButton.addActionListener(e -> applySettings());
         settingsPanel.add(applyButton, gbc);
 
         // Version label (bottom right)
-        gbc.gridx = 1; gbc.gridy = 28; gbc.gridwidth = 1;
+        gbc.gridx = 1; gbc.gridy = 33; gbc.gridwidth = 1;
         gbc.anchor = GridBagConstraints.EAST;
         gbc.weightx = 1.0;
         JLabel versionLabel = new JLabel("Qid v2.1 - AI Trading with Memory");
@@ -1130,9 +1175,43 @@ public class OrderFlowStrategyEnhanced implements
         inputPanel.add(chatInputField, BorderLayout.CENTER);
         inputPanel.add(buttonPanel, BorderLayout.EAST);
 
+        // Approval panel for SEMI_AUTO mode (hidden by default)
+        approvalPanel = new JPanel(new BorderLayout(5, 5));
+        approvalPanel.setBackground(new Color(255, 250, 230));  // Light yellow background
+        approvalPanel.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createMatteBorder(1, 0, 1, 0, Color.ORANGE),
+            BorderFactory.createEmptyBorder(10, 10, 10, 10)
+        ));
+
+        approvalLabel = new JLabel("⏳ Awaiting approval...");
+        approvalLabel.setFont(new Font("SansSerif", Font.BOLD, 13));
+
+        approveButton = new JButton("✅ Approve");
+        approveButton.setBackground(new Color(144, 238, 144));  // Light green
+        approveButton.setFont(new Font("SansSerif", Font.BOLD, 12));
+        approveButton.setToolTipText("Approve this trade");
+
+        rejectButton = new JButton("❌ Reject");
+        rejectButton.setBackground(new Color(255, 182, 193));  // Light red
+        rejectButton.setFont(new Font("SansSerif", Font.BOLD, 12));
+        rejectButton.setToolTipText("Reject this trade");
+
+        JPanel approvalButtons = new JPanel(new FlowLayout(FlowLayout.CENTER, 20, 5));
+        approvalButtons.add(approveButton);
+        approvalButtons.add(rejectButton);
+
+        approvalPanel.add(approvalLabel, BorderLayout.CENTER);
+        approvalPanel.add(approvalButtons, BorderLayout.EAST);
+        approvalPanel.setVisible(false);  // Hidden by default
+
+        // South panel to hold approval and input panels
+        JPanel southPanel = new JPanel(new BorderLayout());
+        southPanel.add(approvalPanel, BorderLayout.NORTH);
+        southPanel.add(inputPanel, BorderLayout.SOUTH);
+
         // Add components to window
         chatWindow.add(historyScrollPane, BorderLayout.CENTER);
-        chatWindow.add(inputPanel, BorderLayout.SOUTH);
+        chatWindow.add(southPanel, BorderLayout.SOUTH);
 
         // Add initial welcome message
         appendChatMessage("System", "Welcome to AI Chat! Ask me anything about trading, order flow, or market analysis.\n\nThis window stays open even when you close the Settings panel.\n\nType your message below and click Send or press Enter.");
@@ -1141,6 +1220,10 @@ public class OrderFlowStrategyEnhanced implements
         chatInputField.addActionListener(e -> sendChatMessage());
         chatSendButton.addActionListener(e -> sendChatMessage());
         chatClearButton.addActionListener(e -> clearChatHistory());
+
+        // Approve/Reject button listeners
+        approveButton.addActionListener(e -> handleApproveTrade());
+        rejectButton.addActionListener(e -> handleRejectTrade());
 
         // Window listener - reset window reference when closed
         chatWindow.addWindowListener(new java.awt.event.WindowAdapter() {
@@ -1416,6 +1499,323 @@ public class OrderFlowStrategyEnhanced implements
         });
     }
 
+    // ========== PUSH NOTIFICATION SYSTEM ==========
+
+    /**
+     * Push a notification to the chat (proactive, not in response to user)
+     * This allows the system and AI to notify user of events
+     *
+     * @param type Notification type (EVENT, AI, PERIODIC, TRADE, SIGNAL)
+     * @param message The message to display
+     * @param priority Priority level (low, normal, high, urgent)
+     */
+    public void pushNotification(String type, String message, String priority) {
+        // Check if this notification type is enabled
+        switch (type) {
+            case "EVENT":
+            case "TRADE":
+            case "SIGNAL":
+            case "THRESHOLD":
+            case "RISK":
+                if (!enableEventNotifications) return;
+                break;
+            case "AI":
+                if (!enableAINotifications) return;
+                break;
+            case "PERIODIC":
+                if (!enablePeriodicUpdates) return;
+                break;
+        }
+
+        // Format notification with icon based on type
+        String icon = switch (type) {
+            case "TRADE" -> "📈";
+            case "SIGNAL" -> "📊";
+            case "THRESHOLD" -> "🎚️";
+            case "RISK" -> "⚠️";
+            case "AI" -> "🤖";
+            case "PERIODIC" -> "🔔";
+            default -> "📢";
+        };
+
+        // Priority formatting
+        String priorityPrefix = switch (priority) {
+            case "urgent" -> "🔴 URGENT: ";
+            case "high" -> "🟠 ";
+            default -> "";
+        };
+
+        // Log to transcript
+        if (transcriptWriter != null) {
+            transcriptWriter.logMessage("notification", type + ": " + message);
+        }
+
+        // Push to chat
+        String formattedMessage = icon + " " + priorityPrefix + message;
+        SwingUtilities.invokeLater(() -> {
+            appendChatMessage("🔔 Notification", formattedMessage);
+        });
+    }
+
+    /**
+     * Push notification with normal priority
+     */
+    public void pushNotification(String type, String message) {
+        pushNotification(type, message, "normal");
+    }
+
+    /**
+     * Push event notification (trade executed, signal detected, etc.)
+     */
+    public void notifyEvent(String message) {
+        pushNotification("EVENT", message);
+    }
+
+    /**
+     * Push AI-generated notification
+     */
+    public void notifyAI(String message, String priority) {
+        pushNotification("AI", message, priority);
+    }
+
+    // ========== TRADE APPROVAL (SEMI_AUTO MODE) ==========
+
+    /**
+     * Request user approval for a trade (SEMI_AUTO mode)
+     * Shows approve/reject buttons in the chat panel
+     *
+     * @param isBuy true for buy, false for sell
+     * @param quantity number of contracts
+     * @param price target price (or 0 for market)
+     * @param signalType type of signal that triggered this
+     * @param score confluence score
+     * @param onApprove callback when user approves
+     * @param onReject callback when user rejects
+     * @return request ID for tracking
+     */
+    public String requestTradeApproval(boolean isBuy, int quantity, double price,
+                                       String signalType, int score,
+                                       Runnable onApprove, Runnable onReject) {
+        // Cancel any pending request
+        if (pendingTradeRequest != null) {
+            log("⚠️ Previous pending trade request replaced");
+            hideApprovalPanel();
+        }
+
+        // Create new pending request
+        pendingTradeRequest = new PendingTradeRequest();
+        pendingTradeRequest.requestId = "req_" + System.currentTimeMillis();
+        pendingTradeRequest.isBuy = isBuy;
+        pendingTradeRequest.quantity = quantity;
+        pendingTradeRequest.price = price;
+        pendingTradeRequest.signalType = signalType;
+        pendingTradeRequest.score = score;
+        pendingTradeRequest.timestamp = System.currentTimeMillis();
+        pendingTradeRequest.onApprove = onApprove;
+        pendingTradeRequest.onReject = onReject;
+
+        // Show approval panel in chat window
+        showApprovalPanel();
+
+        return pendingTradeRequest.requestId;
+    }
+
+    /**
+     * Show the approval panel with pending trade details
+     */
+    private void showApprovalPanel() {
+        if (pendingTradeRequest == null || approvalPanel == null) return;
+
+        SwingUtilities.invokeLater(() -> {
+            String direction = pendingTradeRequest.isBuy ? "BUY" : "SELL";
+            String priceStr = pendingTradeRequest.price > 0 ?
+                String.format("@ %.2f", pendingTradeRequest.price) : "@ MARKET";
+
+            approvalLabel.setText(String.format(
+                "🔔 Trade Request: %s %d %s %s | Signal: %s (Score: %d)",
+                direction, pendingTradeRequest.quantity,
+                alias != null ? alias : "contracts",
+                priceStr, pendingTradeRequest.signalType, pendingTradeRequest.score
+            ));
+
+            approvalPanel.setVisible(true);
+            approvalPanel.revalidate();
+            approvalPanel.repaint();
+
+            // Also add to chat history
+            appendChatMessage("AI", String.format(
+                "🔔 **Trade Approval Request**\n\n" +
+                "**Direction:** %s\n" +
+                "**Quantity:** %d\n" +
+                "**Price:** %s\n" +
+                "**Signal:** %s (Score: %d)\n\n" +
+                "Please click Approve or Reject below.",
+                direction, pendingTradeRequest.quantity, priceStr,
+                pendingTradeRequest.signalType, pendingTradeRequest.score
+            ));
+
+            log("🔔 Trade approval requested: " + direction + " " + pendingTradeRequest.quantity);
+        });
+    }
+
+    /**
+     * Hide the approval panel
+     */
+    private void hideApprovalPanel() {
+        if (approvalPanel == null) return;
+
+        SwingUtilities.invokeLater(() -> {
+            approvalPanel.setVisible(false);
+            approvalPanel.revalidate();
+            approvalPanel.repaint();
+        });
+    }
+
+    /**
+     * Handle approve button click
+     */
+    private void handleApproveTrade() {
+        if (pendingTradeRequest == null) {
+            appendChatMessage("System", "⚠️ No pending trade request to approve.");
+            return;
+        }
+
+        log("✅ Trade APPROVED: " + (pendingTradeRequest.isBuy ? "BUY" : "SELL"));
+        appendChatMessage("You", "✅ Approved");
+
+        // Store callbacks before clearing
+        Runnable onApprove = pendingTradeRequest.onApprove;
+        String requestId = pendingTradeRequest.requestId;
+
+        // Clear pending request
+        pendingTradeRequest = null;
+        hideApprovalPanel();
+
+        // Execute approval callback
+        if (onApprove != null) {
+            try {
+                onApprove.run();
+            } catch (Exception e) {
+                log("❌ Error executing approval callback: " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Handle reject button click
+     */
+    private void handleRejectTrade() {
+        if (pendingTradeRequest == null) {
+            appendChatMessage("System", "⚠️ No pending trade request to reject.");
+            return;
+        }
+
+        log("❌ Trade REJECTED: " + (pendingTradeRequest.isBuy ? "BUY" : "SELL"));
+        appendChatMessage("You", "❌ Rejected");
+
+        // Store callbacks before clearing
+        Runnable onReject = pendingTradeRequest.onReject;
+
+        // Clear pending request
+        pendingTradeRequest = null;
+        hideApprovalPanel();
+
+        // Execute reject callback
+        if (onReject != null) {
+            try {
+                onReject.run();
+            } catch (Exception e) {
+                log("❌ Error executing reject callback: " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Check if there's a pending trade approval request
+     */
+    public boolean hasPendingTradeRequest() {
+        return pendingTradeRequest != null;
+    }
+
+    /**
+     * Cancel any pending trade request (e.g., on mode change)
+     */
+    public void cancelPendingTradeRequest() {
+        if (pendingTradeRequest != null) {
+            log("⚠️ Pending trade request cancelled");
+            pendingTradeRequest = null;
+            hideApprovalPanel();
+        }
+    }
+
+    // ========== PERIODIC UPDATE TIMER ==========
+
+    private java.util.Timer periodicUpdateTimer;
+    private long lastPeriodicUpdateTime = 0;
+
+    private void startPeriodicUpdateTimer() {
+        if (!enablePeriodicUpdates || aiThresholdService == null) return;
+
+        if (periodicUpdateTimer != null) {
+            periodicUpdateTimer.cancel();
+        }
+
+        periodicUpdateTimer = new java.util.Timer("PeriodicUpdateTimer", true);
+        long intervalMs = periodicUpdateIntervalMinutes * 60 * 1000L;
+
+        periodicUpdateTimer.scheduleAtFixedRate(new java.util.TimerTask() {
+            @Override
+            public void run() {
+                try {
+                    generatePeriodicUpdate();
+                } catch (Exception e) {
+                    log("Error in periodic update: " + e.getMessage());
+                }
+            }
+        }, intervalMs, intervalMs);
+
+        log("⏰ Periodic update timer started (every " + periodicUpdateIntervalMinutes + " min)");
+    }
+
+    private void stopPeriodicUpdateTimer() {
+        if (periodicUpdateTimer != null) {
+            periodicUpdateTimer.cancel();
+            periodicUpdateTimer = null;
+        }
+    }
+
+    /**
+     * Generate a periodic status update from AI
+     */
+    private void generatePeriodicUpdate() {
+        if (!enablePeriodicUpdates || aiThresholdService == null || aiToolsProvider == null) {
+            return;
+        }
+
+        log("🔔 Generating periodic status update...");
+
+        // Build status prompt
+        String prompt = """
+            Please provide a brief status update for the user. Include:
+            1. Current session performance (trades, win rate, P&L)
+            2. Current market state (price, CVD direction, trend)
+            3. Any notable observations or recommendations
+            4. Current threshold settings if changed
+
+            Keep it concise - 3-5 sentences max. This is a periodic check-in, not a full analysis.
+            """;
+
+        // Get AI response
+        aiThresholdService.chatWithTools(prompt)
+            .thenAccept(response -> {
+                pushNotification("PERIODIC", response, "low");
+            })
+            .exceptionally(ex -> {
+                log("Failed to generate periodic update: " + ex.getMessage());
+                return null;
+            });
+    }
+
     /**
      * Parse markdown to HTML for chat rendering
      */
@@ -1666,6 +2066,83 @@ public class OrderFlowStrategyEnhanced implements
         // Enable/disable spinners based on mode
         adaptOrderSpinner.setEnabled(!selected);
         adaptSizeSpinner.setEnabled(!selected);
+    }
+
+    /**
+     * Initialize AI Trading components
+     * Can be called at startup or when AI Trading is enabled in settings
+     */
+    private void initializeAIComponents() {
+        if (aiAuthToken == null || aiAuthToken.isEmpty()) {
+            log("⚠️ Cannot initialize AI - no auth token");
+            return;
+        }
+
+        if (aiOrderManager != null) {
+            log("ℹ️ AI components already initialized");
+            return;
+        }
+
+        log("🤖 Initializing AI Trading System...");
+
+        try {
+            // Create order executor with logger wrapper using real Bookmap API
+            orderExecutor = new BookmapOrderExecutor(api, alias, new AIIntegrationLayer.AIStrategyLogger() {
+                @Override
+                public void log(String message, Object... args) {
+                    OrderFlowStrategyEnhanced.this.log(message);
+                }
+            });
+
+            // Create AI integration layer with logger wrapper
+            aiIntegration = new AIIntegrationLayer(aiAuthToken, new AIIntegrationLayer.AIStrategyLogger() {
+                @Override
+                public void log(String message, Object... args) {
+                    OrderFlowStrategyEnhanced.this.log(message);
+                }
+            });
+
+            // Set trading session plan
+            String sessionPlan = String.format(
+                "Trading Plan for %s:\n" +
+                "- Max %d trades per day\n" +
+                "- Risk 1%% per trade\n" +
+                "- 1:2 reward-risk ratio\n" +
+                "- Break-even at +3 ticks\n" +
+                "- Focus on quality over quantity\n" +
+                "- Current mode: %s",
+                alias, maxPosition, aiMode
+            );
+            aiIntegration.setSessionPlan(sessionPlan);
+
+            // Create AI order manager with logger wrapper and marker callback
+            aiOrderManager = new AIOrderManager(orderExecutor, new AIIntegrationLayer.AIStrategyLogger() {
+                @Override
+                public void log(String message, Object... args) {
+                    OrderFlowStrategyEnhanced.this.log(message);
+                }
+            }, this);  // Pass 'this' as the marker callback
+            aiOrderManager.breakEvenEnabled = true;
+            aiOrderManager.breakEvenTicks = 3;
+            aiOrderManager.maxPositions = maxPosition;
+            aiOrderManager.maxDailyLoss = dailyLossLimit;
+
+            log("✅ AI Trading System initialized");
+            log("   Mode: " + aiMode);
+            log("   Confluence Threshold: " + confluenceThreshold);
+
+            // Initialize AI Strategist if memory service is available
+            if (memoryService != null && aiStrategist == null) {
+                aiStrategist = new AIInvestmentStrategist(
+                    (velox.api.layer1.simplified.demo.storage.TradingMemoryService) memoryService,
+                    aiAuthToken, transcriptWriter);
+                log("✅ AI Investment Strategist initialized");
+            }
+
+        } catch (Exception e) {
+            log("❌ Failed to initialize AI Trading: " + e.getMessage());
+            e.printStackTrace();
+        }
     }
 
     private void updateSimMode() {
@@ -1978,17 +2455,30 @@ public class OrderFlowStrategyEnhanced implements
             return signals;
         });
 
-        // Session stats supplier
+        // Session stats supplier - combines sessionContext and AI order manager stats
         aiToolsProvider.setSessionSupplier(() -> {
             Map<String, Object> stats = new HashMap<>();
             if (sessionContext != null) {
                 stats.put("sessionId", sessionContext.getSessionId());
                 stats.put("phase", sessionContext.getCurrentPhase().toString());
-                stats.put("trades", sessionContext.getTradesThisSession());
-                stats.put("wins", sessionContext.getWinsThisSession());
-                stats.put("losses", sessionContext.getLossesThisSession());
-                stats.put("pnl", sessionContext.getSessionPnl());
                 stats.put("warmupComplete", sessionContext.isWarmupComplete());
+                stats.put("minutesIntoSession", sessionContext.getMinutesIntoSession());
+            }
+
+            // Include AI Order Manager stats if available (these are the actual executed trades)
+            if (aiOrderManager != null) {
+                stats.put("trades", aiOrderManager.getTotalTrades());
+                stats.put("wins", aiOrderManager.getWinningTrades());
+                stats.put("losses", aiOrderManager.getLosingTrades());
+                stats.put("pnl", aiOrderManager.getDailyPnl());
+                stats.put("activePositions", aiOrderManager.getActivePositionCount());
+                stats.put("winRate", aiOrderManager.getWinRate());
+            } else {
+                // Fallback to session context stats
+                stats.put("trades", sessionContext != null ? sessionContext.getTradesThisSession() : 0);
+                stats.put("wins", sessionContext != null ? sessionContext.getWinsThisSession() : 0);
+                stats.put("losses", sessionContext != null ? sessionContext.getLossesThisSession() : 0);
+                stats.put("pnl", sessionContext != null ? sessionContext.getSessionPnl() : 0.0);
             }
             return stats;
         });
@@ -2092,6 +2582,12 @@ public class OrderFlowStrategyEnhanced implements
                 log("❌ Failed to adjust threshold: " + e.getMessage());
                 return false;
             }
+        });
+
+        // Notification callback - allows AI to push notifications to user
+        aiToolsProvider.setNotificationCallback((category, message, priority) -> {
+            log("🔔 AI NOTIFICATION [" + category + "]: " + message);
+            notifyAI(message, priority);
         });
     }
 
