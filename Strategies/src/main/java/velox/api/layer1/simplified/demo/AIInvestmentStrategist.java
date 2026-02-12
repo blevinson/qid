@@ -1,6 +1,7 @@
 package velox.api.layer1.simplified.demo;
 
 import velox.api.layer1.simplified.demo.storage.TradingMemoryService;
+import velox.api.layer1.simplified.demo.storage.TranscriptWriter;
 import velox.api.layer1.simplified.demo.memory.MemorySearchResult;
 
 import com.google.gson.Gson;
@@ -15,6 +16,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -24,12 +26,15 @@ import java.util.concurrent.CompletableFuture;
  *
  * This class evaluates trading setups by searching memory for similar historical patterns
  * and using AI to make strategic decisions about whether to take or skip a setup.
+ *
+ * Unified Session: All decisions are logged to TranscriptWriter for shared context with AI chat.
  */
 public class AIInvestmentStrategist {
     private final TradingMemoryService memoryService;
     private final String apiToken;
     private final HttpClient httpClient;
     private final Gson gson;
+    private final TranscriptWriter transcriptWriter;  // Unified session transcript
     private static final String API_URL = "https://api.z.ai/api/anthropic/v1/messages";
     private static final String MODEL = "glm-5";
 
@@ -42,16 +47,21 @@ public class AIInvestmentStrategist {
      *
      * @param memoryService TradingMemoryService for searching historical patterns
      * @param apiToken API token for Claude API calls
+     * @param transcriptWriter Unified session transcript (shared with AI chat)
      */
-    public AIInvestmentStrategist(TradingMemoryService memoryService, String apiToken) {
+    public AIInvestmentStrategist(TradingMemoryService memoryService, String apiToken, TranscriptWriter transcriptWriter) {
         this.memoryService = memoryService;
         this.apiToken = apiToken;
+        this.transcriptWriter = transcriptWriter;
         this.gson = new Gson();
         this.httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(30))
             .build();
 
         log("========== AI Investment Strategist Initialized ==========");
+        if (transcriptWriter != null) {
+            log("📝 Session transcript logging: ENABLED");
+        }
     }
 
     /**
@@ -78,9 +88,10 @@ public class AIInvestmentStrategist {
      * 4. Returns decision via callback
      *
      * @param signal SignalData with market context
+     * @param sessionContext Session state (can be null)
      * @param callback AIStrategistCallback for async decision
      */
-    public void evaluateSetup(SignalData signal, AIStrategistCallback callback) {
+    public void evaluateSetup(SignalData signal, SessionContext sessionContext, AIStrategistCallback callback) {
         // Validate input
         if (signal == null || callback == null) {
             if (callback != null) {
@@ -90,25 +101,31 @@ public class AIInvestmentStrategist {
         }
 
         log("========== AI STRATEGIST EVALUATION ==========");
-        log("SIGNAL: " + signal.direction + " @ " + signal.price + " | Score: " + signal.score + "/" + signal.threshold);
+        double actualPrice = signal.price * signal.pips;  // Convert ticks to actual price
+        log("SIGNAL: " + signal.direction + " @ " + String.format("%.2f", actualPrice) + " | Score: " + signal.score + "/" + signal.threshold);
         log("CVD: " + signal.market.cvd + " (" + signal.market.cvdTrend + ") | Trend: " + signal.market.trend);
 
-        // Log key levels for debugging
+        // Log session context
+        if (sessionContext != null) {
+            log("SESSION: " + sessionContext.toSummary());
+        }
+
+        // Log key levels for debugging (convert to actual prices)
         log("KEY LEVELS:");
         if (!Double.isNaN(signal.market.vwap) && signal.market.vwap > 0) {
-            log("  VWAP: " + String.format("%.2f", signal.market.vwap) + " (" + signal.market.priceVsVwap + ")");
+            log("  VWAP: " + String.format("%.2f", signal.market.vwap * signal.pips) + " (" + signal.market.priceVsVwap + ")");
         }
         if (signal.market.pocPrice > 0) {
-            log("  POC: " + signal.market.pocPrice);
+            log("  POC: " + String.format("%.2f", signal.market.pocPrice * signal.pips));
         }
         if (signal.market.valueAreaLow > 0 && signal.market.valueAreaHigh > 0) {
-            log("  Value Area: " + signal.market.valueAreaLow + " - " + signal.market.valueAreaHigh);
+            log("  Value Area: " + String.format("%.2f", signal.market.valueAreaLow * signal.pips) + " - " + String.format("%.2f", signal.market.valueAreaHigh * signal.pips));
         }
         if (signal.market.domSupportPrice > 0) {
-            log("  DOM SUPPORT: " + signal.market.domSupportPrice + " (" + signal.market.domSupportVolume + " contracts)");
+            log("  DOM SUPPORT: " + String.format("%.2f", signal.market.domSupportPrice * signal.pips) + " (" + signal.market.domSupportVolume + " contracts)");
         }
         if (signal.market.domResistancePrice > 0) {
-            log("  DOM RESISTANCE: " + signal.market.domResistancePrice + " (" + signal.market.domResistanceVolume + " contracts)");
+            log("  DOM RESISTANCE: " + String.format("%.2f", signal.market.domResistancePrice * signal.pips) + " (" + signal.market.domResistanceVolume + " contracts)");
         }
         log("  DOM IMBALANCE: " + String.format("%.2f", signal.market.domImbalanceRatio) + " (" + signal.market.domImbalanceSentiment + ")");
 
@@ -125,7 +142,7 @@ public class AIInvestmentStrategist {
         }
 
         // Step 3: Ask AI to make decision
-        String prompt = buildAIPrompt(signal, context);
+        String prompt = buildAIPrompt(signal, context, sessionContext);
 
         // Call Claude API
         callClaudeAPI(prompt, callback, signal);
@@ -168,58 +185,62 @@ public class AIInvestmentStrategist {
     }
 
     /**
-     * Build AI prompt with signal data and memory context
+     * Build AI prompt with signal data, memory context, and session context
      * This prompt will be sent to Claude API for decision making
      *
      * @param signal SignalData with market context
      * @param memoryContext Formatted memory search results
+     * @param sessionContext Session state (can be null)
      * @return AI prompt string
      */
-    private String buildAIPrompt(SignalData signal, String memoryContext) {
+    private String buildAIPrompt(SignalData signal, String memoryContext, SessionContext sessionContext) {
+        double pips = signal.pips;  // For converting tick prices to actual prices
+        double actualPrice = signal.price * pips;
+
         // Build key levels section
         StringBuilder keyLevels = new StringBuilder();
 
         // VWAP
         if (!Double.isNaN(signal.market.vwap) && signal.market.vwap > 0) {
             keyLevels.append(String.format("- VWAP: %.2f (%s, %.1f ticks away)\n",
-                signal.market.vwap,
+                signal.market.vwap * pips,
                 signal.market.priceVsVwap,
                 signal.market.vwapDistanceTicks));
         }
 
         // Volume Profile levels (POC, Value Area)
         if (signal.market.pocPrice > 0) {
-            keyLevels.append(String.format("- POC (Point of Control): %d\n", signal.market.pocPrice));
+            keyLevels.append(String.format("- POC (Point of Control): %.2f\n", signal.market.pocPrice * pips));
         }
         if (signal.market.valueAreaLow > 0 && signal.market.valueAreaHigh > 0) {
-            keyLevels.append(String.format("- Value Area: %d - %d\n",
-                signal.market.valueAreaLow, signal.market.valueAreaHigh));
+            keyLevels.append(String.format("- Value Area: %.2f - %.2f\n",
+                signal.market.valueAreaLow * pips, signal.market.valueAreaHigh * pips));
         }
 
         // EMA levels
         if (signal.market.ema9 > 0) {
             keyLevels.append(String.format("- EMA9: %.2f (%.1f ticks)\n",
-                signal.market.ema9, signal.market.ema9DistanceTicks));
+                signal.market.ema9 * pips, signal.market.ema9DistanceTicks));
         }
         if (signal.market.ema21 > 0) {
             keyLevels.append(String.format("- EMA21: %.2f (%.1f ticks)\n",
-                signal.market.ema21, signal.market.ema21DistanceTicks));
+                signal.market.ema21 * pips, signal.market.ema21DistanceTicks));
         }
         if (signal.market.ema50 > 0) {
             keyLevels.append(String.format("- EMA50: %.2f (%.1f ticks)\n",
-                signal.market.ema50, signal.market.ema50DistanceTicks));
+                signal.market.ema50 * pips, signal.market.ema50DistanceTicks));
         }
 
         // DOM (Order Book) levels - Real-time support/resistance from liquidity
         if (signal.market.domSupportPrice > 0) {
-            keyLevels.append(String.format("- DOM SUPPORT: %d (%d contracts, %d ticks below)\n",
-                signal.market.domSupportPrice,
+            keyLevels.append(String.format("- DOM SUPPORT: %.2f (%d contracts, %d ticks below)\n",
+                signal.market.domSupportPrice * pips,
                 signal.market.domSupportVolume,
                 signal.market.domSupportDistance));
         }
         if (signal.market.domResistancePrice > 0) {
-            keyLevels.append(String.format("- DOM RESISTANCE: %d (%d contracts, %d ticks above)\n",
-                signal.market.domResistancePrice,
+            keyLevels.append(String.format("- DOM RESISTANCE: %.2f (%d contracts, %d ticks above)\n",
+                signal.market.domResistancePrice * pips,
                 signal.market.domResistanceVolume,
                 signal.market.domResistanceDistance));
         }
@@ -232,12 +253,26 @@ public class AIInvestmentStrategist {
         // If no key levels available, add placeholder
         String keyLevelsStr = keyLevels.length() > 0 ? keyLevels.toString() : "- (calculating...)\n";
 
+        // Build session context section
+        String sessionContextStr = "";
+        if (sessionContext != null) {
+            sessionContextStr = sessionContext.toAIString();
+        }
+
+        // Build threshold context section
+        String thresholdContextStr = "";
+        if (signal.thresholds != null) {
+            thresholdContextStr = signal.thresholds.toAIString();
+        }
+
         return String.format("""
             You are an AI Investment Strategist analyzing a trading setup.
 
+            %s
+
             SIGNAL:
             - Type: %s %s
-            - Price: %d
+            - Price: %.2f
             - Confluence Score: %d
             - CVD: %d (%s)
             - Trend: %s
@@ -247,36 +282,61 @@ public class AIInvestmentStrategist {
 
             %s
 
-            Based on the signal strength, key levels, and historical memory, should we TAKE or SKIP this setup?
+            %s
 
-            IMPORTANT: When placing SL/TP, use the KEY LEVELS above:
-            - Place STOP LOSS beyond nearest support/resistance level
-            - Place TAKE PROFIT at or before next resistance/support level
-            - Consider VWAP and POC as key levels for mean reversion
+            Based on the signal strength, key levels, session context, historical memory, and current thresholds, should we TAKE or SKIP this setup?
+
+            IMPORTANT CONSIDERATIONS:
+            1. If this is a NEW SESSION, be more cautious - indicators are just starting to accumulate
+            2. During OPENING/CLOSING BELL phases, expect higher volatility - require stronger confluence
+            3. During LUNCH HOUR, expect lower volume - may see choppy conditions
+            4. When placing SL/TP, use the KEY LEVELS above:
+               - Place STOP LOSS beyond nearest support/resistance level
+               - Place TAKE PROFIT at or before next resistance/support level
+               - Consider VWAP and POC as key levels for mean reversion
+
+            THRESHOLD ADJUSTMENT (Optional):
+            You CAN recommend threshold adjustments based on market conditions:
+            - If too many low-quality signals: INCREASE minConfluenceScore or confluenceThreshold
+            - If missing good opportunities: DECREASE thresholds slightly
+            - If high volatility: INCREASE detection thresholds (icebergMinOrders, etc.)
+            - If low volatility: detection thresholds can be lower
+            - Only include thresholdAdjustment if you have a specific recommendation
 
             Respond with JSON:
             {
               "action": "TAKE" | "SKIP",
               "confidence": 0.0-1.0,
-              "reasoning": "brief explanation referencing key levels",
+              "reasoning": "brief explanation referencing key levels and session context",
               "plan": {
                 "orderType": "BUY" | "SELL",
-                "entryPrice": %d,
+                "entryPrice": %.2f,
                 "stopLossPrice": calculated based on key levels,
                 "takeProfitPrice": calculated based on key levels
+              },
+              "thresholdAdjustment": {
+                "minConfluenceScore": optional new value,
+                "confluenceThreshold": optional new value,
+                "icebergMinOrders": optional new value,
+                "spoofMinSize": optional new value,
+                "absorptionMinSize": optional new value,
+                "thresholdMultiplier": optional new value,
+                "reasoning": "why you're adjusting thresholds"
               }
             }
             """,
+            sessionContextStr,
             signal.direction,
             signal.detection.type,
-            signal.price,
+            actualPrice,
             signal.score,
             signal.market.cvd,
             signal.market.cvdTrend,
             signal.market.trend,
             keyLevelsStr,
+            thresholdContextStr,
             memoryContext,
-            signal.price);
+            actualPrice);
     }
 
     /**
@@ -287,15 +347,22 @@ public class AIInvestmentStrategist {
      * @param signal Original signal for price reference
      */
     private void callClaudeAPI(String prompt, AIStrategistCallback callback, SignalData signal) {
+        log("🌐 Calling Claude API...");
         CompletableFuture.supplyAsync(() -> {
             try {
-                return callClaudeAPISync(prompt, signal);
+                log("📤 API request sent, waiting for response...");
+                AIDecision decision = callClaudeAPISync(prompt, signal);
+                log("📥 API response received");
+                return decision;
             } catch (Exception e) {
+                log("❌ API call exception: " + e.getClass().getSimpleName() + " - " + e.getMessage());
                 throw new RuntimeException("API call failed: " + e.getMessage(), e);
             }
         }).thenAccept(decision -> {
+            log("✅ Processing AI decision...");
             callback.onDecision(decision);
         }).exceptionally(e -> {
+            log("❌ API call failed: " + e.getMessage());
             callback.onError(e.getMessage());
             return null;
         });
@@ -411,23 +478,59 @@ public class AIInvestmentStrategist {
             }
 
             // Parse reasoning
-            decision.reasoning = json.has("reasoning") ? json.get("reasoning").getAsString() : "No reasoning provided";
+            decision.reasoning = json.has("reasoning") && !json.get("reasoning").isJsonNull() ?
+                json.get("reasoning").getAsString() : "No reasoning provided";
 
             // Parse trade plan
-            if (json.has("plan") && decision.shouldTake) {
+            if (json.has("plan") && !json.get("plan").isJsonNull() && decision.shouldTake) {
                 JsonObject planJson = json.getAsJsonObject("plan");
                 TradePlan plan = new TradePlan();
 
-                plan.orderType = planJson.has("orderType") ? planJson.get("orderType").getAsString() : "BUY_STOP";
-                plan.entryPrice = planJson.has("entryPrice") ? planJson.get("entryPrice").getAsInt() : signal.price;
-                plan.stopLossPrice = planJson.has("stopLossPrice") ? planJson.get("stopLossPrice").getAsInt() : signal.price - 30;
-                plan.takeProfitPrice = planJson.has("takeProfitPrice") ? planJson.get("takeProfitPrice").getAsInt() : signal.price + 70;
-                plan.contracts = planJson.has("contracts") ? planJson.get("contracts").getAsInt() : 1;
+                plan.orderType = planJson.has("orderType") && !planJson.get("orderType").isJsonNull() ?
+                    planJson.get("orderType").getAsString() : "BUY_STOP";
+                plan.entryPrice = planJson.has("entryPrice") && !planJson.get("entryPrice").isJsonNull() ?
+                    planJson.get("entryPrice").getAsInt() : signal.price;
+                plan.stopLossPrice = planJson.has("stopLossPrice") && !planJson.get("stopLossPrice").isJsonNull() ?
+                    planJson.get("stopLossPrice").getAsInt() : signal.price - 30;
+                plan.takeProfitPrice = planJson.has("takeProfitPrice") && !planJson.get("takeProfitPrice").isJsonNull() ?
+                    planJson.get("takeProfitPrice").getAsInt() : signal.price + 70;
+                plan.contracts = planJson.has("contracts") && !planJson.get("contracts").isJsonNull() ?
+                    planJson.get("contracts").getAsInt() : 1;
 
                 decision.plan = plan;
             } else if (decision.shouldTake) {
                 // Create default plan if taking but no plan provided
                 decision.plan = createDefaultPlan(signal);
+            }
+
+            // Parse threshold adjustment (optional)
+            if (json.has("thresholdAdjustment") && !json.get("thresholdAdjustment").isJsonNull()) {
+                JsonObject adjJson = json.getAsJsonObject("thresholdAdjustment");
+                ThresholdAdjustment adj = new ThresholdAdjustment();
+
+                if (adjJson.has("minConfluenceScore")) {
+                    adj.minConfluenceScore = adjJson.get("minConfluenceScore").getAsInt();
+                }
+                if (adjJson.has("confluenceThreshold")) {
+                    adj.confluenceThreshold = adjJson.get("confluenceThreshold").getAsInt();
+                }
+                if (adjJson.has("icebergMinOrders")) {
+                    adj.icebergMinOrders = adjJson.get("icebergMinOrders").getAsInt();
+                }
+                if (adjJson.has("spoofMinSize")) {
+                    adj.spoofMinSize = adjJson.get("spoofMinSize").getAsInt();
+                }
+                if (adjJson.has("absorptionMinSize")) {
+                    adj.absorptionMinSize = adjJson.get("absorptionMinSize").getAsInt();
+                }
+                if (adjJson.has("thresholdMultiplier")) {
+                    adj.thresholdMultiplier = adjJson.get("thresholdMultiplier").getAsDouble();
+                }
+                if (adjJson.has("reasoning")) {
+                    adj.reasoning = adjJson.get("reasoning").getAsString();
+                }
+
+                decision.thresholdAdjustment = adj;
             }
 
         } catch (Exception e) {
@@ -446,7 +549,25 @@ public class AIInvestmentStrategist {
             log("Plan: " + decision.plan.orderType + " @ " + decision.plan.entryPrice +
                 " | SL: " + decision.plan.stopLossPrice + " | TP: " + decision.plan.takeProfitPrice);
         }
+        // Log threshold adjustments if any
+        if (decision.thresholdAdjustment != null && decision.thresholdAdjustment.hasAdjustments()) {
+            log("THRESHOLD ADJUSTMENT: " + decision.thresholdAdjustment.toString());
+        }
         log("============================================================");
+
+        // Log to unified session transcript (shared with AI chat)
+        if (transcriptWriter != null) {
+            String signalId = UUID.randomUUID().toString().substring(0, 8);
+            transcriptWriter.logSignalDecision(
+                signalId,
+                signal.direction,
+                signal.price,
+                signal.score,
+                decisionType,
+                decision.confidence,
+                decision.reasoning
+            );
+        }
 
         return decision;
     }
@@ -514,6 +635,61 @@ public class AIInvestmentStrategist {
 
         /** Trade plan with entry, SL, TP */
         public TradePlan plan;
+
+        /** Threshold adjustments (optional - AI can recommend changes) */
+        public ThresholdAdjustment thresholdAdjustment;
+    }
+
+    /**
+     * Threshold Adjustment data class
+     * AI can recommend threshold changes based on market conditions
+     */
+    public static class ThresholdAdjustment {
+        /** Adjust minimum confluence score */
+        public Integer minConfluenceScore;
+
+        /** Adjust confluence threshold */
+        public Integer confluenceThreshold;
+
+        /** Adjust iceberg minimum orders */
+        public Integer icebergMinOrders;
+
+        /** Adjust spoof minimum size */
+        public Integer spoofMinSize;
+
+        /** Adjust absorption minimum size */
+        public Integer absorptionMinSize;
+
+        /** Adjust threshold multiplier */
+        public Double thresholdMultiplier;
+
+        /** Reasoning for the threshold adjustment */
+        public String reasoning;
+
+        /**
+         * Check if any adjustments are proposed
+         */
+        public boolean hasAdjustments() {
+            return minConfluenceScore != null ||
+                   confluenceThreshold != null ||
+                   icebergMinOrders != null ||
+                   spoofMinSize != null ||
+                   absorptionMinSize != null ||
+                   thresholdMultiplier != null;
+        }
+
+        @Override
+        public String toString() {
+            StringBuilder sb = new StringBuilder("ThresholdAdjustment{");
+            if (minConfluenceScore != null) sb.append("minConfluenceScore=").append(minConfluenceScore).append(" ");
+            if (confluenceThreshold != null) sb.append("confluenceThreshold=").append(confluenceThreshold).append(" ");
+            if (icebergMinOrders != null) sb.append("icebergMinOrders=").append(icebergMinOrders).append(" ");
+            if (spoofMinSize != null) sb.append("spoofMinSize=").append(spoofMinSize).append(" ");
+            if (absorptionMinSize != null) sb.append("absorptionMinSize=").append(absorptionMinSize).append(" ");
+            if (thresholdMultiplier != null) sb.append("thresholdMultiplier=").append(thresholdMultiplier).append(" ");
+            sb.append("reasoning='").append(reasoning).append("'}");
+            return sb.toString();
+        }
     }
 
     /**

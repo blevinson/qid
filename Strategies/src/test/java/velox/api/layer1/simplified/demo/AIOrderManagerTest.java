@@ -209,8 +209,8 @@ public class AIOrderManagerTest {
         AIIntegrationLayer.AIDecision decision = createLongDecision();
         orderManager.executeEntry(decision, signal);
 
-        // Act - price moves to break-even trigger
-        int breakEvenPrice = signal.price + (3 * signal.pips);
+        // Act - price moves to break-even trigger (3 ticks)
+        int breakEvenPrice = signal.price + 3;
         orderManager.onPriceUpdate(breakEvenPrice, System.currentTimeMillis());
 
         // Assert
@@ -233,8 +233,8 @@ public class AIOrderManagerTest {
         AIIntegrationLayer.AIDecision decision = createLongDecision();
         orderManager.executeEntry(decision, signal);
 
-        // Act - price moves through break-even level
-        int highPrice = signal.price + (10 * signal.pips);
+        // Act - price moves through break-even level (10 ticks)
+        int highPrice = signal.price + 10;
         orderManager.onPriceUpdate(highPrice, System.currentTimeMillis());
 
         // Assert

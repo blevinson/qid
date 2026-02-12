@@ -57,7 +57,7 @@ public class VWAPCalculator {
     /**
      * Get distance in ticks from VWAP
      */
-    public double getDistance(double price, int pips) {
+    public double getDistance(double price, double pips) {
         if (Double.isNaN(vwap)) return 0;
         return (price - vwap) / pips;
     }

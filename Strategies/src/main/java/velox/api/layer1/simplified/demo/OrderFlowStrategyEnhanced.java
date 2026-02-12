@@ -42,6 +42,7 @@ import velox.api.layer1.simplified.MarketByOrderDepthDataListener;
 import velox.api.layer1.simplified.OrdersListener;
 import velox.api.layer1.simplified.Parameter;
 import velox.api.layer1.simplified.TradeDataListener;
+import velox.api.layer1.simplified.TimeListener;
 import velox.gui.StrategyPanel;
 
 /**
@@ -70,11 +71,21 @@ public class OrderFlowStrategyEnhanced implements
     BboListener,
     CustomSettingsPanelProvider,
     OrdersListener,
+    TimeListener,
     AIOrderManager.AIMarkerCallback {
 
     // ========== PERFORMANCE TRACKING ==========
     private Map<Integer, SignalPerformance> trackedSignals = new ConcurrentHashMap<>();
     private static final long SIGNAL_TRACKING_MS = 5 * 60 * 1000;  // Track for 5 minutes
+
+    // ========== SIGNAL PRE-FILTERS ==========
+    // Deduplication: Track recent signals to avoid repeated AI calls
+    private Map<String, Long> recentSignalsSent = new ConcurrentHashMap<>();
+    private static final long SIGNAL_DEDUP_MS = 60 * 1000;  // 60 seconds dedup window
+
+    // Pre-filter constants
+    private static final int CVD_STRONG_THRESHOLD = 8000;  // Skip counter-trend only if EXTREMELY strong
+    private static final int SCORE_FLOOR_OFFSET = 20;      // Score must be >= threshold - this
 
     private static class SignalPerformance {
         long timestamp;
@@ -132,7 +143,7 @@ public class OrderFlowStrategyEnhanced implements
 
     // ========== ADAPTIVE MODE PARAMETERS ==========
     @Parameter(name = "Use AI Adaptive Thresholds")
-    private Boolean useAIAdaptiveThresholds = false;  // Default: AI mode disabled
+    private Boolean useAIAdaptiveThresholds = true;  // Default: AI mode ENABLED
 
     @Parameter(name = "AI Re-evaluation Interval (min)")
     private Integer aiReevaluationInterval = 30;  // Re-evaluate every 30 minutes
@@ -150,6 +161,19 @@ public class OrderFlowStrategyEnhanced implements
     @Parameter(name = "AI Auth Token")
     private String aiAuthToken = "8a4f5b950ea142c98746d5a320666414.Yf1MQwtkwfuDbyHw";
 
+    // ========== NOTIFICATION SETTINGS ==========
+    @Parameter(name = "Enable Event Notifications")
+    private Boolean enableEventNotifications = true;  // Trade/signal events
+
+    @Parameter(name = "Enable AI Notifications")
+    private Boolean enableAINotifications = true;  // AI can push alerts
+
+    @Parameter(name = "Enable Periodic Updates")
+    private Boolean enablePeriodicUpdates = false;  // Periodic status reports
+
+    @Parameter(name = "Periodic Update Interval (min)")
+    private Integer periodicUpdateIntervalMinutes = 15;  // How often to send updates
+
     // ========== SETTINGS PERSISTENCE (Native Bookmap API) ==========
     /**
      * Settings class for Bookmap native persistence
@@ -165,11 +189,13 @@ public class OrderFlowStrategyEnhanced implements
         public Double dailyLossLimit = 500.0;
         public Boolean simModeOnly = true;
         public Boolean autoExecution = false;
-        public Boolean useAIAdaptiveThresholds = false;
+        public Boolean useAIAdaptiveThresholds = true;
         public Boolean enableAITrading = false;
         public String aiMode = "MANUAL";
         public Integer confluenceThreshold = 50;
         public String aiAuthToken = "8a4f5b950ea142c98746d5a320666414.Yf1MQwtkwfuDbyHw";
+        public Integer replayStartHour = 9;   // Hour (24h) when replay data starts (9 = 9:00 AM)
+        public Integer replayStartMinute = 30; // Minute when replay data starts (30 = :30)
     }
 
     private Settings settings;
@@ -210,9 +236,20 @@ public class OrderFlowStrategyEnhanced implements
     private AIOrderManager aiOrderManager;
     private OrderExecutor orderExecutor;
     private AIThresholdService aiThresholdService;
+    private AIToolsProvider aiToolsProvider;  // Tool functions for AI chat
     private Object memoryService;  // TradingMemoryService - initialized as Object to avoid loading issues
     private AIInvestmentStrategist aiStrategist;
     private final Map<String, SignalData> pendingSignals = new ConcurrentHashMap<>();
+
+    // Unified Session Transcript - shared by AI chat and AI Investment Strategist
+    private velox.api.layer1.simplified.demo.storage.TranscriptWriter transcriptWriter;
+
+    // Session Context - tracks trading session state for AI
+    private SessionContext sessionContext;
+
+    // Data timestamp from Bookmap (for replay mode support)
+    // Updated by TimeListener.onTimestamp() before any other data event
+    private volatile long currentDataTimestampMs = System.currentTimeMillis();
 
     // AI re-evaluation tracking
     private long lastAIReevaluationTime = 0;
@@ -289,6 +326,26 @@ public class OrderFlowStrategyEnhanced implements
     private JButton chatClearButton;
     private List<String[]> chatMessages = new ArrayList<>();  // Store [role, message] pairs
 
+    // Approve/Reject buttons for SEMI_AUTO mode
+    private JPanel approvalPanel;
+    private JButton approveButton;
+    private JButton rejectButton;
+    private JLabel approvalLabel;
+
+    // Pending trade request (for SEMI_AUTO approval)
+    private static class PendingTradeRequest {
+        String requestId;
+        boolean isBuy;
+        int quantity;
+        double price;
+        String signalType;
+        int score;
+        long timestamp;
+        Runnable onApprove;
+        Runnable onReject;
+    }
+    private PendingTradeRequest pendingTradeRequest = null;
+
     // ========== STATE ==========
     private Map<String, OrderInfo> orders = new HashMap<>();
     private Map<Integer, List<String>> priceLevels = new HashMap<>();
@@ -343,7 +400,7 @@ public class OrderFlowStrategyEnhanced implements
 
     // API and helpers
     private Api api;
-    private int pips;
+    private double pips;
     private String alias;
 
     // Logging
@@ -360,11 +417,17 @@ public class OrderFlowStrategyEnhanced implements
     public void initialize(String alias, InstrumentInfo info, Api api, InitialState initialState) {
         this.api = api;
         this.alias = alias;
-        this.pips = (int) info.pips;
+        this.pips = info.pips;
 
         log("========== OrderFlowStrategyEnhanced.initialize() ==========");
         log("Instrument: " + alias);
-        log("Pip size: " + pips);
+        log("Pip size from Bookmap: " + info.pips + " (stored as: " + pips + ")");
+
+        // Warn if pips is 0 or very small
+        if (pips == 0 || pips < 0.001) {
+            log("⚠️ WARNING: Pip size is " + pips + " - price display may be incorrect!");
+            log("⚠️ This may indicate the instrument doesn't provide pip info correctly.");
+        }
 
         // Load persisted settings using Bookmap's native API
         settings = api.getSettings(Settings.class);
@@ -420,56 +483,11 @@ public class OrderFlowStrategyEnhanced implements
         aiTakeProfitLine = api.registerIndicator("💎 AI Take Profit", GraphType.PRIMARY);
         aiTakeProfitLine.setColor(Color.GREEN);
 
-        // Initialize AI components if enabled
+        // Initialize AI components if enabled at startup
         if (enableAITrading && aiAuthToken != null && !aiAuthToken.isEmpty()) {
-            log("🤖 Initializing AI Trading System...");
-
-            // Create order executor with logger wrapper using real Bookmap API
-            orderExecutor = new BookmapOrderExecutor(api, alias, new AIIntegrationLayer.AIStrategyLogger() {
-                @Override
-                public void log(String message, Object... args) {
-                    OrderFlowStrategyEnhanced.this.log(message);
-                }
-            });
-
-            // Create AI integration layer with logger wrapper
-            aiIntegration = new AIIntegrationLayer(aiAuthToken, new AIIntegrationLayer.AIStrategyLogger() {
-                @Override
-                public void log(String message, Object... args) {
-                    OrderFlowStrategyEnhanced.this.log(message);
-                }
-            });
-
-            // Set trading session plan
-            String sessionPlan = String.format(
-                "Trading Plan for %s:\n" +
-                "- Max %d trades per day\n" +
-                "- Risk 1%% per trade\n" +
-                "- 1:2 reward-risk ratio\n" +
-                "- Break-even at +3 ticks\n" +
-                "- Focus on quality over quantity\n" +
-                "- Current mode: %s",
-                alias, maxPosition, aiMode
-            );
-            aiIntegration.setSessionPlan(sessionPlan);
-
-            // Create AI order manager with logger wrapper and marker callback
-            aiOrderManager = new AIOrderManager(orderExecutor, new AIIntegrationLayer.AIStrategyLogger() {
-                @Override
-                public void log(String message, Object... args) {
-                    OrderFlowStrategyEnhanced.this.log(message);
-                }
-            }, this);  // Pass 'this' as the marker callback
-            aiOrderManager.breakEvenEnabled = true;
-            aiOrderManager.breakEvenTicks = 3;
-            aiOrderManager.maxPositions = maxPosition;
-            aiOrderManager.maxDailyLoss = dailyLossLimit;
-
-            log("✅ AI Trading System initialized");
-            log("   Mode: " + aiMode);
-            log("   Confluence Threshold: " + confluenceThreshold);
+            initializeAIComponents();
         } else {
-            log("ℹ️ AI Trading disabled");
+            log("ℹ️ AI Trading disabled (enable in settings)");
         }
 
         // Initialize Memory & Sessions (Phase 1)
@@ -539,8 +557,18 @@ public class OrderFlowStrategyEnhanced implements
                 log("✅ Memory Service initialized: " + service.getIndexedFileCount() + " files, " +
                     service.getIndexedChunkCount() + " chunks");
 
-                // Initialize AI Investment Strategist (Phase 3)
-                aiStrategist = new AIInvestmentStrategist(service, aiAuthToken);
+                // Initialize Session Context
+                sessionContext = new SessionContext();
+                log("✅ Session Context initialized");
+
+                // Initialize Unified Session Transcript (shared by AI chat and strategist)
+                java.nio.file.Path sessionsDir = java.nio.file.Path.of("sessions");
+                transcriptWriter = new velox.api.layer1.simplified.demo.storage.TranscriptWriter(sessionsDir);
+                transcriptWriter.initializeSession();
+                log("✅ Session Transcript initialized: " + sessionsDir);
+
+                // Initialize AI Investment Strategist (Phase 3) with transcript
+                aiStrategist = new AIInvestmentStrategist(service, aiAuthToken, transcriptWriter);
                 log("✅ AI Investment Strategist initialized");
             } else {
                 log("⚠️ Memory Service disabled (no API token)");
@@ -554,6 +582,12 @@ public class OrderFlowStrategyEnhanced implements
         if (aiAuthToken != null && !aiAuthToken.isEmpty()) {
             aiThresholdService = new AIThresholdService(aiAuthToken);
             log("🤖 AI Chat Service initialized");
+
+            // Initialize AI Tools Provider for function calling
+            aiToolsProvider = new AIToolsProvider();
+            setupAIToolsProvider();  // Connect data suppliers
+            aiThresholdService.setToolsProvider(aiToolsProvider);
+            log("🔧 AI Tools Provider initialized (function calling enabled)");
 
             // Trigger initial AI threshold calculation if AI adaptive mode is enabled
             if (useAIAdaptiveThresholds) {
@@ -608,17 +642,128 @@ public class OrderFlowStrategyEnhanced implements
                 System.err.println("Error generating performance report: " + e.getMessage());
             }
         }, 5, 5, TimeUnit.MINUTES);  // Start after 5 minutes, then every 5 minutes
+
+        // Periodic threshold reassessment every 5 minutes
+        // This ensures thresholds are adjusted when session phase changes, even if no signals come in
+        updateExecutor.scheduleAtFixedRate(() -> {
+            try {
+                periodicThresholdReassessment();
+            } catch (Exception e) {
+                System.err.println("Error in threshold reassessment: " + e.getMessage());
+            }
+        }, 5, 5, TimeUnit.MINUTES);  // Start after 5 minutes, then every 5 minutes
+    }
+
+    // Track last reassessed phase to detect changes
+    private SessionContext.SessionPhase lastReassessedPhase = null;
+
+    /**
+     * Periodic threshold reassessment
+     * Called every 5 minutes to check if thresholds should be adjusted
+     * based on session phase changes, even when no signals are coming in
+     */
+    private void periodicThresholdReassessment() {
+        if (sessionContext == null || !enableAITrading || aiStrategist == null) {
+            return;
+        }
+
+        SessionContext.SessionPhase currentPhase = sessionContext.getCurrentPhase();
+
+        // Check if phase has changed since last reassessment
+        if (lastReassessedPhase != null && currentPhase == lastReassessedPhase) {
+            // No phase change, no need to reassess
+            return;
+        }
+
+        log("🔄 PERIODIC REASSESSMENT: Phase changed from " + lastReassessedPhase + " to " + currentPhase);
+
+        // Build market context for reassessment
+        AIThresholdService.MarketContext context = buildMarketContext();
+
+        // Ask AI to reassess thresholds for this phase
+        String reassessmentPrompt = String.format("""
+            PERIODIC THRESHOLD REASSESSMENT
+
+            The trading session has moved into a new phase: %s
+
+            Current market state:
+            - Price: %.2f
+            - CVD: %d
+            - Session: %d minutes in, %d trades
+            - Current thresholds: minScore=%d, icebergMinOrders=%d
+
+            Should we adjust thresholds for this phase? Consider:
+            1. Phase-specific volatility (opening/closing = higher, lunch = lower)
+            2. Current CVD trend strength
+            3. Time into session (early = more caution, established = can be more aggressive)
+
+            If adjustment is needed, respond with JSON:
+            {"thresholdAdjustment": {"field": value, "reasoning": "why"}}
+
+            If no adjustment needed, respond with:
+            {"thresholdAdjustment": null}
+            """,
+            currentPhase,
+            context.currentPrice,
+            (long) context.cvd,
+            sessionContext.getMinutesIntoSession(),
+            sessionContext.getTradesThisSession(),
+            minConfluenceScore,
+            icebergMinOrders
+        );
+
+        // Use AI threshold service for reassessment
+        aiThresholdService.chatWithTools(reassessmentPrompt)
+            .thenAccept(response -> {
+                try {
+                    // Parse response for threshold adjustment
+                    if (response.contains("thresholdAdjustment") && !response.contains("\"null\"")) {
+                        log("📊 Threshold adjustment suggested: " + response);
+                        // The adjustment will be parsed and applied by the existing mechanism
+                    } else {
+                        log("✅ No threshold adjustment needed for " + currentPhase);
+                    }
+                } catch (Exception e) {
+                    log("Error parsing reassessment response: " + e.getMessage());
+                }
+            })
+            .exceptionally(ex -> {
+                log("❌ Reassessment failed: " + ex.getMessage());
+                return null;
+            });
+
+        lastReassessedPhase = currentPhase;
     }
 
     /**
      * Draw horizontal lines at active SL/TP levels
      */
+    private long lastLevelLogTime = 0;
     private void drawAITradingLevels() {
-        if (activeStopLossPrice != null && aiStopLossLine != null) {
-            aiStopLossLine.addPoint(activeStopLossPrice);
+        boolean hasStop = activeStopLossPrice != null && aiStopLossLine != null;
+        boolean hasTp = activeTakeProfitPrice != null && aiTakeProfitLine != null;
+
+        // Log every 5 seconds for debugging
+        long now = System.currentTimeMillis();
+        if (now - lastLevelLogTime > 5000) {
+            lastLevelLogTime = now;
+            log(String.format("📊 drawAITradingLevels: hasStop=%s hasTp=%s SL=%s TP=%s",
+                hasStop, hasTp, activeStopLossPrice, activeTakeProfitPrice));
+            if (aiStopLossLine == null) log("⚠️ aiStopLossLine is NULL!");
+            if (aiTakeProfitLine == null) log("⚠️ aiTakeProfitLine is NULL!");
         }
-        if (activeTakeProfitPrice != null && aiTakeProfitLine != null) {
-            aiTakeProfitLine.addPoint(activeTakeProfitPrice);
+
+        try {
+            if (hasStop) {
+                aiStopLossLine.addPoint(activeStopLossPrice);
+            }
+            if (hasTp) {
+                aiTakeProfitLine.addPoint(activeTakeProfitPrice);
+            }
+        } catch (Exception e) {
+            if (now - lastLevelLogTime > 5000) {
+                log("❌ Error drawing levels: " + e.getMessage());
+            }
         }
     }
 
@@ -663,7 +808,7 @@ public class OrderFlowStrategyEnhanced implements
         gbc.gridy = 2;
         settingsPanel.add(new JLabel("Min Confluence Score:"), gbc);
         gbc.gridx = 1;
-        minConfluenceSpinner = new JSpinner(new SpinnerNumberModel(minConfluenceScore.intValue(), 8, 15, 1));
+        minConfluenceSpinner = new JSpinner(new SpinnerNumberModel(minConfluenceScore.intValue(), 0, 150, 5));
         minConfluenceSpinner.addChangeListener(e -> updateMinConfluence());
         settingsPanel.add(minConfluenceSpinner, gbc);
 
@@ -772,6 +917,11 @@ public class OrderFlowStrategyEnhanced implements
         enableAITradingCheckBox.addActionListener(e -> {
             enableAITrading = enableAITradingCheckBox.isSelected();
             log("🤖 AI Trading " + (enableAITrading ? "ENABLED" : "DISABLED"));
+
+            // Initialize AI components if enabling and not already initialized
+            if (enableAITrading && aiOrderManager == null) {
+                initializeAIComponents();
+            }
         });
         settingsPanel.add(enableAITradingCheckBox, gbc);
 
@@ -832,14 +982,66 @@ public class OrderFlowStrategyEnhanced implements
         lossLimitSpinner.addChangeListener(e -> dailyLossLimit = (Double) lossLimitSpinner.getValue());
         settingsPanel.add(lossLimitSpinner, gbc);
 
-        // Apply button
+        // Notifications section
         gbc.gridx = 0; gbc.gridy = 27; gbc.gridwidth = 2;
+        addSeparator(settingsPanel, "Notifications", gbc);
+
+        gbc.gridy = 28; gbc.gridwidth = 1;
+        settingsPanel.add(new JLabel("Event Notifications:"), gbc);
+        gbc.gridx = 1;
+        JCheckBox eventNotifCheckBox = new JCheckBox();
+        eventNotifCheckBox.setSelected(enableEventNotifications);
+        eventNotifCheckBox.setToolTipText("Show notifications for trades and signals");
+        eventNotifCheckBox.addActionListener(e -> enableEventNotifications = eventNotifCheckBox.isSelected());
+        settingsPanel.add(eventNotifCheckBox, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 29;
+        settingsPanel.add(new JLabel("AI Notifications:"), gbc);
+        gbc.gridx = 1;
+        JCheckBox aiNotifCheckBox = new JCheckBox();
+        aiNotifCheckBox.setSelected(enableAINotifications);
+        aiNotifCheckBox.setToolTipText("Allow AI to push alerts and notifications");
+        aiNotifCheckBox.addActionListener(e -> enableAINotifications = aiNotifCheckBox.isSelected());
+        settingsPanel.add(aiNotifCheckBox, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 30;
+        settingsPanel.add(new JLabel("Periodic Updates:"), gbc);
+        gbc.gridx = 1;
+        JCheckBox periodicNotifCheckBox = new JCheckBox();
+        periodicNotifCheckBox.setSelected(enablePeriodicUpdates);
+        periodicNotifCheckBox.setToolTipText("Receive periodic status updates from AI");
+        periodicNotifCheckBox.addActionListener(e -> {
+            enablePeriodicUpdates = periodicNotifCheckBox.isSelected();
+            if (enablePeriodicUpdates) {
+                startPeriodicUpdateTimer();
+            } else {
+                stopPeriodicUpdateTimer();
+            }
+        });
+        settingsPanel.add(periodicNotifCheckBox, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 31;
+        settingsPanel.add(new JLabel("Update Interval (min):"), gbc);
+        gbc.gridx = 1;
+        JSpinner periodicIntervalSpinner = new JSpinner(new SpinnerNumberModel(periodicUpdateIntervalMinutes.intValue(), 5, 60, 5));
+        periodicIntervalSpinner.setToolTipText("How often to receive periodic updates");
+        periodicIntervalSpinner.addChangeListener(e -> {
+            periodicUpdateIntervalMinutes = (Integer) periodicIntervalSpinner.getValue();
+            if (enablePeriodicUpdates) {
+                stopPeriodicUpdateTimer();
+                startPeriodicUpdateTimer();
+            }
+        });
+        settingsPanel.add(periodicIntervalSpinner, gbc);
+
+        // Apply button
+        gbc.gridx = 0; gbc.gridy = 32; gbc.gridwidth = 2;
         JButton applyButton = new JButton("Apply Settings");
         applyButton.addActionListener(e -> applySettings());
         settingsPanel.add(applyButton, gbc);
 
         // Version label (bottom right)
-        gbc.gridx = 1; gbc.gridy = 28; gbc.gridwidth = 1;
+        gbc.gridx = 1; gbc.gridy = 33; gbc.gridwidth = 1;
         gbc.anchor = GridBagConstraints.EAST;
         gbc.weightx = 1.0;
         JLabel versionLabel = new JLabel("Qid v2.1 - AI Trading with Memory");
@@ -1092,9 +1294,43 @@ public class OrderFlowStrategyEnhanced implements
         inputPanel.add(chatInputField, BorderLayout.CENTER);
         inputPanel.add(buttonPanel, BorderLayout.EAST);
 
+        // Approval panel for SEMI_AUTO mode (hidden by default)
+        approvalPanel = new JPanel(new BorderLayout(5, 5));
+        approvalPanel.setBackground(new Color(255, 250, 230));  // Light yellow background
+        approvalPanel.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createMatteBorder(1, 0, 1, 0, Color.ORANGE),
+            BorderFactory.createEmptyBorder(10, 10, 10, 10)
+        ));
+
+        approvalLabel = new JLabel("⏳ Awaiting approval...");
+        approvalLabel.setFont(new Font("SansSerif", Font.BOLD, 13));
+
+        approveButton = new JButton("✅ Approve");
+        approveButton.setBackground(new Color(144, 238, 144));  // Light green
+        approveButton.setFont(new Font("SansSerif", Font.BOLD, 12));
+        approveButton.setToolTipText("Approve this trade");
+
+        rejectButton = new JButton("❌ Reject");
+        rejectButton.setBackground(new Color(255, 182, 193));  // Light red
+        rejectButton.setFont(new Font("SansSerif", Font.BOLD, 12));
+        rejectButton.setToolTipText("Reject this trade");
+
+        JPanel approvalButtons = new JPanel(new FlowLayout(FlowLayout.CENTER, 20, 5));
+        approvalButtons.add(approveButton);
+        approvalButtons.add(rejectButton);
+
+        approvalPanel.add(approvalLabel, BorderLayout.CENTER);
+        approvalPanel.add(approvalButtons, BorderLayout.EAST);
+        approvalPanel.setVisible(false);  // Hidden by default
+
+        // South panel to hold approval and input panels
+        JPanel southPanel = new JPanel(new BorderLayout());
+        southPanel.add(approvalPanel, BorderLayout.NORTH);
+        southPanel.add(inputPanel, BorderLayout.SOUTH);
+
         // Add components to window
         chatWindow.add(historyScrollPane, BorderLayout.CENTER);
-        chatWindow.add(inputPanel, BorderLayout.SOUTH);
+        chatWindow.add(southPanel, BorderLayout.SOUTH);
 
         // Add initial welcome message
         appendChatMessage("System", "Welcome to AI Chat! Ask me anything about trading, order flow, or market analysis.\n\nThis window stays open even when you close the Settings panel.\n\nType your message below and click Send or press Enter.");
@@ -1103,6 +1339,10 @@ public class OrderFlowStrategyEnhanced implements
         chatInputField.addActionListener(e -> sendChatMessage());
         chatSendButton.addActionListener(e -> sendChatMessage());
         chatClearButton.addActionListener(e -> clearChatHistory());
+
+        // Approve/Reject button listeners
+        approveButton.addActionListener(e -> handleApproveTrade());
+        rejectButton.addActionListener(e -> handleRejectTrade());
 
         // Window listener - reset window reference when closed
         chatWindow.addWindowListener(new java.awt.event.WindowAdapter() {
@@ -1167,6 +1407,11 @@ public class OrderFlowStrategyEnhanced implements
         appendChatMessage("You", userMessage);
         chatInputField.setText("");
 
+        // Log user message to unified session transcript
+        if (transcriptWriter != null) {
+            transcriptWriter.logMessage("user", userMessage);
+        }
+
         // Show typing indicator
         appendChatMessage("AI", "Thinking...");
 
@@ -1184,6 +1429,69 @@ public class OrderFlowStrategyEnhanced implements
             } else {
                 log("⚠️ Chat: SKILL.md context not available");
             }
+
+            // 1b. Add LIVE SESSION CONTEXT (current state)
+            enhancedPrompt.append("=== CURRENT TRADING SESSION ===\n");
+            if (sessionContext != null) {
+                enhancedPrompt.append(sessionContext.toAIString());
+            } else {
+                enhancedPrompt.append("(Session not initialized)\n");
+            }
+
+            // Add current thresholds
+            enhancedPrompt.append("\n=== CURRENT THRESHOLDS ===\n");
+            enhancedPrompt.append(String.format("minConfluenceScore: %d\n", minConfluenceScore));
+            enhancedPrompt.append(String.format("confluenceThreshold: %d\n", confluenceThreshold));
+            enhancedPrompt.append(String.format("icebergMinOrders: %d\n", icebergMinOrders));
+            enhancedPrompt.append(String.format("spoofMinSize: %d\n", spoofMinSize));
+            enhancedPrompt.append(String.format("absorptionMinSize: %d\n", absorptionMinSize));
+            enhancedPrompt.append(String.format("useAIAdaptiveThresholds: %s\n", useAIAdaptiveThresholds));
+
+            // Add current market state
+            enhancedPrompt.append("\n=== CURRENT MARKET STATE ===\n");
+            enhancedPrompt.append(String.format("Last Price: %.2f\n", lastKnownPrice));
+            enhancedPrompt.append(String.format("CVD: %d (%s)\n", cvdCalculator.getCVD(),
+                cvdCalculator.getCVD() > 0 ? "BULLISH" : cvdCalculator.getCVD() < 0 ? "BEARISH" : "NEUTRAL"));
+            enhancedPrompt.append(String.format("VWAP: %.2f\n", vwapCalculator.isInitialized() ? vwapCalculator.getVWAP() : 0));
+            enhancedPrompt.append(String.format("EMA9: %.2f | EMA21: %.2f | EMA50: %.2f\n",
+                ema9.isInitialized() ? ema9.getEMA() : 0,
+                ema21.isInitialized() ? ema21.getEMA() : 0,
+                ema50.isInitialized() ? ema50.getEMA() : 0));
+
+            // Add DOM (Order Book) levels
+            enhancedPrompt.append("\n=== ORDER BOOK (DOM) ===\n");
+            if (domAnalyzer != null) {
+                var support = domAnalyzer.getNearestSupport();
+                var resistance = domAnalyzer.getNearestResistance();
+                if (support != null) {
+                    enhancedPrompt.append(String.format("Support: %d (%d contracts)\n",
+                        support.price, support.volume));
+                }
+                if (resistance != null) {
+                    enhancedPrompt.append(String.format("Resistance: %d (%d contracts)\n",
+                        resistance.price, resistance.volume));
+                }
+                enhancedPrompt.append(String.format("Imbalance: %.2f (%s)\n",
+                    domAnalyzer.getImbalanceRatio(), domAnalyzer.getImbalanceSentiment()));
+            } else {
+                enhancedPrompt.append("(DOM data not yet available)\n");
+            }
+
+            // Add recent signal decisions
+            enhancedPrompt.append("\n=== RECENT SIGNALS ===\n");
+            if (!trackedSignals.isEmpty()) {
+                int count = 0;
+                for (var entry : trackedSignals.entrySet()) {
+                    if (count++ >= 5) break;  // Last 5 signals
+                    SignalPerformance perf = entry.getValue();
+                    enhancedPrompt.append(String.format("- %s @ %d | Score: %d | %s\n",
+                        perf.isBid ? "BUY" : "SELL", perf.entryPrice, perf.score,
+                        perf.confluenceBreakdown != null ? perf.confluenceBreakdown : ""));
+                }
+            } else {
+                enhancedPrompt.append("(No signals yet this session)\n");
+            }
+            enhancedPrompt.append("\n");
 
             // 2. Search memory for relevant context
             if (memoryService != null) {
@@ -1224,8 +1532,13 @@ public class OrderFlowStrategyEnhanced implements
 
             return enhancedPrompt.toString();
         })
-        .thenCompose(enhancedPrompt -> aiThresholdService.chat(enhancedPrompt))
+        .thenCompose(enhancedPrompt -> aiThresholdService.chatWithTools(enhancedPrompt))
         .thenAcceptAsync(response -> {
+            // Log AI response to unified session transcript
+            if (transcriptWriter != null) {
+                transcriptWriter.logMessage("assistant", response);
+            }
+
             // Remove "Thinking..." and add actual response
             SwingUtilities.invokeLater(() -> {
                 // Remove last line (Thinking...)
@@ -1257,7 +1570,17 @@ public class OrderFlowStrategyEnhanced implements
     }
 
     private void appendChatMessage(String role, String message) {
+        // Guard: Skip if chat UI not initialized yet
+        if (chatHtmlContent == null || chatHistoryArea == null) {
+            return;
+        }
+
         SwingUtilities.invokeLater(() -> {
+            // Double-check inside EDT
+            if (chatHtmlContent == null || chatHistoryArea == null) {
+                return;
+            }
+
             String timestamp = new SimpleDateFormat("HH:mm:ss").format(new Date());
 
             // Parse markdown to HTML for AI messages
@@ -1303,6 +1626,323 @@ public class OrderFlowStrategyEnhanced implements
             // Store message
             chatMessages.add(new String[]{role, message});
         });
+    }
+
+    // ========== PUSH NOTIFICATION SYSTEM ==========
+
+    /**
+     * Push a notification to the chat (proactive, not in response to user)
+     * This allows the system and AI to notify user of events
+     *
+     * @param type Notification type (EVENT, AI, PERIODIC, TRADE, SIGNAL)
+     * @param message The message to display
+     * @param priority Priority level (low, normal, high, urgent)
+     */
+    public void pushNotification(String type, String message, String priority) {
+        // Check if this notification type is enabled
+        switch (type) {
+            case "EVENT":
+            case "TRADE":
+            case "SIGNAL":
+            case "THRESHOLD":
+            case "RISK":
+                if (!enableEventNotifications) return;
+                break;
+            case "AI":
+                if (!enableAINotifications) return;
+                break;
+            case "PERIODIC":
+                if (!enablePeriodicUpdates) return;
+                break;
+        }
+
+        // Format notification with icon based on type
+        String icon = switch (type) {
+            case "TRADE" -> "📈";
+            case "SIGNAL" -> "📊";
+            case "THRESHOLD" -> "🎚️";
+            case "RISK" -> "⚠️";
+            case "AI" -> "🤖";
+            case "PERIODIC" -> "🔔";
+            default -> "📢";
+        };
+
+        // Priority formatting
+        String priorityPrefix = switch (priority) {
+            case "urgent" -> "🔴 URGENT: ";
+            case "high" -> "🟠 ";
+            default -> "";
+        };
+
+        // Log to transcript
+        if (transcriptWriter != null) {
+            transcriptWriter.logMessage("notification", type + ": " + message);
+        }
+
+        // Push to chat
+        String formattedMessage = icon + " " + priorityPrefix + message;
+        SwingUtilities.invokeLater(() -> {
+            appendChatMessage("🔔 Notification", formattedMessage);
+        });
+    }
+
+    /**
+     * Push notification with normal priority
+     */
+    public void pushNotification(String type, String message) {
+        pushNotification(type, message, "normal");
+    }
+
+    /**
+     * Push event notification (trade executed, signal detected, etc.)
+     */
+    public void notifyEvent(String message) {
+        pushNotification("EVENT", message);
+    }
+
+    /**
+     * Push AI-generated notification
+     */
+    public void notifyAI(String message, String priority) {
+        pushNotification("AI", message, priority);
+    }
+
+    // ========== TRADE APPROVAL (SEMI_AUTO MODE) ==========
+
+    /**
+     * Request user approval for a trade (SEMI_AUTO mode)
+     * Shows approve/reject buttons in the chat panel
+     *
+     * @param isBuy true for buy, false for sell
+     * @param quantity number of contracts
+     * @param price target price (or 0 for market)
+     * @param signalType type of signal that triggered this
+     * @param score confluence score
+     * @param onApprove callback when user approves
+     * @param onReject callback when user rejects
+     * @return request ID for tracking
+     */
+    public String requestTradeApproval(boolean isBuy, int quantity, double price,
+                                       String signalType, int score,
+                                       Runnable onApprove, Runnable onReject) {
+        // Cancel any pending request
+        if (pendingTradeRequest != null) {
+            log("⚠️ Previous pending trade request replaced");
+            hideApprovalPanel();
+        }
+
+        // Create new pending request
+        pendingTradeRequest = new PendingTradeRequest();
+        pendingTradeRequest.requestId = "req_" + System.currentTimeMillis();
+        pendingTradeRequest.isBuy = isBuy;
+        pendingTradeRequest.quantity = quantity;
+        pendingTradeRequest.price = price;
+        pendingTradeRequest.signalType = signalType;
+        pendingTradeRequest.score = score;
+        pendingTradeRequest.timestamp = System.currentTimeMillis();
+        pendingTradeRequest.onApprove = onApprove;
+        pendingTradeRequest.onReject = onReject;
+
+        // Show approval panel in chat window
+        showApprovalPanel();
+
+        return pendingTradeRequest.requestId;
+    }
+
+    /**
+     * Show the approval panel with pending trade details
+     */
+    private void showApprovalPanel() {
+        if (pendingTradeRequest == null || approvalPanel == null) return;
+
+        SwingUtilities.invokeLater(() -> {
+            String direction = pendingTradeRequest.isBuy ? "BUY" : "SELL";
+            String priceStr = pendingTradeRequest.price > 0 ?
+                String.format("@ %.2f", pendingTradeRequest.price) : "@ MARKET";
+
+            approvalLabel.setText(String.format(
+                "🔔 Trade Request: %s %d %s %s | Signal: %s (Score: %d)",
+                direction, pendingTradeRequest.quantity,
+                alias != null ? alias : "contracts",
+                priceStr, pendingTradeRequest.signalType, pendingTradeRequest.score
+            ));
+
+            approvalPanel.setVisible(true);
+            approvalPanel.revalidate();
+            approvalPanel.repaint();
+
+            // Also add to chat history
+            appendChatMessage("AI", String.format(
+                "🔔 **Trade Approval Request**\n\n" +
+                "**Direction:** %s\n" +
+                "**Quantity:** %d\n" +
+                "**Price:** %s\n" +
+                "**Signal:** %s (Score: %d)\n\n" +
+                "Please click Approve or Reject below.",
+                direction, pendingTradeRequest.quantity, priceStr,
+                pendingTradeRequest.signalType, pendingTradeRequest.score
+            ));
+
+            log("🔔 Trade approval requested: " + direction + " " + pendingTradeRequest.quantity);
+        });
+    }
+
+    /**
+     * Hide the approval panel
+     */
+    private void hideApprovalPanel() {
+        if (approvalPanel == null) return;
+
+        SwingUtilities.invokeLater(() -> {
+            approvalPanel.setVisible(false);
+            approvalPanel.revalidate();
+            approvalPanel.repaint();
+        });
+    }
+
+    /**
+     * Handle approve button click
+     */
+    private void handleApproveTrade() {
+        if (pendingTradeRequest == null) {
+            appendChatMessage("System", "⚠️ No pending trade request to approve.");
+            return;
+        }
+
+        log("✅ Trade APPROVED: " + (pendingTradeRequest.isBuy ? "BUY" : "SELL"));
+        appendChatMessage("You", "✅ Approved");
+
+        // Store callbacks before clearing
+        Runnable onApprove = pendingTradeRequest.onApprove;
+        String requestId = pendingTradeRequest.requestId;
+
+        // Clear pending request
+        pendingTradeRequest = null;
+        hideApprovalPanel();
+
+        // Execute approval callback
+        if (onApprove != null) {
+            try {
+                onApprove.run();
+            } catch (Exception e) {
+                log("❌ Error executing approval callback: " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Handle reject button click
+     */
+    private void handleRejectTrade() {
+        if (pendingTradeRequest == null) {
+            appendChatMessage("System", "⚠️ No pending trade request to reject.");
+            return;
+        }
+
+        log("❌ Trade REJECTED: " + (pendingTradeRequest.isBuy ? "BUY" : "SELL"));
+        appendChatMessage("You", "❌ Rejected");
+
+        // Store callbacks before clearing
+        Runnable onReject = pendingTradeRequest.onReject;
+
+        // Clear pending request
+        pendingTradeRequest = null;
+        hideApprovalPanel();
+
+        // Execute reject callback
+        if (onReject != null) {
+            try {
+                onReject.run();
+            } catch (Exception e) {
+                log("❌ Error executing reject callback: " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Check if there's a pending trade approval request
+     */
+    public boolean hasPendingTradeRequest() {
+        return pendingTradeRequest != null;
+    }
+
+    /**
+     * Cancel any pending trade request (e.g., on mode change)
+     */
+    public void cancelPendingTradeRequest() {
+        if (pendingTradeRequest != null) {
+            log("⚠️ Pending trade request cancelled");
+            pendingTradeRequest = null;
+            hideApprovalPanel();
+        }
+    }
+
+    // ========== PERIODIC UPDATE TIMER ==========
+
+    private java.util.Timer periodicUpdateTimer;
+    private long lastPeriodicUpdateTime = 0;
+
+    private void startPeriodicUpdateTimer() {
+        if (!enablePeriodicUpdates || aiThresholdService == null) return;
+
+        if (periodicUpdateTimer != null) {
+            periodicUpdateTimer.cancel();
+        }
+
+        periodicUpdateTimer = new java.util.Timer("PeriodicUpdateTimer", true);
+        long intervalMs = periodicUpdateIntervalMinutes * 60 * 1000L;
+
+        periodicUpdateTimer.scheduleAtFixedRate(new java.util.TimerTask() {
+            @Override
+            public void run() {
+                try {
+                    generatePeriodicUpdate();
+                } catch (Exception e) {
+                    log("Error in periodic update: " + e.getMessage());
+                }
+            }
+        }, intervalMs, intervalMs);
+
+        log("⏰ Periodic update timer started (every " + periodicUpdateIntervalMinutes + " min)");
+    }
+
+    private void stopPeriodicUpdateTimer() {
+        if (periodicUpdateTimer != null) {
+            periodicUpdateTimer.cancel();
+            periodicUpdateTimer = null;
+        }
+    }
+
+    /**
+     * Generate a periodic status update from AI
+     */
+    private void generatePeriodicUpdate() {
+        if (!enablePeriodicUpdates || aiThresholdService == null || aiToolsProvider == null) {
+            return;
+        }
+
+        log("🔔 Generating periodic status update...");
+
+        // Build status prompt
+        String prompt = """
+            Please provide a brief status update for the user. Include:
+            1. Current session performance (trades, win rate, P&L)
+            2. Current market state (price, CVD direction, trend)
+            3. Any notable observations or recommendations
+            4. Current threshold settings if changed
+
+            Keep it concise - 3-5 sentences max. This is a periodic check-in, not a full analysis.
+            """;
+
+        // Get AI response
+        aiThresholdService.chatWithTools(prompt)
+            .thenAccept(response -> {
+                pushNotification("PERIODIC", response, "low");
+            })
+            .exceptionally(ex -> {
+                log("Failed to generate periodic update: " + ex.getMessage());
+                return null;
+            });
     }
 
     /**
@@ -1557,6 +2197,83 @@ public class OrderFlowStrategyEnhanced implements
         adaptSizeSpinner.setEnabled(!selected);
     }
 
+    /**
+     * Initialize AI Trading components
+     * Can be called at startup or when AI Trading is enabled in settings
+     */
+    private void initializeAIComponents() {
+        if (aiAuthToken == null || aiAuthToken.isEmpty()) {
+            log("⚠️ Cannot initialize AI - no auth token");
+            return;
+        }
+
+        if (aiOrderManager != null) {
+            log("ℹ️ AI components already initialized");
+            return;
+        }
+
+        log("🤖 Initializing AI Trading System...");
+
+        try {
+            // Create order executor with logger wrapper using real Bookmap API
+            orderExecutor = new BookmapOrderExecutor(api, alias, new AIIntegrationLayer.AIStrategyLogger() {
+                @Override
+                public void log(String message, Object... args) {
+                    OrderFlowStrategyEnhanced.this.log(message);
+                }
+            });
+
+            // Create AI integration layer with logger wrapper
+            aiIntegration = new AIIntegrationLayer(aiAuthToken, new AIIntegrationLayer.AIStrategyLogger() {
+                @Override
+                public void log(String message, Object... args) {
+                    OrderFlowStrategyEnhanced.this.log(message);
+                }
+            });
+
+            // Set trading session plan
+            String sessionPlan = String.format(
+                "Trading Plan for %s:\n" +
+                "- Max %d trades per day\n" +
+                "- Risk 1%% per trade\n" +
+                "- 1:2 reward-risk ratio\n" +
+                "- Break-even at +3 ticks\n" +
+                "- Focus on quality over quantity\n" +
+                "- Current mode: %s",
+                alias, maxPosition, aiMode
+            );
+            aiIntegration.setSessionPlan(sessionPlan);
+
+            // Create AI order manager with logger wrapper and marker callback
+            aiOrderManager = new AIOrderManager(orderExecutor, new AIIntegrationLayer.AIStrategyLogger() {
+                @Override
+                public void log(String message, Object... args) {
+                    OrderFlowStrategyEnhanced.this.log(message);
+                }
+            }, this);  // Pass 'this' as the marker callback
+            aiOrderManager.breakEvenEnabled = true;
+            aiOrderManager.breakEvenTicks = 3;
+            aiOrderManager.maxPositions = maxPosition;
+            aiOrderManager.maxDailyLoss = dailyLossLimit;
+
+            log("✅ AI Trading System initialized");
+            log("   Mode: " + aiMode);
+            log("   Confluence Threshold: " + confluenceThreshold);
+
+            // Initialize AI Strategist if memory service is available
+            if (memoryService != null && aiStrategist == null) {
+                aiStrategist = new AIInvestmentStrategist(
+                    (velox.api.layer1.simplified.demo.storage.TradingMemoryService) memoryService,
+                    aiAuthToken, transcriptWriter);
+                log("✅ AI Investment Strategist initialized");
+            }
+
+        } catch (Exception e) {
+            log("❌ Failed to initialize AI Trading: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
     private void updateSimMode() {
         boolean selected = simModeCheckBox.isSelected();
         if (!selected) {
@@ -1741,8 +2458,8 @@ public class OrderFlowStrategyEnhanced implements
     private AIThresholdService.MarketContext buildMarketContext() {
         AIThresholdService.MarketContext context = new AIThresholdService.MarketContext(alias);
 
-        // Current market state
-        context.currentPrice = getCurrentPrice();
+        // Current market state - use actual price (not tick price)
+        context.currentPrice = getCurrentPrice() * pips;
         context.totalVolume = totalVolume.get();
         context.cvd = cvdCalculator.getCVD();
         context.trend = "NEUTRAL";  // Simplified - can be enhanced later
@@ -1808,6 +2525,257 @@ public class OrderFlowStrategyEnhanced implements
         });
 
         lastAIReevaluationTime = System.currentTimeMillis();
+    }
+
+    /**
+     * Set up the AI Tools Provider with data suppliers
+     * This connects real-time trading data to the AI's function calling capability
+     */
+    private void setupAIToolsProvider() {
+        if (aiToolsProvider == null) return;
+
+        // Price supplier - convert tick price to actual price
+        aiToolsProvider.setPriceSupplier(() -> {
+            double actualPrice = lastKnownPrice * pips;
+            log(String.format("🔍 PRICE SUPPLIER: lastKnownPrice=%.0f pips=%.4f actualPrice=%.2f",
+                lastKnownPrice, pips, actualPrice));
+            return actualPrice;
+        });
+
+        // CVD supplier
+        aiToolsProvider.setCvdSupplier(() -> cvdCalculator.getCVD());
+
+        // VWAP supplier - convert to actual price
+        aiToolsProvider.setVwapSupplier(() ->
+            vwapCalculator.isInitialized() ? vwapCalculator.getVWAP() * pips : 0.0);
+
+        // EMA supplier - convert to actual prices
+        aiToolsProvider.setEmaSupplier(() -> new double[] {
+            ema9.isInitialized() ? ema9.getEMA() * pips : 0.0,
+            ema21.isInitialized() ? ema21.getEMA() * pips : 0.0,
+            ema50.isInitialized() ? ema50.getEMA() * pips : 0.0
+        });
+
+        // DOM (Order Book) supplier - convert prices to actual
+        aiToolsProvider.setDomSupplier(() -> {
+            Map<String, Object> dom = new HashMap<>();
+            var support = domAnalyzer.getNearestSupport();
+            var resistance = domAnalyzer.getNearestResistance();
+            if (support != null) {
+                dom.put("supportPrice", support.price * pips);
+                dom.put("supportVolume", support.volume);
+            }
+            if (resistance != null) {
+                dom.put("resistancePrice", resistance.price * pips);
+                dom.put("resistanceVolume", resistance.volume);
+            }
+            dom.put("imbalanceRatio", domAnalyzer.getImbalanceRatio());
+            dom.put("imbalanceSentiment", domAnalyzer.getImbalanceSentiment());
+            return dom;
+        });
+
+        // Recent signals supplier - convert prices to actual
+        aiToolsProvider.setSignalsSupplier(() -> {
+            List<Map<String, Object>> signals = new ArrayList<>();
+            for (var entry : trackedSignals.entrySet()) {
+                Map<String, Object> sig = new HashMap<>();
+                SignalPerformance perf = entry.getValue();
+                sig.put("direction", perf.isBid ? "BUY" : "SELL");
+                sig.put("price", perf.entryPrice * pips);
+                sig.put("score", perf.score);
+                sig.put("time", new java.text.SimpleDateFormat("HH:mm:ss").format(new java.util.Date(perf.timestamp)));
+                signals.add(sig);
+            }
+            return signals;
+        });
+
+        // Session stats supplier - combines sessionContext and AI order manager stats
+        aiToolsProvider.setSessionSupplier(() -> {
+            Map<String, Object> stats = new HashMap<>();
+            if (sessionContext != null) {
+                stats.put("sessionId", sessionContext.getSessionId());
+                stats.put("phase", sessionContext.getCurrentPhase().toString());
+                stats.put("warmupComplete", sessionContext.isWarmupComplete());
+                stats.put("minutesIntoSession", sessionContext.getMinutesIntoSession());
+            }
+
+            // Include AI Order Manager stats if available (these are the actual executed trades)
+            if (aiOrderManager != null) {
+                stats.put("trades", aiOrderManager.getTotalTrades());
+                stats.put("wins", aiOrderManager.getWinningTrades());
+                stats.put("losses", aiOrderManager.getLosingTrades());
+                stats.put("pnl", aiOrderManager.getDailyPnl());
+                stats.put("activePositions", aiOrderManager.getActivePositionCount());
+                stats.put("winRate", aiOrderManager.getWinRate());
+            } else {
+                // Fallback to session context stats
+                stats.put("trades", sessionContext != null ? sessionContext.getTradesThisSession() : 0);
+                stats.put("wins", sessionContext != null ? sessionContext.getWinsThisSession() : 0);
+                stats.put("losses", sessionContext != null ? sessionContext.getLossesThisSession() : 0);
+                stats.put("pnl", sessionContext != null ? sessionContext.getSessionPnl() : 0.0);
+            }
+            return stats;
+        });
+
+        // Thresholds supplier
+        aiToolsProvider.setThresholdsSupplier(() -> {
+            Map<String, Integer> thresholds = new HashMap<>();
+            thresholds.put("minConfluenceScore", minConfluenceScore);
+            thresholds.put("confluenceThreshold", confluenceThreshold);
+            thresholds.put("icebergMinOrders", icebergMinOrders);
+            thresholds.put("spoofMinSize", spoofMinSize);
+            thresholds.put("absorptionMinSize", absorptionMinSize);
+            thresholds.put("useAIAdaptive", useAIAdaptiveThresholds ? 1 : 0);
+            return thresholds;
+        });
+
+        // Performance analytics supplier
+        aiToolsProvider.setPerformanceSupplier(() -> {
+            Map<String, Object> perf = new HashMap<>();
+
+            // From session context
+            if (sessionContext != null) {
+                perf.put("winRate", sessionContext.getSessionWinRate() / 100.0);
+                perf.put("totalSignals", sessionContext.getTradesThisSession());
+            }
+
+            // From tracked signals
+            int wins = 0, losses = 0, total = 0;
+            double winScoreSum = 0, loseScoreSum = 0, skipScoreSum = 0;
+            int takeCount = 0, skipCount = 0;
+
+            for (var entry : trackedSignals.entrySet()) {
+                SignalPerformance sig = entry.getValue();
+                total++;
+                if (sig.profitable != null) {
+                    if (sig.profitable) {
+                        wins++;
+                        winScoreSum += sig.score;
+                    } else {
+                        losses++;
+                        loseScoreSum += sig.score;
+                    }
+                } else {
+                    skipCount++;
+                    skipScoreSum += sig.score;
+                }
+            }
+
+            if (total > 0) {
+                perf.put("takeCount", wins + losses);
+                perf.put("skipCount", skipCount);
+                perf.put("avgWinningScore", wins > 0 ? winScoreSum / wins : 0);
+                perf.put("avgLosingScore", losses > 0 ? loseScoreSum / losses : 0);
+                perf.put("avgSkipScore", skipCount > 0 ? skipScoreSum / skipCount : 0);
+
+                // Simple correlation estimates
+                perf.put("cvdAlignmentCorrelation", 0.3);  // Placeholder
+                perf.put("trendAlignmentCorrelation", 0.25);
+                perf.put("emaAlignmentCorrelation", 0.2);
+
+                // Time analysis
+                perf.put("bestHour", "10:00-11:00");
+                perf.put("worstHour", "12:00-13:00");
+            }
+
+            return perf;
+        });
+
+        // Threshold adjuster callback - allows AI tools to change thresholds
+        aiToolsProvider.setThresholdAdjuster((thresholdName, value) -> {
+            log("🔧 AI TOOL ADJUSTMENT: " + thresholdName + " → " + value);
+
+            try {
+                switch (thresholdName) {
+                    case "minConfluenceScore" -> {
+                        minConfluenceScore = value;
+                        return true;
+                    }
+                    case "confluenceThreshold" -> {
+                        confluenceThreshold = value;
+                        return true;
+                    }
+                    case "icebergMinOrders" -> {
+                        icebergMinOrders = value;
+                        return true;
+                    }
+                    case "spoofMinSize" -> {
+                        spoofMinSize = value;
+                        return true;
+                    }
+                    case "absorptionMinSize" -> {
+                        absorptionMinSize = value;
+                        return true;
+                    }
+                    default -> {
+                        log("⚠️ Unknown threshold: " + thresholdName);
+                        return false;
+                    }
+                }
+            } catch (Exception e) {
+                log("❌ Failed to adjust threshold: " + e.getMessage());
+                return false;
+            }
+        });
+
+        // Notification callback - allows AI to push notifications to user
+        aiToolsProvider.setNotificationCallback((category, message, priority) -> {
+            log("🔔 AI NOTIFICATION [" + category + "]: " + message);
+            notifyAI(message, priority);
+        });
+    }
+
+    /**
+     * Apply threshold adjustments from AI Investment Strategist
+     * This allows the AI to dynamically tune thresholds based on market conditions
+     */
+    private void applyThresholdAdjustment(AIInvestmentStrategist.ThresholdAdjustment adj) {
+        log("🎚️ AI THRESHOLD ADJUSTMENT:");
+        boolean anyChanged = false;
+
+        if (adj.minConfluenceScore != null && adj.minConfluenceScore != minConfluenceScore) {
+            log(String.format("   minConfluenceScore: %d → %d", minConfluenceScore, adj.minConfluenceScore));
+            minConfluenceScore = adj.minConfluenceScore;
+            anyChanged = true;
+        }
+
+        if (adj.confluenceThreshold != null && adj.confluenceThreshold != confluenceThreshold) {
+            log(String.format("   confluenceThreshold: %d → %d", confluenceThreshold, adj.confluenceThreshold));
+            confluenceThreshold = adj.confluenceThreshold;
+            anyChanged = true;
+        }
+
+        if (adj.icebergMinOrders != null && adj.icebergMinOrders != icebergMinOrders) {
+            log(String.format("   icebergMinOrders: %d → %d", icebergMinOrders, adj.icebergMinOrders));
+            icebergMinOrders = adj.icebergMinOrders;
+            anyChanged = true;
+        }
+
+        if (adj.spoofMinSize != null && adj.spoofMinSize != spoofMinSize) {
+            log(String.format("   spoofMinSize: %d → %d", spoofMinSize, adj.spoofMinSize));
+            spoofMinSize = adj.spoofMinSize;
+            anyChanged = true;
+        }
+
+        if (adj.absorptionMinSize != null && adj.absorptionMinSize != absorptionMinSize) {
+            log(String.format("   absorptionMinSize: %d → %d", absorptionMinSize, adj.absorptionMinSize));
+            absorptionMinSize = adj.absorptionMinSize;
+            anyChanged = true;
+        }
+
+        if (adj.thresholdMultiplier != null && Math.abs(adj.thresholdMultiplier - thresholdMultiplier) > 0.01) {
+            log(String.format("   thresholdMultiplier: %.1f → %.1f", thresholdMultiplier, adj.thresholdMultiplier));
+            thresholdMultiplier = adj.thresholdMultiplier;
+            anyChanged = true;
+        }
+
+        if (anyChanged) {
+            log("   Reasoning: " + (adj.reasoning != null ? adj.reasoning : "N/A"));
+            log("✅ Thresholds updated by AI");
+            saveSettings();  // Persist the changes
+        } else {
+            log("   No changes needed (all values same as current)");
+        }
     }
 
     // Helper methods for market context
@@ -2092,8 +3060,8 @@ public class OrderFlowStrategyEnhanced implements
                         direction, price, totalSize);
 
                     log("🧊 ADAPTIVE SIGNAL: " + signal +
-                        String.format(" (Thresholds: %d orders, %d size, Avg: %.1f orders, %.1f size)",
-                            adaptiveOrderThreshold, adaptiveSizeThreshold,
+                        String.format(" (isBid=%b, Thresholds: %d orders, %d size, Avg: %.1f orders, %.1f size)",
+                            isBid, adaptiveOrderThreshold, adaptiveSizeThreshold,
                             recentOrderCounts.stream().mapToInt(Integer::intValue).average().orElse(0.0),
                             recentTotalSizes.stream().mapToInt(Integer::intValue).average().orElse(0.0)));
 
@@ -2101,6 +3069,71 @@ public class OrderFlowStrategyEnhanced implements
                         signalWriter.println(signal);
                         signalWriter.flush();
                     }
+
+                    // ========== WARM-UP CHECK ==========
+                    // Skip ALL signal processing during warm-up period
+                    // Update session context first (use data timestamp for replay mode)
+                    if (sessionContext != null) {
+                        sessionContext.update(price, currentDataTimestampMs);
+                    }
+
+                    boolean warmupComplete = (sessionContext == null || sessionContext.isWarmupComplete());
+
+                    if (!warmupComplete) {
+                        log(String.format("⏳ WARMUP: Skipping signal - %s", sessionContext.getWarmupStatus()));
+                        return;  // Exit early - no markers, no tracking, no AI
+                    }
+
+                    // ========== PRE-FILTERS (check BEFORE adding markers/tracking) ==========
+                    boolean sendToAI = true;
+                    String skipReason = null;
+
+                    // Calculate score early for filtering
+                    int signalScore = calculateConfluenceScore(isBid, price, totalSize);
+                    long cvd = cvdCalculator.getCVD();
+
+                    // 1. Minimum score floor filter
+                    int scoreFloor = confluenceThreshold - SCORE_FLOOR_OFFSET;
+                    if (signalScore < scoreFloor) {
+                        sendToAI = false;
+                        skipReason = String.format("Score %d < floor %d (threshold %d - %d)",
+                            signalScore, scoreFloor, confluenceThreshold, SCORE_FLOOR_OFFSET);
+                    }
+
+                    // 2. Strong counter-trend filter
+                    boolean isStrongCounterTrend = (isBid && cvd < -CVD_STRONG_THRESHOLD) ||
+                                                   (!isBid && cvd > CVD_STRONG_THRESHOLD);
+                    if (sendToAI && isStrongCounterTrend) {
+                        sendToAI = false;
+                        skipReason = String.format("Strong counter-trend (signal=%s, CVD=%d, threshold=±%d)",
+                            isBid ? "BUY" : "SELL", cvd, CVD_STRONG_THRESHOLD);
+                    }
+
+                    // 3. Signal deduplication filter
+                    if (sendToAI) {
+                        String signalKey = (isBid ? "BUY@" : "SELL@") + price;
+                        Long lastSent = recentSignalsSent.get(signalKey);
+                        long currentTime = System.currentTimeMillis();
+                        if (lastSent != null && (currentTime - lastSent) < SIGNAL_DEDUP_MS) {
+                            sendToAI = false;
+                            skipReason = String.format("Duplicate signal %s (%.0fs ago)",
+                                signalKey, (currentTime - lastSent) / 1000.0);
+                        } else {
+                            recentSignalsSent.put(signalKey, currentTime);
+                            // Clean up old dedup entries (prevent memory leak)
+                            recentSignalsSent.entrySet().removeIf(e -> (currentTime - e.getValue()) > SIGNAL_DEDUP_MS * 2);
+                        }
+                    }
+
+                    // If filtered out, log and exit - NO marker, NO tracking
+                    if (!sendToAI) {
+                        log("⏭️ PRE-FILTER SKIP: " + skipReason);
+                        return;
+                    }
+
+                    // ========== SIGNAL PASSED FILTERS - Now add marker and tracking ==========
+                    log(String.format("✅ PRE-FILTER PASS: Score=%d >= %d, CVD=%d, sending to AI",
+                        signalScore, scoreFloor, cvd));
 
                     // Add marker point at signal price
                     // Using addIcon() for discrete markers without connecting lines
@@ -2115,10 +3148,10 @@ public class OrderFlowStrategyEnhanced implements
                     perf.timestamp = now;
                     perf.isBid = isBid;
                     perf.entryPrice = price;
-                    perf.score = calculateConfluenceScore(isBid, price, totalSize);
+                    perf.score = signalScore;
                     perf.totalSize = totalSize;
-                    perf.cvdAtSignal = cvdCalculator.getCVD();
-                    perf.trendAtSignal = perf.cvdAtSignal > 0 ? "BULLISH" : "BEARISH";
+                    perf.cvdAtSignal = cvd;
+                    perf.trendAtSignal = cvd > 0 ? "BULLISH" : "BEARISH";
                     perf.emaAlignmentAtSignal = ema9.isInitialized() && ema21.isInitialized() && ema50.isInitialized() ? 3 : 0;
                     perf.profitable = null;  // Still open
 
@@ -2145,33 +3178,93 @@ public class OrderFlowStrategyEnhanced implements
                     }
 
                     // ========== AI TRADING EVALUATION ==========
+                    // Warm-up already checked earlier - if we're here, warm-up is complete
                     log(String.format("🤖 AI CHECK: enableAITrading=%s, aiOrderManager=%s, aiStrategist=%s",
                         enableAITrading, aiOrderManager != null ? "ready" : "null", aiStrategist != null ? "ready" : "null"));
 
                     if (enableAITrading && aiOrderManager != null) {
+                        // Pre-filters already passed above - proceed to AI evaluation
+
                         // Create SignalData for AI evaluation
                         SignalData signalData = createSignalData(isBid, price, totalSize);
 
                         // Use AI Investment Strategist (memory-aware) if available
                         if (aiStrategist != null) {
                             log("🧠 Using AI Investment Strategist (memory-aware evaluation)");
-                            aiStrategist.evaluateSetup(signalData, new AIInvestmentStrategist.AIStrategistCallback() {
-                                @Override
-                                public void onDecision(AIInvestmentStrategist.AIDecision decision) {
-                                    // Execute AI decision
-                                    if (decision.shouldTake && decision.plan != null) {
-                                        log(String.format("✅ AI TAKE: %s (confidence: %.0f%%) - %s",
-                                            decision.plan.orderType, decision.confidence * 100, decision.reasoning));
+                            aiStrategist.evaluateSetup(signalData, sessionContext, new AIInvestmentStrategist.AIStrategistCallback() {
+                            @Override
+                            public void onDecision(AIInvestmentStrategist.AIDecision decision) {
+                                // Handle threshold adjustments from AI
+                                if (decision.thresholdAdjustment != null && decision.thresholdAdjustment.hasAdjustments()) {
+                                    applyThresholdAdjustment(decision.thresholdAdjustment);
+                                }
+
+                                // Execute AI decision
+                                if (decision.shouldTake && decision.plan != null) {
+                                    log(String.format("✅ AI TAKE: %s (confidence: %.0f%%) - %s",
+                                        decision.plan.orderType, decision.confidence * 100, decision.reasoning));
+
+                                    // Validate SL/TP prices from plan
+                                    int stopLossPrice = decision.plan.stopLossPrice;
+                                    int takeProfitPrice = decision.plan.takeProfitPrice;
+                                    boolean isLong = decision.plan.orderType.contains("BUY");
+
+                                    // Fallback to signal-based calculation if plan prices are 0
+                                    if (stopLossPrice == 0) {
+                                        stopLossPrice = isLong ?
+                                            signalData.price - 30 :  // 30 ticks
+                                            signalData.price + 30;
+                                        log("⚠️ SL was 0, calculated fallback: " + stopLossPrice);
+                                    }
+                                    if (takeProfitPrice == 0) {
+                                        takeProfitPrice = isLong ?
+                                                signalData.price + 70 :  // 70 ticks
+                                                signalData.price - 70;
+                                            log("⚠️ TP was 0, calculated fallback: " + takeProfitPrice);
+                                        }
+
+                                        log(String.format("📊 FINAL SL/TP: SL=%d TP=%d", stopLossPrice, takeProfitPrice));
+
                                         // Convert to AIIntegrationLayer.AIDecision format for order manager
-                                        AIIntegrationLayer.AIDecision aiDecision = new AIIntegrationLayer.AIDecision();
+                                        final AIIntegrationLayer.AIDecision aiDecision = new AIIntegrationLayer.AIDecision();
                                         aiDecision.action = "TAKE";
                                         aiDecision.confidence = (int)(decision.confidence * 100);  // Convert 0-1 to 0-100
                                         aiDecision.reasoning = decision.reasoning;
-                                        aiDecision.isLong = decision.plan.orderType.contains("BUY");
-                                        aiDecision.direction = aiDecision.isLong ? "LONG" : "SHORT";
-                                        aiDecision.stopLoss = decision.plan.stopLossPrice;
-                                        aiDecision.takeProfit = decision.plan.takeProfitPrice;
-                                        aiOrderManager.executeEntry(aiDecision, signalData);
+                                        aiDecision.isLong = isLong;
+                                        aiDecision.direction = isLong ? "LONG" : "SHORT";
+                                        aiDecision.stopLoss = stopLossPrice;
+                                        aiDecision.takeProfit = takeProfitPrice;
+
+                                        // Check mode: SEMI_AUTO requires approval, FULL_AUTO executes immediately
+                                        if ("SEMI_AUTO".equals(aiMode)) {
+                                            log("🔒 SEMI_AUTO mode - requesting user approval");
+                                            final int finalStopLoss = stopLossPrice;
+                                            final int finalTakeProfit = takeProfitPrice;
+                                            requestTradeApproval(
+                                                isLong,
+                                                1,  // quantity
+                                                0,  // market order
+                                                decision.plan.orderType != null ? decision.plan.orderType : "AI",
+                                                (int)(decision.confidence * 100),
+                                                () -> {
+                                                    // Approved - execute the trade
+                                                    SwingUtilities.invokeLater(() -> {
+                                                        log("✅ User APPROVED - executing trade");
+                                                        aiOrderManager.executeEntry(aiDecision, signalData);
+                                                    });
+                                                },
+                                                () -> {
+                                                    // Rejected
+                                                    SwingUtilities.invokeLater(() -> {
+                                                        log("❌ User REJECTED - skipping trade");
+                                                        aiOrderManager.executeSkip(aiDecision, signalData);
+                                                    });
+                                                }
+                                            );
+                                        } else {
+                                            // FULL_AUTO - execute immediately
+                                            aiOrderManager.executeEntry(aiDecision, signalData);
+                                        }
                                     } else {
                                         log(String.format("⏭️ AI SKIP: %s (confidence: %.0f%%)",
                                             decision.reasoning, decision.confidence * 100));
@@ -2182,6 +3275,11 @@ public class OrderFlowStrategyEnhanced implements
                                         aiOrderManager.executeSkip(aiDecision, signalData);
                                     }
                                 }
+
+                                @Override
+                                public void onError(String error) {
+                                    log("❌ AI API ERROR: " + error);
+                                }
                             });
                         } else if (aiIntegration != null) {
                             // Fall back to basic AI integration
@@ -2190,7 +3288,32 @@ public class OrderFlowStrategyEnhanced implements
                                 .thenAccept(decision -> {
                                     // Execute AI decision
                                     if ("TAKE".equals(decision.action)) {
-                                        aiOrderManager.executeEntry(decision, signalData);
+                                        // Check mode: SEMI_AUTO requires approval
+                                        if ("SEMI_AUTO".equals(aiMode)) {
+                                            log("🔒 SEMI_AUTO mode - requesting user approval");
+                                            requestTradeApproval(
+                                                decision.isLong,
+                                                1,  // quantity
+                                                0,  // market order
+                                                "AI",
+                                                decision.confidence,
+                                                () -> {
+                                                    SwingUtilities.invokeLater(() -> {
+                                                        log("✅ User APPROVED - executing trade");
+                                                        aiOrderManager.executeEntry(decision, signalData);
+                                                    });
+                                                },
+                                                () -> {
+                                                    SwingUtilities.invokeLater(() -> {
+                                                        log("❌ User REJECTED - skipping trade");
+                                                        aiOrderManager.executeSkip(decision, signalData);
+                                                    });
+                                                }
+                                            );
+                                        } else {
+                                            // FULL_AUTO - execute immediately
+                                            aiOrderManager.executeEntry(decision, signalData);
+                                        }
                                     } else {
                                         aiOrderManager.executeSkip(decision, signalData);
                                     }
@@ -2200,7 +3323,7 @@ public class OrderFlowStrategyEnhanced implements
                                     return null;
                                 });
                         }
-                    }
+                    }  // end if (enableAITrading)
                     // ============================================
 
                     lastSignal = Integer.valueOf(totalSize);  // Store size as last signal
@@ -2221,6 +3344,14 @@ public class OrderFlowStrategyEnhanced implements
         signal.price = price;
         signal.pips = pips;
         signal.timestamp = System.currentTimeMillis();
+
+        // Debug: Check if pips is 0
+        if (pips == 0) {
+            log("⚠️ WARNING: pips is 0! Price display will be incorrect. Check initialize() was called.");
+            log("⚠️ Signal price (ticks): " + price + ", pips: " + pips);
+        } else {
+            log("📊 Signal created: price=" + price + " ticks, pips=" + pips + ", actual price=" + (price * pips));
+        }
 
         // ========== SCORE BREAKDOWN (Enhanced) ==========
         signal.scoreBreakdown = new SignalData.ScoreBreakdown();
@@ -2508,16 +3639,30 @@ public class OrderFlowStrategyEnhanced implements
         int stopLossTicks = 20;  // 20 ticks = $250 for ES
         int takeProfitTicks = 40;  // 40 ticks = $500 for ES (1:2 ratio)
         signal.risk.stopLossTicks = stopLossTicks;
-        signal.risk.stopLossPrice = isBid ? price - (stopLossTicks * pips) : price + (stopLossTicks * pips);
+        signal.risk.stopLossPrice = isBid ? price - stopLossTicks : price + stopLossTicks;
         signal.risk.stopLossValue = stopLossTicks * 12.5;  // ES futures
         signal.risk.takeProfitTicks = takeProfitTicks;
-        signal.risk.takeProfitPrice = isBid ? price + (takeProfitTicks * pips) : price - (takeProfitTicks * pips);
+        signal.risk.takeProfitPrice = isBid ? price + takeProfitTicks : price - takeProfitTicks;
         signal.risk.takeProfitValue = takeProfitTicks * 12.5;
         signal.risk.breakEvenTicks = 3;
-        signal.risk.breakEvenPrice = isBid ? price + (3 * pips) : price - (3 * pips);
+        signal.risk.breakEvenPrice = isBid ? price + 3 : price - 3;
         signal.risk.riskRewardRatio = "1:2";
         signal.risk.positionSizeContracts = 1;
         signal.risk.totalRiskPercent = 1.5;
+
+        // ========== THRESHOLD CONTEXT (for AI Adaptive Control) ==========
+        signal.thresholds = new SignalData.ThresholdContext();
+        signal.thresholds.minConfluenceScore = minConfluenceScore;
+        signal.thresholds.confluenceThreshold = confluenceThreshold;
+        signal.thresholds.icebergMinOrders = icebergMinOrders;
+        signal.thresholds.spoofMinSize = spoofMinSize;
+        signal.thresholds.absorptionMinSize = absorptionMinSize;
+        signal.thresholds.adaptiveOrderThreshold = adaptiveOrderThreshold;
+        signal.thresholds.adaptiveSizeThreshold = adaptiveSizeThreshold;
+        signal.thresholds.thresholdMultiplier = thresholdMultiplier;
+        signal.thresholds.signalsLastHour = signalsLastHour;
+        signal.thresholds.recentWinRate = getRecentWinRate();
+        signal.thresholds.isHighVolatility = isHighVolatility();
 
         // ========== CALCULATE FINAL SCORE ==========
         signal.score = calculateConfluenceScore(isBid, price, totalSize);
@@ -2528,7 +3673,44 @@ public class OrderFlowStrategyEnhanced implements
     }
 
     /**
-     * Calculate confluence score (Enhanced with all indicators)
+     * Get number of signals in the last hour
+     */
+    private int signalsLastHour = 0;
+    private long lastHourResetTime = 0;
+
+    private int getSignalsLastHour() {
+        long now = System.currentTimeMillis();
+        if (now - lastHourResetTime > 3600000) {  // Reset every hour
+            signalsLastHour = 0;
+            lastHourResetTime = now;
+        }
+        return signalsLastHour;
+    }
+
+    /**
+     * Get recent win rate (placeholder - implement with actual tracking)
+     */
+    private double getRecentWinRate() {
+        // TODO: Track actual recent win rate from trades
+        return 0.5;  // Default to 50%
+    }
+
+    /**
+     * Check if volatility is high
+     */
+    private boolean isHighVolatility() {
+        // Use ATR or recent price movement to determine
+        return false;  // Placeholder
+    }
+
+    /**
+     * Calculate confluence score (Enhanced with alignment penalties per AI_SIGNAL_ALIGNMENT_ANALYSIS.md)
+     *
+     * Phase 1 Improvements:
+     * - CVD divergence penalty (-30 points) - AI skips these 75-92%
+     * - EMA divergence penalty (-15 points) - Price wrong side of all EMAs
+     * - Removed size bonus (redundant with iceberg score)
+     * - Increased CVD alignment bonus (+25 vs +15)
      */
     private int calculateConfluenceScore(boolean isBid, int price, int totalSize) {
         int score = 0;
@@ -2537,21 +3719,31 @@ public class OrderFlowStrategyEnhanced implements
         int icebergScore = Math.min(40, totalSize * 2);
         score += icebergScore;
 
-        // ========== CVD CONFIRMATION (max 25 points) ==========
+        // ========== CVD ALIGNMENT (aligned: +25, divergent: -30) ==========
+        // Per AI analysis: CVD alignment is THE critical factor
         long cvd = cvdCalculator.getCVD();
         String cvdTrend = cvdCalculator.getCVDTrend();
         double cvdStrength = cvdCalculator.getCVDStrength();
 
-        if ((cvd > 0 && isBid) || (cvd < 0 && !isBid)) {
-            // CVD confirms signal direction
-            int cvdScore = (int)Math.min(15, cvdStrength / 2);
+        boolean cvdAligned = (cvd > 0 && isBid) || (cvd < 0 && !isBid);
+        boolean cvdDivergent = (cvd > 0 && !isBid) || (cvd < 0 && isBid);
+
+        if (cvdAligned) {
+            // CVD confirms signal direction - STRONG bonus
+            int cvdScore = (int)Math.min(25, cvdStrength / 2 + 10);  // Increased from 15 to 25
             score += cvdScore;
-        } else if (cvdCalculator.isAtExtreme(5.0)) {
-            // Extreme CVD = potential exhaustion
+        } else if (cvdDivergent) {
+            // CVD OPPOSITE to signal direction - MAJOR penalty
+            // AI skips these 75-92% of the time regardless of other factors
+            score -= 30;
+        }
+
+        // CVD extreme exhaustion (keep existing)
+        if (cvdCalculator.isAtExtreme(5.0) && !cvdAligned) {
             score -= 10;
         }
 
-        // CVD divergence bonus
+        // CVD divergence bonus (keep existing - this is different from alignment)
         CVDCalculator.DivergenceType divergence = cvdCalculator.checkDivergence(price, 20);
         if (divergence == CVDCalculator.DivergenceType.BULLISH && isBid) {
             score += 10;
@@ -2581,68 +3773,89 @@ public class OrderFlowStrategyEnhanced implements
             score += 5;
         }
 
-        // ========== EMA TREND ALIGNMENT (max 15 points) ==========
+        // ========== EMA TREND ALIGNMENT (aligned: +20, divergent: -15) ==========
+        // Per AI analysis: Trend alignment is critical, divergence should be penalized
         int emaAlignmentCount = 0;
+        int emaDivergenceCount = 0;
+        int emaCount = 0;
 
         double ema9Val = ema9.isInitialized() ? ema9.getEMA() : Double.NaN;
         double ema21Val = ema21.isInitialized() ? ema21.getEMA() : Double.NaN;
         double ema50Val = ema50.isInitialized() ? ema50.getEMA() : Double.NaN;
 
         if (!Double.isNaN(ema9Val)) {
+            emaCount++;
             if (isBid && price > ema9Val) emaAlignmentCount++;
-            if (!isBid && price < ema9Val) emaAlignmentCount++;
+            else if (!isBid && price < ema9Val) emaAlignmentCount++;
+            else emaDivergenceCount++;
         }
         if (!Double.isNaN(ema21Val)) {
+            emaCount++;
             if (isBid && price > ema21Val) emaAlignmentCount++;
-            if (!isBid && price < ema21Val) emaAlignmentCount++;
+            else if (!isBid && price < ema21Val) emaAlignmentCount++;
+            else emaDivergenceCount++;
         }
         if (!Double.isNaN(ema50Val)) {
+            emaCount++;
             if (isBid && price > ema50Val) emaAlignmentCount++;
-            if (!isBid && price < ema50Val) emaAlignmentCount++;
+            else if (!isBid && price < ema50Val) emaAlignmentCount++;
+            else emaDivergenceCount++;
         }
 
-        // Score based on EMA alignment
-        if (emaAlignmentCount == 3) {
-            score += 15;  // Strong trend
-        } else if (emaAlignmentCount == 2) {
-            score += 10;  // Moderate trend
+        // Score based on EMA alignment/divergence
+        if (emaAlignmentCount == emaCount && emaCount == 3) {
+            score += 20;  // Perfect alignment - increased from 15
+        } else if (emaAlignmentCount >= 2) {
+            score += 10;  // Partial alignment
         } else if (emaAlignmentCount == 1) {
-            score += 5;   // Weak trend
+            score += 0;   // Neutral - no bonus
         }
 
-        // ========== VWAP ALIGNMENT (max 10 points) ==========
+        // PENALTY: Price on wrong side of ALL EMAs
+        if (emaDivergenceCount == emaCount && emaCount == 3) {
+            score -= 15;  // Complete divergence - fighting trend
+        } else if (emaDivergenceCount >= 2) {
+            score -= 8;   // Partial divergence
+        }
+
+        // ========== VWAP ALIGNMENT (aligned: +10, divergent: -5) ==========
         if (vwapCalculator.isInitialized()) {
             String vwapRel = vwapCalculator.getRelationship(price);
             if ((isBid && "ABOVE".equals(vwapRel)) || (!isBid && "BELOW".equals(vwapRel))) {
-                score += 10;
+                score += 10;  // Aligned with VWAP
+            } else if ((isBid && "BELOW".equals(vwapRel)) || (!isBid && "ABOVE".equals(vwapRel))) {
+                score -= 5;   // Against VWAP - mild penalty
             }
         }
 
         // ========== TIME OF DAY (max 10 points) ==========
+        // Reduced importance - alignment matters more than time
         int hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
         if (hour >= 10 && hour <= 15) {
-            score += 10;  // Prime trading hours
+            score += 5;  // Prime trading hours - reduced from 10
         } else if ((hour >= 9 && hour < 10) || (hour > 15 && hour <= 16)) {
-            score += 5;   // Secondary hours
+            score += 2;  // Secondary hours - reduced from 5
         }
 
-        // ========== SIZE BONUS (max 5 points) ==========
-        if (totalSize >= 50) {
-            score += 5;   // Large iceberg
-        } else if (totalSize >= 30) {
-            score += 3;
-        }
+        // ========== SIZE BONUS - REMOVED ==========
+        // This is already captured in icebergScore - redundant
 
-        // ========== DOM (DEPTH OF MARKET) ALIGNMENT (max 10 points) ==========
-        // Add DOM confluence adjustment from analyzer
+        // ========== DOM (DEPTH OF MARKET) ALIGNMENT (max +/- 10 points) ==========
         int domAdjustment = domAnalyzer.getConfluenceAdjustment(isBid);
-        score += Math.max(-10, Math.min(10, domAdjustment));  // Clamp to +/- 10
+        score += Math.max(-10, Math.min(10, domAdjustment));
+
+        // ========== FINAL SCORE CLAMP ==========
+        // Ensure score doesn't go too negative (but allow penalties to work)
+        score = Math.max(-50, score);
 
         return score;
     }
 
     @Override
     public void onTrade(double price, int size, TradeInfo tradeInfo) {
+        // Update last known price for chat context
+        lastKnownPrice = price;
+
         // ========== UPDATE ALL INDICATORS ==========
 
         // Update CVD
@@ -2658,6 +3871,11 @@ public class OrderFlowStrategyEnhanced implements
 
         // Update VWAP
         vwapCalculator.update(price, size);
+
+        // Update session context - track processed trades for warm-up
+        if (sessionContext != null) {
+            sessionContext.recordProcessedTrade();
+        }
 
         // Update ATR (track high/low)
         if (Double.isNaN(currentHigh) || price > currentHigh) {
@@ -2682,12 +3900,46 @@ public class OrderFlowStrategyEnhanced implements
         }
     }
 
+    /**
+     * TimeListener callback - receives the true data timestamp from Bookmap.
+     * This is called BEFORE any other data event during replay mode.
+     * Use this timestamp for accurate session phase detection during replay.
+     *
+     * @param nanoseconds Data timestamp in nanoseconds (Unix epoch)
+     */
+    @Override
+    public void onTimestamp(long nanoseconds) {
+        // Convert nanoseconds to milliseconds for session tracking
+        currentDataTimestampMs = nanoseconds / 1_000_000;
+
+        // Update session context with the data timestamp (not wall clock)
+        // This ensures correct session phase during replay
+        if (sessionContext != null && lastKnownPrice != 0) {
+            // Adjust session start time on first data (for replay mode)
+            sessionContext.adjustSessionStart(currentDataTimestampMs);
+
+            sessionContext.update(lastKnownPrice, currentDataTimestampMs);
+        }
+    }
+
     @Override
     public void onBbo(int priceBid, int priceAsk, int sizeBid, int sizeAsk) {
+        // Use mid price for most accurate current price
+        int midPrice = (priceBid + priceAsk) / 2;
+
+        // Debug: Log BBO prices to understand units (log every 30 seconds)
+        long now = System.currentTimeMillis();
+        if (now % 30000 < 500) {
+            log(String.format("📊 BBO DEBUG: bid=%d ask=%d mid=%d pips=%.4f calculated=%.2f",
+                priceBid, priceAsk, midPrice, pips, midPrice * pips));
+            log(String.format("📊 BBO UNITS CHECK: if mid=%d is ticks, actual=%.2f; if mid is actual, this is correct",
+                midPrice, midPrice * pips));
+        }
+
+        lastKnownPrice = midPrice;  // Update for AI tools/chat
+
         // Monitor positions on BBO update
         if (aiOrderManager != null) {
-            // Use mid price for monitoring
-            int midPrice = (priceBid + priceAsk) / 2;
             aiOrderManager.onPriceUpdate(midPrice, System.currentTimeMillis());
         }
     }
@@ -3028,6 +4280,15 @@ public class OrderFlowStrategyEnhanced implements
     @Override
     public void onEntryMarker(boolean isLong, int price, int score, String reasoning, int stopLossPrice, int takeProfitPrice) {
         try {
+            log("📍 AI ENTRY MARKER CALLBACK INVOKED:");
+            log(String.format("   isLong=%s, price=%d, score=%d", isLong, price, score));
+            log(String.format("   stopLossPrice=%d, takeProfitPrice=%d", stopLossPrice, takeProfitPrice));
+
+            // Validate SL/TP values
+            if (stopLossPrice == 0 || takeProfitPrice == 0) {
+                log("⚠️ WARNING: SL or TP is 0! This might indicate a missing plan in AI decision");
+            }
+
             // Create icon based on direction
             BufferedImage icon = isLong ?
                 AIMarkerIcons.createLongEntryIcon() :   // CYAN circle
@@ -3043,11 +4304,13 @@ public class OrderFlowStrategyEnhanced implements
             activeStopLossPrice = stopLossPrice;
             activeTakeProfitPrice = takeProfitPrice;
 
-            log("📍 AI ENTRY MARKER: " + (isLong ? "LONG" : "SHORT") +
-                " @ " + price + " (Score: " + score + ")" +
-                " SL: " + stopLossPrice + " TP: " + takeProfitPrice);
+            log(String.format("✅ SL/TP levels set: SL=%d TP=%d (indicators: %s, %s)",
+                activeStopLossPrice, activeTakeProfitPrice,
+                aiStopLossLine != null ? "OK" : "NULL",
+                aiTakeProfitLine != null ? "OK" : "NULL"));
         } catch (Exception e) {
             log("❌ Failed to place entry marker: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 

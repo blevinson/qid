@@ -371,4 +371,200 @@ public class AIThresholdService {
             }
         });
     }
+
+    // ========== TOOL-ENABLED CHAT ==========
+
+    private AIToolsProvider toolsProvider;
+
+    /**
+     * Set the tools provider for function calling
+     */
+    public void setToolsProvider(AIToolsProvider provider) {
+        this.toolsProvider = provider;
+    }
+
+    /**
+     * Chat with tool support - AI can call functions to get real-time data
+     * This implements the Anthropic tool use pattern:
+     * 1. Send message with tools available
+     * 2. If AI wants to use tools, execute them
+     * 3. Send tool results back
+     * 4. Repeat until AI gives text response
+     */
+    public CompletableFuture<String> chatWithTools(String userPrompt) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                List<JsonObject> conversation = new ArrayList<>();
+
+                // Add user message
+                JsonObject userMessage = new JsonObject();
+                userMessage.addProperty("role", "user");
+                userMessage.addProperty("content", userPrompt);
+                conversation.add(userMessage);
+
+                // Tool call loop (max 5 iterations to prevent infinite loops)
+                for (int iteration = 0; iteration < 5; iteration++) {
+                    JsonObject response = callClaudeWithTools(conversation);
+
+                    // Check if AI wants to use tools
+                    if (response.has("tool_use") || hasToolUse(response)) {
+                        // Execute tools and add results to conversation
+                        List<JsonObject> toolResults = executeToolCalls(response);
+                        if (!toolResults.isEmpty()) {
+                            conversation.add(response);
+                            conversation.addAll(toolResults);
+                            continue;
+                        }
+                    }
+
+                    // Extract text response
+                    return extractTextResponse(response);
+                }
+
+                return "Error: Too many tool call iterations";
+
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to get AI response: " + e.getMessage(), e);
+            }
+        });
+    }
+
+    private boolean hasToolUse(JsonObject response) {
+        if (!response.has("content")) return false;
+        try {
+            var content = response.getAsJsonArray("content");
+            for (var item : content) {
+                JsonObject block = item.getAsJsonObject();
+                if (block.has("type") && "tool_use".equals(block.get("type").getAsString())) {
+                    return true;
+                }
+            }
+        } catch (Exception e) {
+            // Ignore
+        }
+        return false;
+    }
+
+    private JsonObject callClaudeWithTools(List<JsonObject> conversation) throws Exception {
+        String systemPrompt = """
+            You are a trading assistant with access to real-time market data through tools.
+
+            IMPORTANT: Always use tools to get current data before answering questions about:
+            - Current price or market conditions
+            - Signal thresholds or settings
+            - Recent trading signals
+            - Session statistics
+
+            Available tools:
+            - get_current_price: Get the current market price
+            - get_cvd: Get Cumulative Volume Delta (buying/selling pressure)
+            - get_vwap: Get Volume Weighted Average Price
+            - get_emas: Get EMA values (9, 21, 50)
+            - get_order_book: Get support/resistance from order book
+            - get_recent_signals: Get recent trading signals
+            - get_session_stats: Get session performance
+            - get_thresholds: Get current threshold settings
+            - get_full_snapshot: Get complete market overview
+
+            When asked about current state, call the appropriate tools first, then provide your analysis.
+            """;
+
+        JsonObject requestBody = new JsonObject();
+        requestBody.addProperty("model", "glm-5");
+        requestBody.addProperty("max_tokens", 2048);
+        requestBody.addProperty("system", systemPrompt);
+
+        // Add tools if available
+        if (toolsProvider != null) {
+            requestBody.add("tools", gson.fromJson(AIToolsProvider.getToolsJsonArray(), com.google.gson.JsonArray.class));
+        }
+
+        // Add conversation
+        requestBody.add("messages", gson.toJsonTree(conversation.toArray()));
+
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create(apiUrl))
+            .header("x-api-key", apiKey)
+            .header("anthropic-version", "2023-06-01")
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(requestBody.toString()))
+            .timeout(Duration.ofSeconds(60))
+            .build();
+
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+        if (response.statusCode() != 200) {
+            throw new Exception("API call failed: " + response.statusCode() + " " + response.body());
+        }
+
+        return gson.fromJson(response.body(), JsonObject.class);
+    }
+
+    private List<JsonObject> executeToolCalls(JsonObject response) {
+        List<JsonObject> results = new ArrayList<>();
+
+        if (!response.has("content")) return results;
+
+        try {
+            var content = response.getAsJsonArray("content");
+            for (var item : content) {
+                JsonObject block = item.getAsJsonObject();
+                if (block.has("type") && "tool_use".equals(block.get("type").getAsString())) {
+                    String toolName = block.get("name").getAsString();
+                    String toolId = block.has("id") ? block.get("id").getAsString() : "tool_" + System.currentTimeMillis();
+
+                    Map<String, Object> arguments = new HashMap<>();
+                    if (block.has("input")) {
+                        JsonObject input = block.getAsJsonObject("input");
+                        for (String key : input.keySet()) {
+                            arguments.put(key, gson.fromJson(input.get(key), Object.class));
+                        }
+                    }
+
+                    // Execute tool
+                    String toolResult = toolsProvider != null ?
+                        toolsProvider.executeTool(toolName, arguments) :
+                        "{\"error\": \"Tools not configured\"}";
+
+                    // Build tool result message
+                    JsonObject toolResultMsg = new JsonObject();
+                    toolResultMsg.addProperty("role", "user");
+
+                    JsonObject toolResultContent = new JsonObject();
+                    toolResultContent.addProperty("type", "tool_result");
+                    toolResultContent.addProperty("tool_use_id", toolId);
+                    toolResultContent.addProperty("content", toolResult);
+
+                    toolResultMsg.add("content", gson.toJsonTree(new Object[]{toolResultContent}));
+                    results.add(toolResultMsg);
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Error executing tool calls: " + e.getMessage());
+        }
+
+        return results;
+    }
+
+    private String extractTextResponse(JsonObject response) {
+        if (!response.has("content")) {
+            return "Error: No content in response";
+        }
+
+        try {
+            var content = response.getAsJsonArray("content");
+            StringBuilder text = new StringBuilder();
+
+            for (var item : content) {
+                JsonObject block = item.getAsJsonObject();
+                if (block.has("type") && "text".equals(block.get("type").getAsString())) {
+                    text.append(block.get("text").getAsString());
+                }
+            }
+
+            return text.length() > 0 ? text.toString() : "No text response from AI";
+        } catch (Exception e) {
+            return "Error extracting response: " + e.getMessage();
+        }
+    }
 }

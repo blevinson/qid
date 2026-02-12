@@ -61,14 +61,14 @@ public class AIOrderManager {
             // Create position ID
             String positionId = UUID.randomUUID().toString();
 
-            // Calculate break-even level
+            // Calculate break-even level (in tick units)
             int breakEvenTrigger = decision.isLong ?
-                signal.price + (breakEvenTicks * signal.pips) :
-                signal.price - (breakEvenTicks * signal.pips);
+                signal.price + breakEvenTicks :
+                signal.price - breakEvenTicks;
 
             int breakEvenStop = decision.isLong ?
-                signal.price + signal.pips :  // Entry + 1 tick
-                signal.price - signal.pips;   // Entry - 1 tick
+                signal.price + 1 :  // Entry + 1 tick
+                signal.price - 1;   // Entry - 1 tick
 
             // Create active position tracker
             ActivePosition position = new ActivePosition(
@@ -80,7 +80,7 @@ public class AIOrderManager {
                 decision.takeProfit,
                 breakEvenTrigger,
                 breakEvenStop,
-                trailAmountTicks * signal.pips,
+                trailAmountTicks,  // Trail amount in tick units
                 signal,
                 decision
             );
@@ -412,6 +412,27 @@ public class AIOrderManager {
      */
     public int getActivePositionCount() {
         return activePositions.size();
+    }
+
+    /**
+     * Get total trades count
+     */
+    public int getTotalTrades() {
+        return totalTrades.get();
+    }
+
+    /**
+     * Get winning trades count
+     */
+    public int getWinningTrades() {
+        return winningTrades.get();
+    }
+
+    /**
+     * Get losing trades count
+     */
+    public int getLosingTrades() {
+        return totalTrades.get() - winningTrades.get();
     }
 
     /**

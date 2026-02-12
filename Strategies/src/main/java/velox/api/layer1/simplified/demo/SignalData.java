@@ -15,7 +15,7 @@ public class SignalData {
     public int threshold;
     public boolean thresholdPassed;
     public long timestamp;
-    public int pips;  // Minimum price increment (pip size)
+    public double pips;  // Minimum price increment (pip size)
 
     // Score breakdown
     public ScoreBreakdown scoreBreakdown;
@@ -233,6 +233,58 @@ public class SignalData {
         public String riskRewardRatio;
         public int positionSizeContracts;
         public double totalRiskPercent;
+    }
+
+    // ========== THRESHOLD CONTEXT FOR AI ADAPTIVE CONTROL ==========
+    /**
+     * Current threshold settings - AI can recommend adjustments
+     */
+    public ThresholdContext thresholds;
+
+    public static class ThresholdContext {
+        // Signal quality thresholds
+        public int minConfluenceScore;       // Minimum score to generate signal (default: 40)
+        public int confluenceThreshold;      // Threshold for AI to consider signal (default: 50)
+
+        // Detection thresholds
+        public int icebergMinOrders;         // Minimum orders to detect iceberg (default: 10)
+        public int spoofMinSize;             // Minimum size for spoof detection (default: 20)
+        public int absorptionMinSize;        // Minimum size for absorption (default: 50)
+
+        // Adaptive thresholds (calculated from market data)
+        public int adaptiveOrderThreshold;   // Current adaptive order threshold
+        public int adaptiveSizeThreshold;    // Current adaptive size threshold
+        public double thresholdMultiplier;   // Multiplier for threshold calculation
+
+        // Session performance for context
+        public int signalsLastHour;          // How many signals in last hour
+        public double recentWinRate;         // Recent win rate
+        public boolean isHighVolatility;     // Current volatility state
+
+        /**
+         * Format thresholds for AI prompt
+         */
+        public String toAIString() {
+            StringBuilder sb = new StringBuilder();
+            sb.append("═══ CURRENT THRESHOLD SETTINGS ═══\n");
+            sb.append("Signal Quality:\n");
+            sb.append(String.format("  minConfluenceScore: %d\n", minConfluenceScore));
+            sb.append(String.format("  confluenceThreshold: %d\n", confluenceThreshold));
+            sb.append("\nDetection Thresholds:\n");
+            sb.append(String.format("  icebergMinOrders: %d\n", icebergMinOrders));
+            sb.append(String.format("  spoofMinSize: %d\n", spoofMinSize));
+            sb.append(String.format("  absorptionMinSize: %d\n", absorptionMinSize));
+            sb.append("\nAdaptive Settings:\n");
+            sb.append(String.format("  adaptiveOrderThreshold: %d\n", adaptiveOrderThreshold));
+            sb.append(String.format("  adaptiveSizeThreshold: %d\n", adaptiveSizeThreshold));
+            sb.append(String.format("  thresholdMultiplier: %.1f\n", thresholdMultiplier));
+            sb.append("\nSession Context:\n");
+            sb.append(String.format("  signalsLastHour: %d\n", signalsLastHour));
+            sb.append(String.format("  recentWinRate: %.1f%%\n", recentWinRate * 100));
+            sb.append(String.format("  volatility: %s\n", isHighVolatility ? "HIGH" : "NORMAL"));
+            sb.append("═══════════════════════════════════\n");
+            return sb.toString();
+        }
     }
 
     /**

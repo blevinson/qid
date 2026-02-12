@@ -61,6 +61,40 @@ public class TranscriptWriter {
     }
 
     /**
+     * Log AI chat message (for unified conversation history)
+     * Both user questions and AI responses are logged
+     */
+    public void logMessage(String role, String content) {
+        if (transcriptWriter == null) return;
+
+        writeEvent("MESSAGE", Map.of(
+            "role", role,  // "user", "assistant", or "system"
+            "content", content,
+            "timestamp", dateFormat.format(new Date())
+        ));
+    }
+
+    /**
+     * Log AI trading decision (from AI Investment Strategist)
+     * Records the signal evaluation and decision (TAKE/SKIP)
+     */
+    public void logSignalDecision(String signalId, String direction, int price, int score,
+                                   String action, double confidence, String reasoning) {
+        if (transcriptWriter == null) return;
+
+        writeEvent("SIGNAL_DECISION", Map.of(
+            "signalId", signalId,
+            "direction", direction,
+            "price", String.valueOf(price),
+            "score", String.valueOf(score),
+            "action", action,  // "TAKE" or "SKIP"
+            "confidence", String.format("%.2f", confidence),
+            "reasoning", reasoning,
+            "timestamp", dateFormat.format(new Date())
+        ));
+    }
+
+    /**
      * Log order placement event
      */
     public void logOrderPlaced(String orderId, String orderType, int entryPrice, int stopLoss, int takeProfit, String reasoning) {
