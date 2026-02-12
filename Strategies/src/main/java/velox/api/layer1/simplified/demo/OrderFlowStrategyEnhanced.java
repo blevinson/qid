@@ -1241,7 +1241,7 @@ public class OrderFlowStrategyEnhanced implements
             // Add current market state
             enhancedPrompt.append("\n=== CURRENT MARKET STATE ===\n");
             enhancedPrompt.append(String.format("Last Price: %.2f\n", lastKnownPrice));
-            enhancedPrompt.append(String.format("CVD: %.0f (%s)\n", cvdCalculator.getCVD(),
+            enhancedPrompt.append(String.format("CVD: %d (%s)\n", cvdCalculator.getCVD(),
                 cvdCalculator.getCVD() > 0 ? "BULLISH" : cvdCalculator.getCVD() < 0 ? "BEARISH" : "NEUTRAL"));
             enhancedPrompt.append(String.format("VWAP: %.2f\n", vwapCalculator.isInitialized() ? vwapCalculator.getVWAP() : 0));
             enhancedPrompt.append(String.format("EMA9: %.2f | EMA21: %.2f | EMA50: %.2f\n",
