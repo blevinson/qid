@@ -214,6 +214,9 @@ public class OrderFlowStrategyEnhanced implements
     private AIInvestmentStrategist aiStrategist;
     private final Map<String, SignalData> pendingSignals = new ConcurrentHashMap<>();
 
+    // Session Context - tracks trading session state for AI
+    private SessionContext sessionContext;
+
     // AI re-evaluation tracking
     private long lastAIReevaluationTime = 0;
 
@@ -538,6 +541,10 @@ public class OrderFlowStrategyEnhanced implements
                 memoryService = service;
                 log("✅ Memory Service initialized: " + service.getIndexedFileCount() + " files, " +
                     service.getIndexedChunkCount() + " chunks");
+
+                // Initialize Session Context
+                sessionContext = new SessionContext();
+                log("✅ Session Context initialized");
 
                 // Initialize AI Investment Strategist (Phase 3)
                 aiStrategist = new AIInvestmentStrategist(service, aiAuthToken);
@@ -2167,10 +2174,15 @@ public class OrderFlowStrategyEnhanced implements
                         // Create SignalData for AI evaluation
                         SignalData signalData = createSignalData(isBid, price, totalSize);
 
+                        // Update session context with current price
+                        if (sessionContext != null) {
+                            sessionContext.update(price);
+                        }
+
                         // Use AI Investment Strategist (memory-aware) if available
                         if (aiStrategist != null) {
                             log("🧠 Using AI Investment Strategist (memory-aware evaluation)");
-                            aiStrategist.evaluateSetup(signalData, new AIInvestmentStrategist.AIStrategistCallback() {
+                            aiStrategist.evaluateSetup(signalData, sessionContext, new AIInvestmentStrategist.AIStrategistCallback() {
                                 @Override
                                 public void onDecision(AIInvestmentStrategist.AIDecision decision) {
                                     // Execute AI decision

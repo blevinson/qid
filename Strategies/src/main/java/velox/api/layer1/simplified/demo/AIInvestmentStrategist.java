@@ -78,9 +78,10 @@ public class AIInvestmentStrategist {
      * 4. Returns decision via callback
      *
      * @param signal SignalData with market context
+     * @param sessionContext Session state (can be null)
      * @param callback AIStrategistCallback for async decision
      */
-    public void evaluateSetup(SignalData signal, AIStrategistCallback callback) {
+    public void evaluateSetup(SignalData signal, SessionContext sessionContext, AIStrategistCallback callback) {
         // Validate input
         if (signal == null || callback == null) {
             if (callback != null) {
@@ -92,6 +93,11 @@ public class AIInvestmentStrategist {
         log("========== AI STRATEGIST EVALUATION ==========");
         log("SIGNAL: " + signal.direction + " @ " + signal.price + " | Score: " + signal.score + "/" + signal.threshold);
         log("CVD: " + signal.market.cvd + " (" + signal.market.cvdTrend + ") | Trend: " + signal.market.trend);
+
+        // Log session context
+        if (sessionContext != null) {
+            log("SESSION: " + sessionContext.toSummary());
+        }
 
         // Log key levels for debugging
         log("KEY LEVELS:");
@@ -125,7 +131,7 @@ public class AIInvestmentStrategist {
         }
 
         // Step 3: Ask AI to make decision
-        String prompt = buildAIPrompt(signal, context);
+        String prompt = buildAIPrompt(signal, context, sessionContext);
 
         // Call Claude API
         callClaudeAPI(prompt, callback, signal);
@@ -168,14 +174,15 @@ public class AIInvestmentStrategist {
     }
 
     /**
-     * Build AI prompt with signal data and memory context
+     * Build AI prompt with signal data, memory context, and session context
      * This prompt will be sent to Claude API for decision making
      *
      * @param signal SignalData with market context
      * @param memoryContext Formatted memory search results
+     * @param sessionContext Session state (can be null)
      * @return AI prompt string
      */
-    private String buildAIPrompt(SignalData signal, String memoryContext) {
+    private String buildAIPrompt(SignalData signal, String memoryContext, SessionContext sessionContext) {
         // Build key levels section
         StringBuilder keyLevels = new StringBuilder();
 
@@ -232,8 +239,16 @@ public class AIInvestmentStrategist {
         // If no key levels available, add placeholder
         String keyLevelsStr = keyLevels.length() > 0 ? keyLevels.toString() : "- (calculating...)\n";
 
+        // Build session context section
+        String sessionContextStr = "";
+        if (sessionContext != null) {
+            sessionContextStr = sessionContext.toAIString();
+        }
+
         return String.format("""
             You are an AI Investment Strategist analyzing a trading setup.
+
+            %s
 
             SIGNAL:
             - Type: %s %s
@@ -247,18 +262,22 @@ public class AIInvestmentStrategist {
 
             %s
 
-            Based on the signal strength, key levels, and historical memory, should we TAKE or SKIP this setup?
+            Based on the signal strength, key levels, session context, and historical memory, should we TAKE or SKIP this setup?
 
-            IMPORTANT: When placing SL/TP, use the KEY LEVELS above:
-            - Place STOP LOSS beyond nearest support/resistance level
-            - Place TAKE PROFIT at or before next resistance/support level
-            - Consider VWAP and POC as key levels for mean reversion
+            IMPORTANT CONSIDERATIONS:
+            1. If this is a NEW SESSION, be more cautious - indicators are just starting to accumulate
+            2. During OPENING/CLOSING BELL phases, expect higher volatility - require stronger confluence
+            3. During LUNCH HOUR, expect lower volume - may see choppy conditions
+            4. When placing SL/TP, use the KEY LEVELS above:
+               - Place STOP LOSS beyond nearest support/resistance level
+               - Place TAKE PROFIT at or before next resistance/support level
+               - Consider VWAP and POC as key levels for mean reversion
 
             Respond with JSON:
             {
               "action": "TAKE" | "SKIP",
               "confidence": 0.0-1.0,
-              "reasoning": "brief explanation referencing key levels",
+              "reasoning": "brief explanation referencing key levels and session context",
               "plan": {
                 "orderType": "BUY" | "SELL",
                 "entryPrice": %d,
@@ -267,6 +286,7 @@ public class AIInvestmentStrategist {
               }
             }
             """,
+            sessionContextStr,
             signal.direction,
             signal.detection.type,
             signal.price,
