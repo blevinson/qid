@@ -2950,8 +2950,8 @@ public class OrderFlowStrategyEnhanced implements
                         direction, price, totalSize);
 
                     log("🧊 ADAPTIVE SIGNAL: " + signal +
-                        String.format(" (Thresholds: %d orders, %d size, Avg: %.1f orders, %.1f size)",
-                            adaptiveOrderThreshold, adaptiveSizeThreshold,
+                        String.format(" (isBid=%b, Thresholds: %d orders, %d size, Avg: %.1f orders, %.1f size)",
+                            isBid, adaptiveOrderThreshold, adaptiveSizeThreshold,
                             recentOrderCounts.stream().mapToInt(Integer::intValue).average().orElse(0.0),
                             recentTotalSizes.stream().mapToInt(Integer::intValue).average().orElse(0.0)));
 
