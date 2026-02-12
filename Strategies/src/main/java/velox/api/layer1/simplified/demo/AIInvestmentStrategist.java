@@ -3,7 +3,15 @@ package velox.api.layer1.simplified.demo;
 import velox.api.layer1.simplified.demo.storage.TradingMemoryService;
 import velox.api.layer1.simplified.demo.memory.MemorySearchResult;
 
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * AI Investment Strategist
@@ -16,6 +24,10 @@ import java.util.List;
 public class AIInvestmentStrategist {
     private final TradingMemoryService memoryService;
     private final String apiToken;
+    private final HttpClient httpClient;
+    private final Gson gson;
+    private static final String API_URL = "https://api.z.ai/api/anthropic/v1/messages";
+    private static final String MODEL = "glm-5";
 
     /**
      * Constructor for AIInvestmentStrategist
@@ -26,6 +38,10 @@ public class AIInvestmentStrategist {
     public AIInvestmentStrategist(TradingMemoryService memoryService, String apiToken) {
         this.memoryService = memoryService;
         this.apiToken = apiToken;
+        this.gson = new Gson();
+        this.httpClient = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(30))
+            .build();
     }
 
     /**
@@ -147,22 +163,160 @@ public class AIInvestmentStrategist {
 
     /**
      * Call Claude API to get AI decision
-     * TODO: Implement actual Claude API call via z.ai
-     * For now, returns a placeholder decision
      *
      * @param prompt AI prompt string
      * @param callback Callback for decision
      * @param signal Original signal for price reference
      */
     private void callClaudeAPI(String prompt, AIStrategistCallback callback, SignalData signal) {
-        // TODO: Call Claude API via z.ai
-        // For now, return placeholder decision
+        CompletableFuture.supplyAsync(() -> {
+            try {
+                return callClaudeAPISync(prompt, signal);
+            } catch (Exception e) {
+                throw new RuntimeException("API call failed: " + e.getMessage(), e);
+            }
+        }).thenAccept(decision -> {
+            callback.onDecision(decision);
+        }).exceptionally(e -> {
+            callback.onError(e.getMessage());
+            return null;
+        });
+    }
 
+    /**
+     * Synchronous Claude API call
+     */
+    private AIDecision callClaudeAPISync(String prompt, SignalData signal) throws Exception {
+        // Build request body
+        JsonObject requestBody = new JsonObject();
+        requestBody.addProperty("model", MODEL);
+        requestBody.addProperty("max_tokens", 1024);
+
+        String systemPrompt = """
+            You are an AI Investment Strategist specializing in order flow trading.
+
+            PHILOSOPHY: "Investment strategist vs speed daemon"
+            - Quality over quantity
+            - High confluence = high probability
+            - Wait for perfect setups
+
+            DECISION FRAMEWORK:
+            1. Signal Quality (score 0-135)
+               - 80+ = Strong signal
+               - 60-80 = Moderate signal
+               - Below 60 = Weak signal, skip
+
+            2. Market Context
+               - CVD direction alignment
+               - Trend confirmation
+               - Volume at price support
+
+            3. Memory Context
+               - Similar historical patterns
+               - Win/loss outcomes
+               - Lessons learned
+
+            Respond ONLY with valid JSON:
+            """;
+
+        requestBody.addProperty("system", systemPrompt);
+
+        JsonObject message = new JsonObject();
+        message.addProperty("role", "user");
+        message.addProperty("content", prompt);
+        requestBody.add("messages", gson.toJsonTree(new Object[]{message}));
+
+        // Make HTTP request
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create(API_URL))
+            .header("x-api-key", apiToken)
+            .header("anthropic-version", "2023-06-01")
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(requestBody.toString()))
+            .timeout(Duration.ofSeconds(30))
+            .build();
+
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+        if (response.statusCode() != 200) {
+            throw new Exception("API error: " + response.statusCode() + " - " + response.body());
+        }
+
+        // Parse response
+        JsonObject jsonResponse = gson.fromJson(response.body(), JsonObject.class);
+        String content = jsonResponse.getAsJsonArray("content")
+            .get(0).getAsJsonObject()
+            .get("text").getAsString();
+
+        return parseDecision(content, signal);
+    }
+
+    /**
+     * Parse AI response into decision
+     */
+    private AIDecision parseDecision(String response, SignalData signal) {
         AIDecision decision = new AIDecision();
-        decision.shouldTake = true;
-        decision.confidence = 0.75;
-        decision.reasoning = "Strong confluence with memory support";
 
+        try {
+            // Extract JSON from markdown if present
+            String jsonStr = response;
+            if (response.contains("```json")) {
+                int start = response.indexOf("```json") + 7;
+                int end = response.indexOf("```", start);
+                jsonStr = response.substring(start, end).trim();
+            } else if (response.contains("```")) {
+                int start = response.indexOf("```") + 3;
+                int end = response.indexOf("```", start);
+                jsonStr = response.substring(start, end).trim();
+            }
+
+            JsonObject json = gson.fromJson(jsonStr, JsonObject.class);
+
+            // Parse action
+            String action = json.has("action") ? json.get("action").getAsString() : "SKIP";
+            decision.shouldTake = "TAKE".equalsIgnoreCase(action);
+
+            // Parse confidence
+            if (json.has("confidence")) {
+                decision.confidence = json.get("confidence").getAsDouble();
+            } else {
+                decision.confidence = 0.5;
+            }
+
+            // Parse reasoning
+            decision.reasoning = json.has("reasoning") ? json.get("reasoning").getAsString() : "No reasoning provided";
+
+            // Parse trade plan
+            if (json.has("plan") && decision.shouldTake) {
+                JsonObject planJson = json.getAsJsonObject("plan");
+                TradePlan plan = new TradePlan();
+
+                plan.orderType = planJson.has("orderType") ? planJson.get("orderType").getAsString() : "BUY_STOP";
+                plan.entryPrice = planJson.has("entryPrice") ? planJson.get("entryPrice").getAsInt() : signal.price;
+                plan.stopLossPrice = planJson.has("stopLossPrice") ? planJson.get("stopLossPrice").getAsInt() : signal.price - 30;
+                plan.takeProfitPrice = planJson.has("takeProfitPrice") ? planJson.get("takeProfitPrice").getAsInt() : signal.price + 70;
+                plan.contracts = planJson.has("contracts") ? planJson.get("contracts").getAsInt() : 1;
+
+                decision.plan = plan;
+            } else if (decision.shouldTake) {
+                // Create default plan if taking but no plan provided
+                decision.plan = createDefaultPlan(signal);
+            }
+
+        } catch (Exception e) {
+            // Fallback on parse error
+            decision.shouldTake = false;
+            decision.confidence = 0.0;
+            decision.reasoning = "Failed to parse AI response: " + e.getMessage();
+        }
+
+        return decision;
+    }
+
+    /**
+     * Create default trade plan based on signal
+     */
+    private TradePlan createDefaultPlan(SignalData signal) {
         TradePlan plan = new TradePlan();
         boolean isLong = "LONG".equalsIgnoreCase(signal.direction);
 
@@ -172,17 +326,17 @@ public class AIInvestmentStrategist {
         // For LONG: SL below, TP above
         // For SHORT: SL above, TP below
         if (isLong) {
-            plan.stopLossPrice = signal.price - 30;   // Default 30 tick SL
-            plan.takeProfitPrice = signal.price + 70; // Default 70 tick TP
+            plan.stopLossPrice = signal.price - 30;   // 30 tick SL
+            plan.takeProfitPrice = signal.price + 70; // 70 tick TP (1:2 R:R)
         } else {
-            plan.stopLossPrice = signal.price + 30;   // SL above for SHORT
-            plan.takeProfitPrice = signal.price - 70; // TP below for SHORT
+            plan.stopLossPrice = signal.price + 30;
+            plan.takeProfitPrice = signal.price - 70;
         }
 
-        plan.contracts = 1;  // Default 1 contract
-        decision.plan = plan;
+        plan.contracts = 1;
+        plan.notes = "Default plan - AI did not provide specific plan";
 
-        callback.onDecision(decision);
+        return plan;
     }
 
     /**
