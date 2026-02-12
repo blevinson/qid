@@ -4,6 +4,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 /**
  * AI Order Manager
@@ -27,6 +28,11 @@ public class AIOrderManager {
     public int maxPositions = 1;
     public double maxDailyLoss = 500.0;
 
+    // Signal staleness protection
+    public static final long MAX_SIGNAL_AGE_MS = 60_000;  // 60 seconds
+    public static final int MAX_PRICE_SLIPPAGE_TICKS = 5; // Skip if price moved > 5 ticks
+    private Supplier<Integer> currentPriceSupplier;  // Supplies current price in tick units
+
     // Statistics
     private final AtomicInteger totalTrades = new AtomicInteger(0);
     private final AtomicInteger winningTrades = new AtomicInteger(0);
@@ -39,10 +45,63 @@ public class AIOrderManager {
     }
 
     /**
+     * Set current price supplier for staleness checks
+     */
+    public void setCurrentPriceSupplier(Supplier<Integer> supplier) {
+        this.currentPriceSupplier = supplier;
+    }
+
+    /**
+     * Check if signal is too old or price has moved too much
+     * @return null if OK to proceed, or rejection reason if should skip
+     */
+    private String checkSignalStaleness(SignalData signal) {
+        long now = System.currentTimeMillis();
+        long signalAge = now - signal.timestamp;
+
+        // Check time staleness
+        if (signalAge > MAX_SIGNAL_AGE_MS) {
+            return String.format("Signal too old: %d seconds (max %d)",
+                signalAge / 1000, MAX_SIGNAL_AGE_MS / 1000);
+        }
+
+        // Check price slippage if we have a price supplier
+        if (currentPriceSupplier != null && signal.pips > 0) {
+            int currentPrice = currentPriceSupplier.get();
+            int signalPrice = signal.price;
+            int slippage = Math.abs(currentPrice - signalPrice);
+
+            if (slippage > MAX_PRICE_SLIPPAGE_TICKS) {
+                return String.format("Price moved too much: %d ticks (signal=%d, current=%d, max=%d)",
+                    slippage, signalPrice, currentPrice, MAX_PRICE_SLIPPAGE_TICKS);
+            }
+
+            // Warn if there's some slippage but within tolerance
+            if (slippage > 0) {
+                log("⚠️ Price slippage: %d ticks (within tolerance)", slippage);
+            }
+        }
+
+        // Log if signal is getting old but still OK
+        if (signalAge > 30_000) {
+            log("⏰ Signal age: %d seconds (approaching staleness limit)", signalAge / 1000);
+        }
+
+        return null;  // OK to proceed
+    }
+
+    /**
      * Execute AI decision to TAKE a signal
      */
     public String executeEntry(AIIntegrationLayer.AIDecision decision, SignalData signal) {
         try {
+            // Check signal staleness
+            String stalenessReason = checkSignalStaleness(signal);
+            if (stalenessReason != null) {
+                log("🚫 STALE SIGNAL REJECTED: %s", stalenessReason);
+                return null;
+            }
+
             // Check if we can add a position
             if (activePositions.size() >= maxPositions) {
                 log("⚠️ MAX POSITIONS REACHED (%d), cannot take signal", maxPositions);

@@ -2265,6 +2265,9 @@ public class OrderFlowStrategyEnhanced implements
             aiOrderManager.maxPositions = maxPosition;
             aiOrderManager.maxDailyLoss = dailyLossLimit;
 
+            // Set up price supplier for staleness checks
+            aiOrderManager.setCurrentPriceSupplier(() -> (int) lastKnownPrice);
+
             log("✅ AI Trading System initialized");
             log("   Mode: " + aiMode);
             log("   Confluence Threshold: " + confluenceThreshold);
