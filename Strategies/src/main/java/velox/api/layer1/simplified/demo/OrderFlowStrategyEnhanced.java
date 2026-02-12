@@ -1221,6 +1221,35 @@ public class OrderFlowStrategyEnhanced implements
                 log("⚠️ Chat: SKILL.md context not available");
             }
 
+            // 1b. Add LIVE SESSION CONTEXT (current state)
+            enhancedPrompt.append("=== CURRENT TRADING SESSION ===\n");
+            if (sessionContext != null) {
+                enhancedPrompt.append(sessionContext.toAIString());
+            } else {
+                enhancedPrompt.append("(Session not initialized)\n");
+            }
+
+            // Add current thresholds
+            enhancedPrompt.append("\n=== CURRENT THRESHOLDS ===\n");
+            enhancedPrompt.append(String.format("minConfluenceScore: %d\n", minConfluenceScore));
+            enhancedPrompt.append(String.format("confluenceThreshold: %d\n", confluenceThreshold));
+            enhancedPrompt.append(String.format("icebergMinOrders: %d\n", icebergMinOrders));
+            enhancedPrompt.append(String.format("spoofMinSize: %d\n", spoofMinSize));
+            enhancedPrompt.append(String.format("absorptionMinSize: %d\n", absorptionMinSize));
+            enhancedPrompt.append(String.format("useAIAdaptiveThresholds: %s\n", useAIAdaptiveThresholds));
+
+            // Add current market state
+            enhancedPrompt.append("\n=== CURRENT MARKET STATE ===\n");
+            enhancedPrompt.append(String.format("Last Price: %.2f\n", lastKnownPrice));
+            enhancedPrompt.append(String.format("CVD: %.0f (%s)\n", cvdCalculator.getCVD(),
+                cvdCalculator.getCVD() > 0 ? "BULLISH" : cvdCalculator.getCVD() < 0 ? "BEARISH" : "NEUTRAL"));
+            enhancedPrompt.append(String.format("VWAP: %.2f\n", vwapCalculator.isInitialized() ? vwapCalculator.getVWAP() : 0));
+            enhancedPrompt.append(String.format("EMA9: %.2f | EMA21: %.2f | EMA50: %.2f\n",
+                ema9.isInitialized() ? ema9.getEMA() : 0,
+                ema21.isInitialized() ? ema21.getEMA() : 0,
+                ema50.isInitialized() ? ema50.getEMA() : 0));
+            enhancedPrompt.append("\n");
+
             // 2. Search memory for relevant context
             if (memoryService != null) {
                 try {
