@@ -2428,7 +2428,8 @@ public class OrderFlowStrategyEnhanced implements
         // Price supplier - convert tick price to actual price
         aiToolsProvider.setPriceSupplier(() -> {
             double actualPrice = lastKnownPrice * pips;
-            // Debug logging (only log occasionally to avoid spam)
+            log(String.format("🔍 PRICE SUPPLIER: lastKnownPrice=%.0f pips=%.4f actualPrice=%.2f",
+                lastKnownPrice, pips, actualPrice));
             return actualPrice;
         });
 
