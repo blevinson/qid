@@ -237,7 +237,7 @@ public class AIThresholdService {
      */
     private String callClaudeAPI(String systemPrompt, String userPrompt) throws Exception {
         JsonObject requestBody = new JsonObject();
-        requestBody.addProperty("model", "glm-4.7");
+        requestBody.addProperty("model", "glm-5");
         requestBody.addProperty("max_tokens", 1024);
         requestBody.addProperty("system", systemPrompt);
 
@@ -335,7 +335,7 @@ public class AIThresholdService {
                 String systemPrompt = "You are a helpful trading assistant. Provide clear, concise responses to trading-related questions.";
 
                 JsonObject requestBody = new JsonObject();
-                requestBody.addProperty("model", "glm-4.7");
+                requestBody.addProperty("model", "glm-5");
                 requestBody.addProperty("max_tokens", 2048);
                 requestBody.addProperty("system", systemPrompt);
 

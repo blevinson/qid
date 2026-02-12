@@ -90,6 +90,12 @@ public class OrderFlowStrategyEnhanced implements
     }
 
     // ========== PARAMETERS ==========
+    @Parameter(name = "Min Confluence Score")
+    private Integer minConfluenceScore = 10;
+
+    @Parameter(name = "Threshold Multiplier")
+    private Double thresholdMultiplier = 3.0;
+
     @Parameter(name = "Iceberg Min Orders")
     private Integer icebergMinOrders = 10;  // Reduced from 20 to catch more signals
 
@@ -517,14 +523,14 @@ public class OrderFlowStrategyEnhanced implements
         gbc.gridy = 2;
         settingsPanel.add(new JLabel("Min Confluence Score:"), gbc);
         gbc.gridx = 1;
-        minConfluenceSpinner = new JSpinner(new SpinnerNumberModel(10, 8, 15, 1));
+        minConfluenceSpinner = new JSpinner(new SpinnerNumberModel(minConfluenceScore.intValue(), 8, 15, 1));
         minConfluenceSpinner.addChangeListener(e -> updateMinConfluence());
         settingsPanel.add(minConfluenceSpinner, gbc);
 
         gbc.gridx = 0; gbc.gridy = 3;
         settingsPanel.add(new JLabel("Threshold Multiplier:"), gbc);
         gbc.gridx = 1;
-        thresholdMultSpinner = new JSpinner(new SpinnerNumberModel(3.0, 1.5, 5.0, 0.5));
+        thresholdMultSpinner = new JSpinner(new SpinnerNumberModel(thresholdMultiplier.doubleValue(), 1.5, 5.0, 0.5));
         thresholdMultSpinner.addChangeListener(e -> updateThresholdMultiplier());
         settingsPanel.add(thresholdMultSpinner, gbc);
 
@@ -1376,13 +1382,13 @@ public class OrderFlowStrategyEnhanced implements
     // ========== SETTINGS UPDATE METHODS ==========
 
     private void updateMinConfluence() {
-        int value = (Integer) minConfluenceSpinner.getValue();
-        log("📊 Min Confluence Score updated: " + value);
+        minConfluenceScore = (Integer) minConfluenceSpinner.getValue();
+        log("📊 Min Confluence Score updated: " + minConfluenceScore);
     }
 
     private void updateThresholdMultiplier() {
-        double value = (Double) thresholdMultSpinner.getValue();
-        log("📊 Threshold Multiplier updated: " + value);
+        thresholdMultiplier = (Double) thresholdMultSpinner.getValue();
+        log("📊 Threshold Multiplier updated: " + thresholdMultiplier);
     }
 
     private void updateAdaptiveMode() {

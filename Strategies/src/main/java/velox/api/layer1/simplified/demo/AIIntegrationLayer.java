@@ -18,7 +18,7 @@ import java.util.concurrent.Executors;
  */
 public class AIIntegrationLayer {
     private static final String BASE_URL = "https://api.z.ai/api/anthropic/v1/messages";
-    private static final String MODEL = "glm-4.7";
+    private static final String MODEL = "glm-5";
     private static final int TIMEOUT_MS = 120000; // 2 minutes
     private static final int MAX_RETRIES = 3;
 
