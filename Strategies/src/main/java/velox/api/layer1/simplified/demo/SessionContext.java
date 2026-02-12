@@ -169,13 +169,14 @@ public class SessionContext {
         // Check if warm-up is complete
         checkWarmup();
 
-        // Session is no longer "new" after 30 minutes
-        if (minutesIntoSession > 30) {
-            this.isNewSession = false;
-        }
-
         // Update phase using the data timestamp (important for replay!)
         updatePhase(timestamp);
+
+        // Session is no longer "new" based on actual market phase, not replay time
+        // If we're past OPENING_BELL phase, it's not a "new session" for indicator purposes
+        if (currentPhase != SessionPhase.PRE_MARKET && currentPhase != SessionPhase.OPENING_BELL) {
+            this.isNewSession = false;
+        }
     }
 
     /**
@@ -335,24 +336,24 @@ public class SessionContext {
 
         sb.append("═══ SESSION CONTEXT ═══\n");
         sb.append(String.format("Session ID: %s | Date: %s\n", sessionId, sessionDate));
-        sb.append(String.format("Session Started: %s (%d minutes ago)\n",
-            LocalTime.now().minusMinutes(minutesIntoSession).format(TIME_FMT),
-            minutesIntoSession));
+
+        // Clarify replay vs market time
+        sb.append(String.format("Market Phase: %s\n", currentPhase));
+        sb.append(String.format("Replay/Strategy Time: %d minutes since start\n", minutesIntoSession));
 
         // Warm-up status
         sb.append(String.format("Warm-up: %s\n", getWarmupStatus()));
 
-        // Session phase
-        sb.append(String.format("Phase: %s", currentPhase));
-        if (isNewSession) {
-            sb.append(" ⚠️ NEW SESSION");
-        }
-        sb.append("\n");
-
-        // Indicator reset status
+        // Indicator reset status - only show "new session" warning for actual market open
         sb.append("Indicator Status:\n");
-        sb.append(String.format("  CVD: %s\n", cvdReset ? "Just reset (session start)" : "Accumulating"));
-        sb.append(String.format("  VWAP: %s\n", vwapReset ? "Just reset (session start)" : "Rolling"));
+        if (currentPhase == SessionPhase.OPENING_BELL) {
+            sb.append("  ⚠️ OPENING BELL - Indicators may be less reliable\n");
+            sb.append(String.format("  CVD: %s\n", cvdReset ? "Just reset" : "Accumulating"));
+            sb.append(String.format("  VWAP: %s\n", vwapReset ? "Just reset" : "Rolling"));
+        } else {
+            sb.append(String.format("  CVD: %s\n", cvdReset ? "Just reset" : "Accumulating"));
+            sb.append(String.format("  VWAP: %s\n", vwapReset ? "Just reset" : "Rolling"));
+        }
 
         // Session performance
         sb.append("Session Performance:\n");
@@ -370,12 +371,6 @@ public class SessionContext {
             sb.append("- Indicators are still accumulating data\n");
             sb.append("- Signals should be suppressed until warm-up completes\n");
             sb.append("- Wait for: 5 min OR 100 trades OR 50 price updates\n");
-        }
-
-        if (isNewSession && warmupComplete) {
-            sb.append("\n⚠️ NEW SESSION (warm-up complete):\n");
-            sb.append("- CVD and VWAP have accumulated some data\n");
-            sb.append("- Proceed with normal caution\n");
         }
 
         if (currentPhase == SessionPhase.OPENING_BELL || currentPhase == SessionPhase.CLOSING_BELL) {
