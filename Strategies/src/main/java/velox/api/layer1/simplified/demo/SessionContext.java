@@ -124,13 +124,20 @@ public class SessionContext {
      * Update session state - call periodically (e.g., on each price update)
      */
     public void update(double currentPrice) {
+        update(currentPrice, System.currentTimeMillis());
+    }
+
+    /**
+     * Update session state with explicit timestamp (for replay mode)
+     */
+    public void update(double currentPrice, long timestamp) {
         this.currentPrice = currentPrice;
         this.sessionHigh = Math.max(sessionHigh, currentPrice);
         this.sessionLow = Math.min(sessionLow, currentPrice);
         this.priceUpdatesProcessed++;
 
         // Update minutes into session
-        this.minutesIntoSession = (int) ((System.currentTimeMillis() - sessionStartTimeMs) / 60000);
+        this.minutesIntoSession = (int) ((timestamp - sessionStartTimeMs) / 60000);
 
         // Check if warm-up is complete
         checkWarmup();
@@ -140,8 +147,8 @@ public class SessionContext {
             this.isNewSession = false;
         }
 
-        // Update phase
-        updatePhase();
+        // Update phase using the data timestamp (important for replay!)
+        updatePhase(timestamp);
     }
 
     /**
@@ -200,19 +207,38 @@ public class SessionContext {
      * Update session phase based on current time
      */
     private void updatePhase() {
-        LocalTime now = LocalTime.now();
+        updatePhase(System.currentTimeMillis());
+    }
 
-        if (now.isBefore(LocalTime.of(9, 30))) {
+    /**
+     * Update session phase based on timestamp (for replay mode)
+     * Uses minutes-into-session to determine phase, which works during replay
+     */
+    private void updatePhase(long timestamp) {
+        // Use minutes into session to determine phase
+        // This works correctly during replay since it's based on data time, not wall clock
+        int minutes = (int) ((timestamp - sessionStartTimeMs) / 60000);
+
+        // Map minutes to trading session phases (assuming session starts at market open)
+        // PRE_MARKET: before open (shouldn't happen during trading)
+        // OPENING_BELL: 0-30 min (9:30-10:00)
+        // MORNING_SESSION: 30-150 min (10:00-12:00)
+        // LUNCH_HOUR: 150-270 min (12:00-14:00)
+        // AFTERNOON: 270-360 min (14:00-15:30)
+        // CLOSING_BELL: 360-390 min (15:30-16:00)
+        // AFTER_HOURS: 390+ min (after 16:00)
+
+        if (minutes < 0) {
             currentPhase = SessionPhase.PRE_MARKET;
-        } else if (now.isBefore(LocalTime.of(10, 0))) {
+        } else if (minutes < 30) {
             currentPhase = SessionPhase.OPENING_BELL;
-        } else if (now.isBefore(LocalTime.of(12, 0))) {
+        } else if (minutes < 150) {
             currentPhase = SessionPhase.MORNING_SESSION;
-        } else if (now.isBefore(LocalTime.of(14, 0))) {
+        } else if (minutes < 270) {
             currentPhase = SessionPhase.LUNCH_HOUR;
-        } else if (now.isBefore(LocalTime.of(15, 30))) {
+        } else if (minutes < 360) {
             currentPhase = SessionPhase.AFTERNOON;
-        } else if (now.isBefore(LocalTime.of(16, 0))) {
+        } else if (minutes < 390) {
             currentPhase = SessionPhase.CLOSING_BELL;
         } else {
             currentPhase = SessionPhase.AFTER_HOURS;
