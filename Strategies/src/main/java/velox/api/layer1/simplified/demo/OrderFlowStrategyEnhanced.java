@@ -1992,26 +1992,26 @@ public class OrderFlowStrategyEnhanced implements
 
         // Calculate adaptive thresholds
         adaptiveOrderThreshold = Math.max(
-            (int) (avgOrderCount * 5.0),  // Increased multiplier from 2.0 to 5.0
+            (int) (avgOrderCount * 2.0),  // Lower multiplier for more signals
             icebergMinOrders.intValue()
         );
         adaptiveSizeThreshold = Math.max(
-            (int) (avgTotalSize * 5.0),  // Increased multiplier from 2.0 to 5.0
+            (int) (avgTotalSize * 2.0),  // Lower multiplier for more signals
             absorptionMinSize.intValue()
         );
 
-        // Ensure minimums
-        adaptiveOrderThreshold = Math.max(adaptiveOrderThreshold, 10);
-        adaptiveSizeThreshold = Math.max(adaptiveSizeThreshold, 50);
+        // Ensure minimums (lowered for better signal detection)
+        adaptiveOrderThreshold = Math.max(adaptiveOrderThreshold, 5);
+        adaptiveSizeThreshold = Math.max(adaptiveSizeThreshold, 20);
     }
 
     private void checkForIceberg(boolean isBid, int price) {
         List<String> ordersAtPrice = priceLevels.getOrDefault(price, Collections.emptyList());
 
-        // Debug: Show highest order count
-        if (ordersAtPrice.size() > 5) {
-            log(String.format("🔍 Tracking %d orders at %d (threshold: %d)",
-                ordersAtPrice.size(), price, adaptiveOrderThreshold));
+        // Debug: Show order tracking (lowered threshold for visibility)
+        if (ordersAtPrice.size() >= 3) {
+            log(String.format("🔍 Tracking %d orders at %d (threshold: %d, size threshold: %d)",
+                ordersAtPrice.size(), price, adaptiveOrderThreshold, adaptiveSizeThreshold));
         }
 
         if (ordersAtPrice.size() >= adaptiveOrderThreshold) {
