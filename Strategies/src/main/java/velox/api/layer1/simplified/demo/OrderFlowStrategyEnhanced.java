@@ -413,7 +413,13 @@ public class OrderFlowStrategyEnhanced implements
 
         log("========== OrderFlowStrategyEnhanced.initialize() ==========");
         log("Instrument: " + alias);
-        log("Pip size: " + pips);
+        log("Pip size from Bookmap: " + info.pips + " (stored as: " + pips + ")");
+
+        // Warn if pips is 0 or very small
+        if (pips == 0 || pips < 0.001) {
+            log("⚠️ WARNING: Pip size is " + pips + " - price display may be incorrect!");
+            log("⚠️ This may indicate the instrument doesn't provide pip info correctly.");
+        }
 
         // Load persisted settings using Bookmap's native API
         settings = api.getSettings(Settings.class);
@@ -3211,6 +3217,14 @@ public class OrderFlowStrategyEnhanced implements
         signal.price = price;
         signal.pips = pips;
         signal.timestamp = System.currentTimeMillis();
+
+        // Debug: Check if pips is 0
+        if (pips == 0) {
+            log("⚠️ WARNING: pips is 0! Price display will be incorrect. Check initialize() was called.");
+            log("⚠️ Signal price (ticks): " + price + ", pips: " + pips);
+        } else {
+            log("📊 Signal created: price=" + price + " ticks, pips=" + pips + ", actual price=" + (price * pips));
+        }
 
         // ========== SCORE BREAKDOWN (Enhanced) ==========
         signal.scoreBreakdown = new SignalData.ScoreBreakdown();

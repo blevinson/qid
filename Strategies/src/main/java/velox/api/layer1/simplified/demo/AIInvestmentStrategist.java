@@ -310,7 +310,7 @@ public class AIInvestmentStrategist {
               "reasoning": "brief explanation referencing key levels and session context",
               "plan": {
                 "orderType": "BUY" | "SELL",
-                "entryPrice": %d,
+                "entryPrice": %.2f,
                 "stopLossPrice": calculated based on key levels,
                 "takeProfitPrice": calculated based on key levels
               },
