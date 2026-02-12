@@ -467,18 +467,24 @@ public class AIInvestmentStrategist {
             }
 
             // Parse reasoning
-            decision.reasoning = json.has("reasoning") ? json.get("reasoning").getAsString() : "No reasoning provided";
+            decision.reasoning = json.has("reasoning") && !json.get("reasoning").isJsonNull() ?
+                json.get("reasoning").getAsString() : "No reasoning provided";
 
             // Parse trade plan
-            if (json.has("plan") && decision.shouldTake) {
+            if (json.has("plan") && !json.get("plan").isJsonNull() && decision.shouldTake) {
                 JsonObject planJson = json.getAsJsonObject("plan");
                 TradePlan plan = new TradePlan();
 
-                plan.orderType = planJson.has("orderType") ? planJson.get("orderType").getAsString() : "BUY_STOP";
-                plan.entryPrice = planJson.has("entryPrice") ? planJson.get("entryPrice").getAsInt() : signal.price;
-                plan.stopLossPrice = planJson.has("stopLossPrice") ? planJson.get("stopLossPrice").getAsInt() : signal.price - 30;
-                plan.takeProfitPrice = planJson.has("takeProfitPrice") ? planJson.get("takeProfitPrice").getAsInt() : signal.price + 70;
-                plan.contracts = planJson.has("contracts") ? planJson.get("contracts").getAsInt() : 1;
+                plan.orderType = planJson.has("orderType") && !planJson.get("orderType").isJsonNull() ?
+                    planJson.get("orderType").getAsString() : "BUY_STOP";
+                plan.entryPrice = planJson.has("entryPrice") && !planJson.get("entryPrice").isJsonNull() ?
+                    planJson.get("entryPrice").getAsInt() : signal.price;
+                plan.stopLossPrice = planJson.has("stopLossPrice") && !planJson.get("stopLossPrice").isJsonNull() ?
+                    planJson.get("stopLossPrice").getAsInt() : signal.price - 30;
+                plan.takeProfitPrice = planJson.has("takeProfitPrice") && !planJson.get("takeProfitPrice").isJsonNull() ?
+                    planJson.get("takeProfitPrice").getAsInt() : signal.price + 70;
+                plan.contracts = planJson.has("contracts") && !planJson.get("contracts").isJsonNull() ?
+                    planJson.get("contracts").getAsInt() : 1;
 
                 decision.plan = plan;
             } else if (decision.shouldTake) {
@@ -487,7 +493,7 @@ public class AIInvestmentStrategist {
             }
 
             // Parse threshold adjustment (optional)
-            if (json.has("thresholdAdjustment")) {
+            if (json.has("thresholdAdjustment") && !json.get("thresholdAdjustment").isJsonNull()) {
                 JsonObject adjJson = json.getAsJsonObject("thresholdAdjustment");
                 ThresholdAdjustment adj = new ThresholdAdjustment();
 
