@@ -3152,6 +3152,11 @@ public class OrderFlowStrategyEnhanced implements
                                         aiOrderManager.executeSkip(aiDecision, signalData);
                                     }
                                 }
+
+                                @Override
+                                public void onError(String error) {
+                                    log("❌ AI API ERROR: " + error);
+                                }
                             });
                         } else if (aiIntegration != null) {
                             // Fall back to basic AI integration

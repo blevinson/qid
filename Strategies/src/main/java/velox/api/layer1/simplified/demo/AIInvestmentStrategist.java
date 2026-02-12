@@ -347,15 +347,22 @@ public class AIInvestmentStrategist {
      * @param signal Original signal for price reference
      */
     private void callClaudeAPI(String prompt, AIStrategistCallback callback, SignalData signal) {
+        log("🌐 Calling Claude API...");
         CompletableFuture.supplyAsync(() -> {
             try {
-                return callClaudeAPISync(prompt, signal);
+                log("📤 API request sent, waiting for response...");
+                AIDecision decision = callClaudeAPISync(prompt, signal);
+                log("📥 API response received");
+                return decision;
             } catch (Exception e) {
+                log("❌ API call exception: " + e.getClass().getSimpleName() + " - " + e.getMessage());
                 throw new RuntimeException("API call failed: " + e.getMessage(), e);
             }
         }).thenAccept(decision -> {
+            log("✅ Processing AI decision...");
             callback.onDecision(decision);
         }).exceptionally(e -> {
+            log("❌ API call failed: " + e.getMessage());
             callback.onError(e.getMessage());
             return null;
         });
