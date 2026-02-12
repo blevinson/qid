@@ -42,6 +42,7 @@ import velox.api.layer1.simplified.MarketByOrderDepthDataListener;
 import velox.api.layer1.simplified.OrdersListener;
 import velox.api.layer1.simplified.Parameter;
 import velox.api.layer1.simplified.TradeDataListener;
+import velox.api.layer1.simplified.TimeListener;
 import velox.gui.StrategyPanel;
 
 /**
@@ -70,6 +71,7 @@ public class OrderFlowStrategyEnhanced implements
     BboListener,
     CustomSettingsPanelProvider,
     OrdersListener,
+    TimeListener,
     AIOrderManager.AIMarkerCallback {
 
     // ========== PERFORMANCE TRACKING ==========
@@ -192,6 +194,8 @@ public class OrderFlowStrategyEnhanced implements
         public String aiMode = "MANUAL";
         public Integer confluenceThreshold = 50;
         public String aiAuthToken = "8a4f5b950ea142c98746d5a320666414.Yf1MQwtkwfuDbyHw";
+        public Integer replayStartHour = 9;   // Hour (24h) when replay data starts (9 = 9:00 AM)
+        public Integer replayStartMinute = 30; // Minute when replay data starts (30 = :30)
     }
 
     private Settings settings;
@@ -242,6 +246,10 @@ public class OrderFlowStrategyEnhanced implements
 
     // Session Context - tracks trading session state for AI
     private SessionContext sessionContext;
+
+    // Data timestamp from Bookmap (for replay mode support)
+    // Updated by TimeListener.onTimestamp() before any other data event
+    private volatile long currentDataTimestampMs = System.currentTimeMillis();
 
     // AI re-evaluation tracking
     private long lastAIReevaluationTime = 0;
@@ -1562,7 +1570,17 @@ public class OrderFlowStrategyEnhanced implements
     }
 
     private void appendChatMessage(String role, String message) {
+        // Guard: Skip if chat UI not initialized yet
+        if (chatHtmlContent == null || chatHistoryArea == null) {
+            return;
+        }
+
         SwingUtilities.invokeLater(() -> {
+            // Double-check inside EDT
+            if (chatHtmlContent == null || chatHistoryArea == null) {
+                return;
+            }
+
             String timestamp = new SimpleDateFormat("HH:mm:ss").format(new Date());
 
             // Parse markdown to HTML for AI messages
@@ -3054,9 +3072,9 @@ public class OrderFlowStrategyEnhanced implements
 
                     // ========== WARM-UP CHECK ==========
                     // Skip ALL signal processing during warm-up period
-                    // Update session context first
+                    // Update session context first (use data timestamp for replay mode)
                     if (sessionContext != null) {
-                        sessionContext.update(price);
+                        sessionContext.update(price, currentDataTimestampMs);
                     }
 
                     boolean warmupComplete = (sessionContext == null || sessionContext.isWarmupComplete());
@@ -3879,6 +3897,28 @@ public class OrderFlowStrategyEnhanced implements
         // Monitor positions on each trade
         if (aiOrderManager != null) {
             aiOrderManager.onPriceUpdate((int)price, System.currentTimeMillis());
+        }
+    }
+
+    /**
+     * TimeListener callback - receives the true data timestamp from Bookmap.
+     * This is called BEFORE any other data event during replay mode.
+     * Use this timestamp for accurate session phase detection during replay.
+     *
+     * @param nanoseconds Data timestamp in nanoseconds (Unix epoch)
+     */
+    @Override
+    public void onTimestamp(long nanoseconds) {
+        // Convert nanoseconds to milliseconds for session tracking
+        currentDataTimestampMs = nanoseconds / 1_000_000;
+
+        // Update session context with the data timestamp (not wall clock)
+        // This ensures correct session phase during replay
+        if (sessionContext != null && lastKnownPrice != 0) {
+            // Adjust session start time on first data (for replay mode)
+            sessionContext.adjustSessionStart(currentDataTimestampMs);
+
+            sessionContext.update(lastKnownPrice, currentDataTimestampMs);
         }
     }
 

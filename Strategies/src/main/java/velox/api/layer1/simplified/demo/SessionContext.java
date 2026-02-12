@@ -56,6 +56,10 @@ public class SessionContext {
     }
     private SessionPhase currentPhase;
 
+    // Replay mode settings
+    private int replayStartHour = 9;    // Default: 9:30 AM market open
+    private int replayStartMinute = 30;
+
     // Session flags
     private boolean cvdReset;
     private boolean vwapReset;
@@ -97,9 +101,19 @@ public class SessionContext {
      * Call this at strategy start or when a new trading day begins
      */
     public void startNewSession(String instrument, double openPrice) {
+        startNewSession(instrument, openPrice, System.currentTimeMillis());
+    }
+
+    /**
+     * Initialize a new trading session with explicit start time (for replay mode)
+     * @param instrument Trading instrument
+     * @param openPrice Session opening price
+     * @param startTimeMs Session start time in milliseconds (use data timestamp for replay)
+     */
+    public void startNewSession(String instrument, double openPrice, long startTimeMs) {
         this.sessionId = java.util.UUID.randomUUID().toString().substring(0, 8);
         this.sessionDate = LocalDate.now();
-        this.sessionStartTimeMs = System.currentTimeMillis();
+        this.sessionStartTimeMs = startTimeMs;
         this.isNewSession = true;
         this.minutesIntoSession = 0;
         this.tradesProcessed = 0;
@@ -117,7 +131,20 @@ public class SessionContext {
         this.sessionHigh = openPrice;
         this.sessionLow = openPrice;
         this.currentPrice = openPrice;
-        updatePhase();
+        updatePhase(startTimeMs);
+    }
+
+    /**
+     * Adjust session start time based on first data timestamp (for replay mode)
+     * This is called once when we receive the first valid data timestamp
+     */
+    public void adjustSessionStart(long dataTimestampMs) {
+        // Only adjust if we haven't processed much data yet
+        if (priceUpdatesProcessed < 10) {
+            this.sessionStartTimeMs = dataTimestampMs;
+            this.minutesIntoSession = 0;
+            updatePhase(dataTimestampMs);
+        }
     }
 
     /**
@@ -212,33 +239,39 @@ public class SessionContext {
 
     /**
      * Update session phase based on timestamp (for replay mode)
-     * Uses minutes-into-session to determine phase, which works during replay
+     * Uses actual time of day from the data timestamp to determine phase
      */
     private void updatePhase(long timestamp) {
-        // Use minutes into session to determine phase
-        // This works correctly during replay since it's based on data time, not wall clock
-        int minutes = (int) ((timestamp - sessionStartTimeMs) / 60000);
+        // Convert timestamp to LocalTime in Eastern Time (US market timezone)
+        // Bookmap timestamps are typically in UTC, so we convert to ET
+        java.time.ZoneId etZone = java.time.ZoneId.of("America/New_York");
+        java.time.ZonedDateTime dataTime = java.time.Instant.ofEpochMilli(timestamp).atZone(etZone);
+        LocalTime timeOfDay = dataTime.toLocalTime();
 
-        // Map minutes to trading session phases (assuming session starts at market open)
-        // PRE_MARKET: before open (shouldn't happen during trading)
-        // OPENING_BELL: 0-30 min (9:30-10:00)
-        // MORNING_SESSION: 30-150 min (10:00-12:00)
-        // LUNCH_HOUR: 150-270 min (12:00-14:00)
-        // AFTERNOON: 270-360 min (14:00-15:30)
-        // CLOSING_BELL: 360-390 min (15:30-16:00)
-        // AFTER_HOURS: 390+ min (after 16:00)
+        int hour = timeOfDay.getHour();
+        int minute = timeOfDay.getMinute();
+        int totalMinutes = hour * 60 + minute;
 
-        if (minutes < 0) {
+        // Map actual time of day to trading session phases (US Eastern Time)
+        // PRE_MARKET: before 09:30 (570 min)
+        // OPENING_BELL: 09:30 - 10:00 (570-600 min)
+        // MORNING_SESSION: 10:00 - 12:00 (600-720 min)
+        // LUNCH_HOUR: 12:00 - 14:00 (720-840 min)
+        // AFTERNOON: 14:00 - 15:30 (840-930 min)
+        // CLOSING_BELL: 15:30 - 16:00 (930-960 min)
+        // AFTER_HOURS: after 16:00 (960 min)
+
+        if (totalMinutes < 570) {           // Before 9:30
             currentPhase = SessionPhase.PRE_MARKET;
-        } else if (minutes < 30) {
+        } else if (totalMinutes < 600) {    // 9:30 - 10:00
             currentPhase = SessionPhase.OPENING_BELL;
-        } else if (minutes < 150) {
+        } else if (totalMinutes < 720) {    // 10:00 - 12:00
             currentPhase = SessionPhase.MORNING_SESSION;
-        } else if (minutes < 270) {
+        } else if (totalMinutes < 840) {    // 12:00 - 14:00
             currentPhase = SessionPhase.LUNCH_HOUR;
-        } else if (minutes < 360) {
+        } else if (totalMinutes < 930) {    // 14:00 - 15:30
             currentPhase = SessionPhase.AFTERNOON;
-        } else if (minutes < 390) {
+        } else if (totalMinutes < 960) {    // 15:30 - 16:00
             currentPhase = SessionPhase.CLOSING_BELL;
         } else {
             currentPhase = SessionPhase.AFTER_HOURS;
