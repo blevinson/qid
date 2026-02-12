@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.ConcurrentHashMap;
 
 import javax.swing.*;
+import java.nio.file.Path;
 
 import velox.api.layer1.annotations.Layer1ApiVersion;
 import velox.api.layer1.annotations.Layer1ApiVersionValue;
@@ -61,7 +62,8 @@ public class OrderFlowStrategyEnhanced implements
     MarketByOrderDepthDataListener,
     TradeDataListener,
     BboListener,
-    CustomSettingsPanelProvider {
+    CustomSettingsPanelProvider,
+    AIOrderManager.AIMarkerCallback {
 
     // ========== PERFORMANCE TRACKING ==========
     private Map<Integer, SignalPerformance> trackedSignals = new ConcurrentHashMap<>();
@@ -86,35 +88,6 @@ public class OrderFlowStrategyEnhanced implements
         // Confluence data at signal time
         String confluenceBreakdown;
     }
-
-    // ========== TRADE TRACKING (Phase 4) ==========
-    /**
-     * Track active trades from entry to exit
-     */
-    private static class TradeContext {
-        String orderId;
-        String entryDirection;  // "LONG" or "SHORT"
-        int entryPrice;
-        long entryTime;
-        Integer exitPrice;
-        Long exitTime;
-        Double pnl;
-        Integer contracts;
-        String aiReasoning;
-        SignalData originalSignal;
-
-        boolean isClosed() {
-            return exitPrice != null;
-        }
-
-        int getHoldTimeMinutes() {
-            if (exitTime == null) return 0;
-            return (int) ((exitTime - entryTime) / 60000);
-        }
-    }
-
-    // Field to track active trades
-    private final Map<String, TradeContext> activeTrades = new ConcurrentHashMap<>();
 
     // ========== PARAMETERS ==========
     @Parameter(name = "Iceberg Min Orders")
@@ -172,18 +145,20 @@ public class OrderFlowStrategyEnhanced implements
     private Indicator spoofingMarker;       // MAGENTA triangle markers
     private Indicator absorptionMarker;     // YELLOW square markers
 
+    // ========== INDICATORS (Layer 2: AI Action Markers) ==========
+    private Indicator aiLongEntryMarker;    // CYAN circle markers
+    private Indicator aiShortEntryMarker;   // PINK circle markers
+    private Indicator aiExitMarker;         // SL/TP/BE markers
+    private Indicator aiSkipMarker;         // WHITE circle markers
+
     // ========== AI COMPONENTS ==========
     private AIIntegrationLayer aiIntegration;
     private AIOrderManager aiOrderManager;
     private OrderExecutor orderExecutor;
     private AIThresholdService aiThresholdService;
+    private Object memoryService;  // TradingMemoryService - initialized as Object to avoid loading issues
+    private AIInvestmentStrategist aiStrategist;
     private final Map<String, SignalData> pendingSignals = new ConcurrentHashMap<>();
-
-    // ========== MEMORY & SESSIONS COMPONENTS ==========
-    private java.io.File memoryDir;
-    private java.io.File sessionsDir;
-    private Object memoryService;  // TODO: Phase 2 - Change to TradingMemoryService type
-    private AIInvestmentStrategist aiStrategist;  // Phase 3: AI Investment Strategist
 
     // AI re-evaluation tracking
     private long lastAIReevaluationTime = 0;
@@ -244,6 +219,11 @@ public class OrderFlowStrategyEnhanced implements
     private JButton aiChatButton;
     private JButton aiReevaluateButton;
     private JLabel aiStatusIndicator;
+
+    // AI Trading UI Components (from MCP branch)
+    private JCheckBox enableAITradingCheckBox;
+    private JComboBox<String> aiModeComboBox;
+    private JSpinner confThresholdSpinner;
 
     // AI Chat Panel Components
     private JFrame chatWindow;
@@ -345,6 +325,19 @@ public class OrderFlowStrategyEnhanced implements
         absorptionMarker = api.registerIndicator("Absorption Markers", GraphType.PRIMARY);
         absorptionMarker.setColor(Color.YELLOW);
 
+        // Create AI action MARKER indicators (Layer 2)
+        aiLongEntryMarker = api.registerIndicator("🔵 AI LONG ENTRY", GraphType.PRIMARY);
+        aiLongEntryMarker.setColor(Color.CYAN);
+
+        aiShortEntryMarker = api.registerIndicator("🟣 AI SHORT ENTRY", GraphType.PRIMARY);
+        aiShortEntryMarker.setColor(Color.PINK);
+
+        aiExitMarker = api.registerIndicator("AI Exits (SL/TP/BE)", GraphType.PRIMARY);
+        aiExitMarker.setColor(Color.ORANGE);
+
+        aiSkipMarker = api.registerIndicator("⚪ AI SKIPS", GraphType.PRIMARY);
+        aiSkipMarker.setColor(Color.WHITE);
+
         // Initialize AI components if enabled
         if (enableAITrading && aiAuthToken != null && !aiAuthToken.isEmpty()) {
             log("🤖 Initializing AI Trading System...");
@@ -378,13 +371,13 @@ public class OrderFlowStrategyEnhanced implements
             );
             aiIntegration.setSessionPlan(sessionPlan);
 
-            // Create AI order manager with logger wrapper
+            // Create AI order manager with logger wrapper and marker callback
             aiOrderManager = new AIOrderManager(orderExecutor, new AIIntegrationLayer.AIStrategyLogger() {
                 @Override
                 public void log(String message, Object... args) {
                     OrderFlowStrategyEnhanced.this.log(message);
                 }
-            });
+            }, this);  // Pass 'this' as the marker callback
             aiOrderManager.breakEvenEnabled = true;
             aiOrderManager.breakEvenTicks = 3;
             aiOrderManager.maxPositions = maxPosition;
@@ -397,40 +390,19 @@ public class OrderFlowStrategyEnhanced implements
             log("ℹ️ AI Trading disabled");
         }
 
-        // Initialize AI Threshold Service if token provided
-        if (aiAuthToken != null && !aiAuthToken.isEmpty()) {
-            aiThresholdService = new AIThresholdService(aiAuthToken);
-            log("🤖 AI Chat Service initialized");
-
-            // Trigger initial AI threshold calculation if AI adaptive mode is enabled
-            if (useAIAdaptiveThresholds) {
-                log("🔄 AI Adaptive mode enabled - will calculate optimal thresholds on first data");
-            }
-        }
-
-        // ========== INITIALIZE MEMORY & SESSIONS ==========
-        // Create trading-memory and sessions directories
-        memoryDir = new java.io.File("trading-memory");
-        sessionsDir = new java.io.File("sessions");
-
-        if (!memoryDir.exists()) {
-            memoryDir.mkdirs();
-            log("📁 Created trading-memory directory");
-        }
-        if (!sessionsDir.exists()) {
-            sessionsDir.mkdirs();
-            log("📁 Created sessions directory");
-        }
-
-        // Initialize Trading Memory Service (Phase 2)
+        // Initialize Memory & Sessions (Phase 1)
         try {
             if (aiAuthToken != null && !aiAuthToken.isEmpty()) {
-                log("🧠 Initializing Trading Memory Service...");
+                log("🧠 Initializing Memory Service...");
+
+                // Get memory directory from user home
+                String userHome = System.getProperty("user.home");
+                Path memoryDir = java.nio.file.Paths.get(userHome, ".qid", "trading-memory");
 
                 // Import TradingMemoryService
                 velox.api.layer1.simplified.demo.storage.TradingMemoryService service =
                     new velox.api.layer1.simplified.demo.storage.TradingMemoryService(
-                        memoryDir,
+                        memoryDir.toFile(),
                         aiAuthToken,
                         java.nio.file.Paths.get(".").toAbsolutePath()
                     );
@@ -451,6 +423,17 @@ public class OrderFlowStrategyEnhanced implements
         } catch (Exception e) {
             log("⚠️ Memory Service initialization: " + e.getMessage());
             e.printStackTrace();
+        }
+
+        // Initialize AI Threshold Service if token provided
+        if (aiAuthToken != null && !aiAuthToken.isEmpty()) {
+            aiThresholdService = new AIThresholdService(aiAuthToken);
+            log("🤖 AI Chat Service initialized");
+
+            // Trigger initial AI threshold calculation if AI adaptive mode is enabled
+            if (useAIAdaptiveThresholds) {
+                log("🔄 AI Adaptive mode enabled - will calculate optimal thresholds on first data");
+            }
         }
 
         // Initialize log files
@@ -642,7 +625,7 @@ public class OrderFlowStrategyEnhanced implements
         enableAITradingCheckBox.setSelected(enableAITrading);
         enableAITradingCheckBox.addActionListener(e -> {
             enableAITrading = enableAITradingCheckBox.isSelected();
-            log("🤠 AI Trading " + (enableAITrading ? "ENABLED" : "DISABLED"));
+            log("🤖 AI Trading " + (enableAITrading ? "ENABLED" : "DISABLED"));
         });
         settingsPanel.add(enableAITradingCheckBox, gbc);
 
@@ -697,7 +680,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(maxPosSpinner, gbc);
 
         gbc.gridx = 0; gbc.gridy = 26;
-        settingsPanel.add(new JLabel("Daily Loss Limit:"), gbc);
+        settingsPanel.add(new JLabel("Daily Loss Limit ($):"), gbc);
         gbc.gridx = 1;
         JSpinner lossLimitSpinner = new JSpinner(new SpinnerNumberModel(dailyLossLimit.intValue(), 100.0, 5000.0, 100.0));
         lossLimitSpinner.addChangeListener(e -> dailyLossLimit = (Double) lossLimitSpinner.getValue());
@@ -709,21 +692,11 @@ public class OrderFlowStrategyEnhanced implements
         applyButton.addActionListener(e -> applySettings());
         settingsPanel.add(applyButton, gbc);
 
-<<<<<<< HEAD
-=======
-        // Open AI Chat button
-        gbc.gridx = 0; gbc.gridy = 28; gbc.gridwidth = 2;
-        chatOpenButton = new JButton("💬 Open AI Chat Window");
-        chatOpenButton.setToolTipText("Open floating AI Chat window (stays open when you close settings)");
-        chatOpenButton.addActionListener(e -> openAIChatWindow());
-        settingsPanel.add(chatOpenButton, gbc);
-
->>>>>>> 9114b2e (feat: Add AI Investment Strategist controls to settings panel)
         // Version label (bottom right)
-        gbc.gridx = 1; gbc.gridy = 29; gbc.gridwidth = 1;
+        gbc.gridx = 1; gbc.gridy = 28; gbc.gridwidth = 1;
         gbc.anchor = GridBagConstraints.EAST;
         gbc.weightx = 1.0;
-        JLabel versionLabel = new JLabel("Order Flow Enhanced");
+        JLabel versionLabel = new JLabel("Qid v2.1 - AI Trading with Memory");
         versionLabel.setFont(new Font("Arial", Font.ITALIC, 10));
         versionLabel.setForeground(Color.GRAY);
         settingsPanel.add(versionLabel, gbc);
@@ -999,6 +972,39 @@ public class OrderFlowStrategyEnhanced implements
         });
     }
 
+    private String loadSkillContext() {
+        try {
+            // Try current directory first
+            java.nio.file.Path skillPath = java.nio.file.Paths.get("SKILL.md");
+
+            // If not found, try docs directory
+            if (!java.nio.file.Files.exists(skillPath)) {
+                skillPath = java.nio.file.Paths.get("docs/SKILL.md");
+            }
+
+            // If still not found, try parent directory
+            if (!java.nio.file.Files.exists(skillPath)) {
+                skillPath = java.nio.file.Paths.get("../SKILL.md");
+            }
+
+            if (java.nio.file.Files.exists(skillPath)) {
+                String content = new String(java.nio.file.Files.readAllBytes(skillPath));
+                log("📚 Loaded SKILL.md: " + skillPath + " (" + content.length() + " chars)");
+
+                // Return first 3000 chars to avoid token limits
+                if (content.length() > 3000) {
+                    return content.substring(0, 3000) + "\n\n...(truncated, full file: " + content.length() + " chars)";
+                }
+                return content;
+            } else {
+                log("⚠️ SKILL.md not found (tried: ./SKILL.md, docs/SKILL.md, ../SKILL.md)");
+            }
+        } catch (Exception e) {
+            log("⚠️ Error loading SKILL.md: " + e.getMessage());
+        }
+        return null;
+    }
+
     private void sendChatMessage() {
         String userMessage = chatInputField.getText().trim();
         if (userMessage.isEmpty()) {
@@ -1028,6 +1034,9 @@ public class OrderFlowStrategyEnhanced implements
                 enhancedPrompt.append("=== SYSTEM CONTEXT (Qid Trading System) ===\n");
                 enhancedPrompt.append(skillContext);
                 enhancedPrompt.append("\n\n");
+                log("💬 Chat: Added SKILL.md context (" + skillContext.length() + " chars)");
+            } else {
+                log("⚠️ Chat: SKILL.md context not available");
             }
 
             // 2. Search memory for relevant context
@@ -1039,6 +1048,7 @@ public class OrderFlowStrategyEnhanced implements
                         ((velox.api.layer1.simplified.demo.storage.TradingMemoryService)memoryService).search(userMessage, 3);
 
                     if (!memoryResults.isEmpty()) {
+                        log("💬 Chat: Found " + memoryResults.size() + " relevant memory chunks");
                         for (velox.api.layer1.simplified.demo.memory.MemorySearchResult result : memoryResults) {
                             enhancedPrompt.append(String.format("- [%.2f] %s (lines %d-%d from %s)\n",
                                 result.getScore(),
@@ -1049,16 +1059,22 @@ public class OrderFlowStrategyEnhanced implements
                         }
                     } else {
                         enhancedPrompt.append("(No relevant memory found)\n");
+                        log("💬 Chat: No relevant memory found");
                     }
                     enhancedPrompt.append("\n");
                 } catch (Exception e) {
-                    enhancedPrompt.append("(Memory search unavailable)\n\n");
+                    enhancedPrompt.append("(Memory search unavailable: " + e.getMessage() + ")\n\n");
+                    log("⚠️ Chat: Memory search error: " + e.getMessage());
                 }
+            } else {
+                log("⚠️ Chat: Memory service not initialized");
             }
 
             // 3. Add user's question
             enhancedPrompt.append("=== USER QUESTION ===\n");
             enhancedPrompt.append(userMessage);
+
+            log("💬 Chat: Enhanced prompt length = " + enhancedPrompt.length() + " chars");
 
             return enhancedPrompt.toString();
         })
@@ -1092,27 +1108,6 @@ public class OrderFlowStrategyEnhanced implements
             });
             return null;
         });
-    }
-
-    /**
-     * Load SKILL.md context for AI chat
-     * This gives the AI knowledge about the Qid trading system
-     */
-    private String loadSkillContext() {
-        try {
-            java.nio.file.Path skillPath = java.nio.file.Paths.get("SKILL.md");
-            if (java.nio.file.Files.exists(skillPath)) {
-                String content = new String(java.nio.file.Files.readAllBytes(skillPath));
-                // Return first 2000 chars to avoid token limits
-                if (content.length() > 2000) {
-                    return content.substring(0, 2000) + "\n...(truncated)";
-                }
-                return content;
-            }
-        } catch (Exception e) {
-            // SKILL.md not found or error reading
-        }
-        return null;
     }
 
     private void appendChatMessage(String role, String message) {
@@ -1976,71 +1971,25 @@ public class OrderFlowStrategyEnhanced implements
                         icebergCount.incrementAndGet();
                     }
 
-                    // ========== MEMORY SEARCH (Phase 2) ==========
-                    // Search trading memory for relevant historical context
-                    if (memoryService != null) {
-                        try {
-                            // Build search query from signal context
-                            String signalDirection = isBid ? "bullish breakout" : "bearish breakdown";
-                            String trend = perf.cvdAtSignal > 0 ? "uptrend" : "downtrend";
-                            String query = String.format("%s iceberg order flow %s CVD %d",
-                                signalDirection, trend, (int)perf.cvdAtSignal);
-
-                            log("🧠 Searching memory for: " + query);
-
-                            // Search memory (asynchronous to avoid blocking signal detection)
-                            final String finalQuery = query;
-                            new Thread(() -> {
-                                try {
-                                    // TODO: Phase 2: Cast to TradingMemoryService when ready
-                                    // List<MemorySearchResult> results = ((TradingMemoryService)memoryService).search(finalQuery, 3);
-
-                                    // Log: Search results with scores
-                                    log("   📚 Memory search completed for " + finalQuery);
-                                    // TODO: Log results when TradingMemoryService is integrated
-
-                                } catch (Exception e) {
-                                    log("   ⚠️ Memory search error: " + e.getMessage());
-                                }
-                            }).start();
-
-                        } catch (Exception e) {
-                            log("   ⚠️ Memory search failed: " + e.getMessage());
-                        }
-                    }
-                    // ============================================
-
-                    // ========== AI TRADING EVALUATION (Phase 3) ==========
-                    if (enableAITrading && aiStrategist != null) {
+                    // ========== AI TRADING EVALUATION ==========
+                    if (enableAITrading && aiIntegration != null && aiOrderManager != null) {
                         // Create SignalData for AI evaluation
                         SignalData signalData = createSignalData(isBid, price, totalSize);
 
-                        log("🤠 AI STRATEGIST: Evaluating setup...");
-
-                        // Evaluate with AI Investment Strategist (memory-driven)
-                        aiStrategist.evaluateSetup(signalData, new AIInvestmentStrategist.AIStrategistCallback() {
-                            @Override
-                            public void onDecision(AIInvestmentStrategist.AIDecision decision) {
-                                if (decision.shouldTake) {
-                                    log("✅ AI: TAKE THIS SETUP");
-                                    log("   Confidence: " + (int)(decision.confidence * 100) + "%");
-                                    log("   Reasoning: " + decision.reasoning);
-
-                                    // Place strategic order based on AI plan
-                                    if (decision.plan != null) {
-                                        placeStrategicOrder(decision.plan);
-                                    }
+                        // Evaluate with AI (asynchronous)
+                        aiIntegration.evaluateSignalAsync(signalData)
+                            .thenAccept(decision -> {
+                                // Execute AI decision
+                                if ("TAKE".equals(decision.action)) {
+                                    aiOrderManager.executeEntry(decision, signalData);
                                 } else {
-                                    log("⏭️ AI: SKIP THIS SETUP");
-                                    log("   Reasoning: " + decision.reasoning);
+                                    aiOrderManager.executeSkip(decision, signalData);
                                 }
-                            }
-
-                            @Override
-                            public void onError(String error) {
-                                log("❌ AI Strategist error: " + error);
-                            }
-                        });
+                            })
+                            .exceptionally(ex -> {
+                                log("❌ AI evaluation failed: " + ex.getMessage());
+                                return null;
+                            });
                     }
                     // ============================================
 
@@ -2834,187 +2783,82 @@ public class OrderFlowStrategyEnhanced implements
         return icon;
     }
 
-    // ========== TRADE TRACKING (Phase 4) ==========
+    // ========== AI MARKER CALLBACK IMPLEMENTATION ==========
 
-    /**
-     * Track order entry
-     */
-    private void onOrderFilled(String orderId, String direction, int price, int contracts, String reasoning) {
-        TradeContext ctx = new TradeContext();
-        ctx.orderId = orderId;
-        ctx.entryDirection = direction;
-        ctx.entryPrice = price;
-        ctx.entryTime = System.currentTimeMillis();
-        ctx.contracts = contracts;
-        ctx.aiReasoning = reasoning;
-
-        activeTrades.put(orderId, ctx);
-        log("📊 TRACKING: " + direction + " entry @ " + price + " | ID: " + orderId);
-    }
-
-    /**
-     * Track position exit and learn from outcome
-     */
-    private void onPositionClosed(String orderId, int exitPrice) {
-        TradeContext ctx = activeTrades.get(orderId);
-        if (ctx == null) return;
-
-        ctx.exitPrice = exitPrice;
-        ctx.exitTime = System.currentTimeMillis();
-
-        // Calculate PnL
-        int ticks = ctx.entryDirection.equals("LONG")
-            ? (exitPrice - ctx.entryPrice)
-            : (ctx.entryPrice - exitPrice);
-        ctx.pnl = ticks * 12.5 * ctx.contracts;  // ES futures: $12.50/tick
-
-        boolean won = ctx.pnl > 0;
-
-        log("📊 CLOSED: " + ctx.entryDirection + " @ " + ctx.entryPrice + " → " + exitPrice +
-            " | P&L: $" + ctx.pnl + " | " + (won ? "✅ WIN" : "❌ LOSS"));
-
-        // Learn from outcome
-        learnFromOutcome(ctx, won, ctx.pnl);
-
-        // Remove from active
-        activeTrades.remove(orderId);
-    }
-
-    /**
-     * Learn from trade outcome and generate lesson
-     */
-    private void learnFromOutcome(TradeContext ctx, boolean won, double pnl) {
-        log("🧠 LEARNING: Analyzing outcome...");
-
-        // Generate lesson
-        String lesson = generateLesson(ctx, won, pnl);
-
+    @Override
+    public void onEntryMarker(boolean isLong, int price, int score, String reasoning) {
         try {
-            // Write lesson to trading-memory/lessons/2025/02/
-            String date = new SimpleDateFormat("yyyy-MM-dd").format(new Date());
-            String filename = String.format("lesson_%s_%s.md",
-                date,
-                won ? "WIN" : "LOSS");
+            // Create icon based on direction
+            BufferedImage icon = isLong ?
+                AIMarkerIcons.createLongEntryIcon() :   // CYAN circle
+                AIMarkerIcons.createShortEntryIcon();   // PINK circle
 
-            java.nio.file.Path lessonPath = java.nio.file.Paths.get("trading-memory/lessons/2025/02", filename);
-            String content = formatLessonMarkdown(ctx, won, pnl, lesson);
+            // Select appropriate indicator
+            Indicator markerIndicator = isLong ? aiLongEntryMarker : aiShortEntryMarker;
 
-            java.nio.file.Files.createDirectories(lessonPath.getParent());
-            java.nio.file.Files.write(lessonPath, content.getBytes(),
-                java.nio.file.StandardOpenOption.CREATE,
-                java.nio.file.StandardOpenOption.APPEND);
+            // Add marker to chart
+            markerIndicator.addIcon(price, icon, 3, 3);
 
-            log("   ✅ Lesson written: " + lessonPath);
+            log("📍 AI ENTRY MARKER: " + (isLong ? "LONG" : "SHORT") +
+                " @ " + price + " (Score: " + score + ")");
+        } catch (Exception e) {
+            log("❌ Failed to place entry marker: " + e.getMessage());
+        }
+    }
 
-            // Update memory service with new lesson
-            if (memoryService != null) {
-                // TODO: Phase 4: Trigger memory re-index
-                log("   🔄 Memory updated with new lesson");
+    @Override
+    public void onSkipMarker(int price, int score, String reasoning) {
+        try {
+            // Create skip icon (WHITE circle)
+            BufferedImage icon = AIMarkerIcons.createSkipIcon();
+
+            // Add marker to chart
+            aiSkipMarker.addIcon(price, icon, 3, 3);
+
+            log("⚪ AI SKIP MARKER @ " + price + " (Score: " + score +
+                ", Reason: " + reasoning + ")");
+        } catch (Exception e) {
+            log("❌ Failed to place skip marker: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public void onExitMarker(int price, String reason, double pnl, boolean isWin) {
+        try {
+            // Create icon based on exit reason
+            BufferedImage icon;
+            if (reason.contains("Stop Loss")) {
+                icon = AIMarkerIcons.createStopLossIcon();  // ORANGE X
+            } else if (reason.contains("Take Profit")) {
+                icon = AIMarkerIcons.createTakeProfitIcon();  // BLUE diamond
+            } else {
+                icon = AIMarkerIcons.createStopLossIcon();  // Default to ORANGE X
             }
 
-        } catch (java.io.IOException e) {
-            log("   ❌ Failed to write lesson: " + e.getMessage());
+            // Add marker to chart
+            aiExitMarker.addIcon(price, icon, 3, 3);
+
+            String emoji = isWin ? "💎" : "🛑";
+            log(emoji + " AI EXIT MARKER @ " + price + " (P&L: $" +
+                String.format("%.2f", pnl) + ", Reason: " + reason + ")");
+        } catch (Exception e) {
+            log("❌ Failed to place exit marker: " + e.getMessage());
         }
     }
 
-    private String generateLesson(TradeContext ctx, boolean won, double pnl) {
-        if (won) {
-            return "✅ WIN: " + ctx.entryDirection + " setup worked well. " +
-                   "Confluence score was high, memory support was strong. " +
-                   "Keep looking for similar setups.";
-        } else {
-            return "❌ LOSS: " + ctx.entryDirection + " setup failed. " +
-                   "Possible reasons: entry too early, poor risk/reward, " +
-                   "or missing confluence. Review conditions before next trade.";
+    @Override
+    public void onBreakEvenMarker(int newStopPrice, int triggerPrice) {
+        try {
+            // Create break-even icon (YELLOW square)
+            BufferedImage icon = AIMarkerIcons.createBreakEvenIcon();
+
+            // Add marker to chart
+            aiExitMarker.addIcon(newStopPrice, icon, 3, 3);
+
+            log("🟡 AI BREAK-EVEN MARKER @ " + newStopPrice +
+                " (Stop moved from " + triggerPrice + ")");
+        } catch (Exception e) {
+            log("❌ Failed to place break-even marker: " + e.getMessage());
         }
-    }
-
-    private String formatLessonMarkdown(TradeContext ctx, boolean won, double pnl, String lesson) {
-        return String.format(
-            "# Trade Lesson - %s\n\n" +
-            "## Details\n" +
-            "- **Date**: %s\n" +
-            "- **Direction**: %s\n" +
-            "- **Entry**: %d\n" +
-            "- **Exit**: %d\n" +
-            "- **P&L**: $%.2f\n" +
-            "- **Hold Time**: %d min\n" +
-            "- **AI Reasoning**: %s\n\n" +
-            "## Outcome\n" +
-            "%s\n\n" +
-            "## Analysis\n" +
-            "%s\n\n" +
-            "## Tags\n" +
-            "- %s\n" +
-            "- iceberg-setup\n" +
-            "- AI-strategist\n",
-            won ? "WIN" : "LOSS",
-            new SimpleDateFormat("yyyy-MM-dd HH:mm").format(new Date(ctx.entryTime)),
-            ctx.entryDirection,
-            ctx.entryPrice,
-            ctx.exitPrice,
-            pnl,
-            ctx.getHoldTimeMinutes(),
-            ctx.aiReasoning != null ? ctx.aiReasoning : "N/A",
-            won ? "✅ Profitable trade" : "❌ Loss",
-            lesson,
-            won ? "winning-trade" : "losing-trade"
-        );
-    }
-
-    // ========== PHASE 3: STRATEGIC ORDER PLACEMENT ==========
-
-    /**
-     * Place strategic BUY STOP order (not market order)
-     * Philosophy: "Strategic patience over speed"
-     *
-     * @param plan Trade plan from AI Investment Strategist
-     */
-    private void placeStrategicOrder(AIInvestmentStrategist.TradePlan plan) {
-        log("🎯 PLACING STRATEGIC ORDER: " + plan.orderType);
-        log("   Entry: " + plan.entryPrice);
-        log("   Stop Loss: " + plan.stopLossPrice);
-        log("   Take Profit: " + plan.takeProfitPrice);
-        log("   Contracts: " + plan.contracts);
-
-        // Validate plan
-        if (plan.entryPrice <= 0 || plan.stopLossPrice <= 0 || plan.takeProfitPrice <= 0) {
-            log("   ❌ Invalid plan - prices must be positive");
-            return;
-        }
-
-        if (plan.contracts <= 0 || plan.contracts > maxPosition) {
-            log("   ❌ Invalid contract count: " + plan.contracts);
-            return;
-        }
-
-        // Generate order ID
-        String orderId = "AI_STRATEGIC_" + System.currentTimeMillis();
-
-        // Log order placement
-        log("   Order ID: " + orderId);
-
-        // Log reasoning if available
-        if (plan.notes != null && !plan.notes.isEmpty()) {
-            log("   Reasoning: " + plan.notes);
-        }
-
-        // TODO: Phase 3: Integrate with existing order manager
-        // Use aiOrderManager to place the strategic order
-        // For now, just log the plan details
-        if (aiOrderManager != null) {
-            log("   ℹ️ aiOrderManager available - ready for Phase 3 integration");
-            // Phase 3: Uncomment when ready to place actual orders
-            // aiOrderManager.placeStrategicOrder(plan);
-        } else {
-            log("   ℹ️ aiOrderManager not initialized - order not placed");
-        }
-
-        // Track order for learning (Phase 4)
-        // TODO: Phase 4: Add to trade tracking
-        log("   📊 Order tracked for outcome analysis");
-
-        // In production, this would call:
-        // aiOrderManager.placeStrategicOrder(plan);
     }
 }

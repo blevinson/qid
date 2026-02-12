@@ -41,6 +41,14 @@ public class AIInvestmentStrategist {
      * @param callback AIStrategistCallback for async decision
      */
     public void evaluateSetup(SignalData signal, AIStrategistCallback callback) {
+        // Validate input
+        if (signal == null || callback == null) {
+            if (callback != null) {
+                callback.onError("Signal and callback cannot be null");
+            }
+            return;
+        }
+
         // Step 1: Search memory for similar historical setups
         String query = buildMemoryQuery(signal);
         List<MemorySearchResult> memoryResults = memoryService.search(query, 5);
@@ -107,7 +115,7 @@ public class AIInvestmentStrategist {
             - Type: %s %s
             - Price: %d
             - Confluence Score: %d
-            - CVD: %.0f (%s)
+            - CVD: %d (%s)
             - Trend: %s
 
             %s
@@ -156,10 +164,22 @@ public class AIInvestmentStrategist {
         decision.reasoning = "Strong confluence with memory support";
 
         TradePlan plan = new TradePlan();
-        plan.orderType = "BUY_STOP";
+        boolean isLong = "LONG".equalsIgnoreCase(signal.direction);
+
+        plan.orderType = isLong ? "BUY_STOP" : "SELL_STOP";
         plan.entryPrice = signal.price;
-        plan.stopLossPrice = signal.price - 30;  // Default 30 tick SL
-        plan.takeProfitPrice = signal.price + 70; // Default 70 tick TP
+
+        // For LONG: SL below, TP above
+        // For SHORT: SL above, TP below
+        if (isLong) {
+            plan.stopLossPrice = signal.price - 30;   // Default 30 tick SL
+            plan.takeProfitPrice = signal.price + 70; // Default 70 tick TP
+        } else {
+            plan.stopLossPrice = signal.price + 30;   // SL above for SHORT
+            plan.takeProfitPrice = signal.price - 70; // TP below for SHORT
+        }
+
+        plan.contracts = 1;  // Default 1 contract
         decision.plan = plan;
 
         callback.onDecision(decision);

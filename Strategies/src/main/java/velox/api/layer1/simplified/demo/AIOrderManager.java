@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class AIOrderManager {
     private final OrderExecutor orderExecutor;
     private final AIIntegrationLayer.AIStrategyLogger logger;
+    private final AIMarkerCallback markerCallback;
 
     // Active positions tracking
     private final Map<String, ActivePosition> activePositions = new ConcurrentHashMap<>();
@@ -31,9 +32,10 @@ public class AIOrderManager {
     private final AtomicInteger winningTrades = new AtomicInteger(0);
     private double dailyPnl = 0.0;
 
-    public AIOrderManager(OrderExecutor orderExecutor, AIIntegrationLayer.AIStrategyLogger logger) {
+    public AIOrderManager(OrderExecutor orderExecutor, AIIntegrationLayer.AIStrategyLogger logger, AIMarkerCallback markerCallback) {
         this.orderExecutor = orderExecutor;
         this.logger = logger;
+        this.markerCallback = markerCallback;
     }
 
     /**
@@ -120,6 +122,11 @@ public class AIOrderManager {
             // Track position
             activePositions.put(positionId, position);
 
+            // Place AI entry marker on chart
+            if (markerCallback != null) {
+                markerCallback.onEntryMarker(decision.isLong, signal.price, signal.score, decision.reasoning);
+            }
+
             log("🤖 AI ENTRY ORDER PLACED:");
             log("   Position ID: %s", positionId.substring(0, 8));
             log("   %s %d contract(s) @ %d", decision.isLong ? "LONG" : "SHORT", positionSize, signal.price);
@@ -144,6 +151,11 @@ public class AIOrderManager {
         log("   %s @ %d (Score: %d)", signal.direction, signal.price, signal.score);
         log("   Reasoning: %s", decision.reasoning);
         log("   Confidence: %d%%", decision.confidence);
+
+        // Place AI skip marker on chart
+        if (markerCallback != null) {
+            markerCallback.onSkipMarker(signal.price, signal.score, decision.reasoning);
+        }
     }
 
     /**
@@ -199,6 +211,11 @@ public class AIOrderManager {
                 position.stopLossOrderId.set(newStopOrderId);
                 position.stopLossPrice.set(newStopPrice);
                 position.breakEvenMoved.set(true);
+
+                // Place break-even marker on chart
+                if (markerCallback != null) {
+                    markerCallback.onBreakEvenMarker(newStopPrice, position.breakEvenTriggerPrice);
+                }
 
                 log("🟡 BREAK-EVEN TRIGGERED:");
                 log("   Position: %s", position.id.substring(0, 8));
@@ -269,12 +286,18 @@ public class AIOrderManager {
             // Mark position as closed
             position.close(exitPrice, reason, exitOrderId != null ? exitOrderId : triggerOrderId);
 
-            // Update statistics
+            // Update statistics (calculate PnL first for marker callback)
             double pnl = position.getRealizedPnl();
             dailyPnl += pnl;
             totalTrades.incrementAndGet();
             if (pnl > 0) {
                 winningTrades.incrementAndGet();
+            }
+
+            // Place AI exit marker on chart
+            if (markerCallback != null) {
+                boolean isWin = exitPrice != ((position.isLong ? position.stopLossPrice.get() : position.stopLossPrice.get()));
+                markerCallback.onExitMarker(exitPrice, reason, pnl, isWin);
             }
 
             // Log closure
@@ -412,5 +435,30 @@ public class AIOrderManager {
      */
     public void cleanupClosedPositions() {
         activePositions.entrySet().removeIf(entry -> entry.getValue().isClosed.get());
+    }
+
+    /**
+     * Callback interface for placing AI action markers on chart
+     */
+    public interface AIMarkerCallback {
+        /**
+         * Called when AI enters a trade
+         */
+        void onEntryMarker(boolean isLong, int price, int score, String reasoning);
+
+        /**
+         * Called when AI skips a signal
+         */
+        void onSkipMarker(int price, int score, String reasoning);
+
+        /**
+         * Called when position exits (SL/TP/Manual)
+         */
+        void onExitMarker(int price, String reason, double pnl, boolean isWin);
+
+        /**
+         * Called when break-even is triggered
+         */
+        void onBreakEvenMarker(int newStopPrice, int triggerPrice);
     }
 }
