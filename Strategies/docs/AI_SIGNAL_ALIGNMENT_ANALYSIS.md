@@ -207,6 +207,43 @@ score += alignmentScore;
 
 ---
 
+## Implementation Status
+
+### Phase 1: Quick Wins ✅ IMPLEMENTED (2025-02-12)
+
+1. **CVD divergence penalty (-30 points)** ✅
+   - When CVD direction is OPPOSITE to signal direction
+   - AI skips these 75-92% of the time
+
+2. **EMA divergence penalty (-15 points)** ✅
+   - When price is on wrong side of ALL 3 EMAs
+   - Partial divergence (-8) for 2 of 3 EMAs
+
+3. **Removed size bonus** ✅
+   - Was redundant with iceberg score
+   - Removed the 3-5 point bonus
+
+4. **Increased CVD alignment bonus (+25 vs +15)** ✅
+   - Aligned signals get rewarded more
+
+5. **Added VWAP divergence penalty (-5)** ✅
+   - Mild penalty for trading against VWAP
+
+6. **Reduced Time of Day bonus** ✅
+   - 10→5 for prime hours, 5→2 for secondary
+
+### Phase 2: Pre-Filtering (TODO)
+1. Pre-AI filter for double-divergence signals
+2. Alignment score component
+3. Adjust threshold
+
+### Phase 3: Refinement (TODO)
+1. Tune penalty/bonus values
+2. Add nuanced location scoring
+3. Session phase weighting
+
+---
+
 ## Proposed New Score Ranges
 
 ### Current System
