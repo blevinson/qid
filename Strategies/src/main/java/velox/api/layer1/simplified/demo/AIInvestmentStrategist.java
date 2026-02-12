@@ -65,17 +65,30 @@ public class AIInvestmentStrategist {
             return;
         }
 
+        System.out.println("🧠 ========== AI STRATEGIST EVALUATION ==========");
+        System.out.println("📊 SIGNAL DETAILS:");
+        System.out.println("   Direction: " + signal.direction);
+        System.out.println("   Price: " + signal.price);
+        System.out.println("   Score: " + signal.score + " (threshold: " + signal.threshold + ")");
+        System.out.println("   CVD: " + signal.market.cvd + " (" + signal.market.cvdTrend + ")");
+        System.out.println("   Trend: " + signal.market.trend);
+
         // Step 1: Search memory for similar historical setups
         String query = buildMemoryQuery(signal);
+        System.out.println("🔍 Memory Query: " + query);
         List<MemorySearchResult> memoryResults = memoryService.search(query, 5);
+        System.out.println("📚 Memory Results: " + memoryResults.size() + " similar setups found");
 
         // Step 2: Analyze memory results
         String context = buildMemoryContext(memoryResults);
+        if (memoryResults.isEmpty()) {
+            System.out.println("⚠️ No memory context - AI will use general analysis");
+        }
 
         // Step 3: Ask AI to make decision
         String prompt = buildAIPrompt(signal, context);
 
-        // Call Claude API (placeholder for now)
+        // Call Claude API
         callClaudeAPI(prompt, callback, signal);
     }
 
@@ -309,6 +322,16 @@ public class AIInvestmentStrategist {
             decision.confidence = 0.0;
             decision.reasoning = "Failed to parse AI response: " + e.getMessage();
         }
+
+        // Log the final decision
+        System.out.println("🤖 AI DECISION: " + (decision.shouldTake ? "✅ TAKE" : "⏭️ SKIP"));
+        System.out.println("   Confidence: " + (decision.confidence * 100) + "%");
+        System.out.println("   Reasoning: " + decision.reasoning);
+        if (decision.shouldTake && decision.plan != null) {
+            System.out.println("   Plan: " + decision.plan.orderType + " @ " + decision.plan.entryPrice);
+            System.out.println("   SL: " + decision.plan.stopLossPrice + " | TP: " + decision.plan.takeProfitPrice);
+        }
+        System.out.println("===============================================");
 
         return decision;
     }
