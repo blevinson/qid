@@ -225,6 +225,7 @@ public class OrderFlowStrategyEnhanced implements
     private final EMACalculator ema50 = new EMACalculator(50);
     private final VWAPCalculator vwapCalculator = new VWAPCalculator();
     private final ATRCalculator atrCalculator = new ATRCalculator(14);
+    private final DOMAnalyzer domAnalyzer = new DOMAnalyzer(50, 100);  // 50 tick lookback, 100 min wall size
 
     // Tracking for EMAs and VWAP
     private double currentHigh = Double.NaN;
@@ -1969,6 +1970,12 @@ public class OrderFlowStrategyEnhanced implements
     }
 
     private void updateAdaptiveThresholds(int price) {
+        // Update DOM analysis (support/resistance from order book)
+        int currentPrice = (int) getCurrentPrice();
+        if (currentPrice > 0) {
+            domAnalyzer.analyze(priceLevels, orders, currentPrice);
+        }
+
         // Always track statistics for display, even in manual mode
         avgOrderSize = (double) totalSizeSeen / totalOrdersSeen;
 
@@ -2413,6 +2420,31 @@ public class OrderFlowStrategyEnhanced implements
             signal.market.atrLevel = atrCalculator.getATRLevel(2.0);  // 2.0 as baseline
         }
 
+        // ========== DOM (Depth of Market) DATA ==========
+        // Real-time support/resistance from order book liquidity
+        DOMAnalyzer.DOMLevel support = domAnalyzer.getNearestSupport();
+        DOMAnalyzer.DOMLevel resistance = domAnalyzer.getNearestResistance();
+
+        if (support != null) {
+            signal.market.domSupportPrice = support.price;
+            signal.market.domSupportVolume = support.volume;
+            signal.market.domSupportDistance = support.distanceTicks;
+        }
+
+        if (resistance != null) {
+            signal.market.domResistancePrice = resistance.price;
+            signal.market.domResistanceVolume = resistance.volume;
+            signal.market.domResistanceDistance = resistance.distanceTicks;
+        }
+
+        signal.market.domImbalanceRatio = domAnalyzer.getImbalanceRatio();
+        signal.market.domImbalanceSentiment = domAnalyzer.getImbalanceSentiment();
+        signal.market.domTotalBidVolume = domAnalyzer.getTotalBidVolume();
+        signal.market.domTotalAskVolume = domAnalyzer.getTotalAskVolume();
+        signal.market.hasDomSupportNearby = domAnalyzer.hasSupportNearby();
+        signal.market.hasDomResistanceNearby = domAnalyzer.hasResistanceNearby();
+        signal.market.domConfluenceAdjustment = domAnalyzer.getConfluenceAdjustment(isBid);
+
         // ========== ACCOUNT CONTEXT ==========
         signal.account = new SignalData.AccountContext();
         signal.account.accountSize = 10000.0;
@@ -2557,6 +2589,11 @@ public class OrderFlowStrategyEnhanced implements
         } else if (totalSize >= 30) {
             score += 3;
         }
+
+        // ========== DOM (DEPTH OF MARKET) ALIGNMENT (max 10 points) ==========
+        // Add DOM confluence adjustment from analyzer
+        int domAdjustment = domAnalyzer.getConfluenceAdjustment(isBid);
+        score += Math.max(-10, Math.min(10, domAdjustment));  // Clamp to +/- 10
 
         return score;
     }

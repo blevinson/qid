@@ -149,6 +149,30 @@ public class SignalData {
         public boolean emaTrendAlignment;  // Are EMAs aligned with signal direction?
         public int emaAlignmentCount;  // How many EMAs confirm the direction (0-3)
         public String trendStrength;  // "WEAK", "MODERATE", "STRONG"
+
+        // ========== DOM (Depth of Market) DATA ==========
+        // Real-time support/resistance from order book liquidity
+
+        // Support level (largest bid wall below current price)
+        public int domSupportPrice;  // Price of nearest support
+        public long domSupportVolume;  // Volume at support level
+        public int domSupportDistance;  // Distance in ticks
+
+        // Resistance level (largest ask wall above current price)
+        public int domResistancePrice;  // Price of nearest resistance
+        public long domResistanceVolume;  // Volume at resistance level
+        public int domResistanceDistance;  // Distance in ticks
+
+        // DOM Imbalance
+        public double domImbalanceRatio;  // bidVolume / askVolume
+        public String domImbalanceSentiment;  // "STRONG_BULLISH", "BULLISH", "NEUTRAL", "BEARISH", "STRONG_BEARISH"
+        public long domTotalBidVolume;  // Total bid volume in range
+        public long domTotalAskVolume;  // Total ask volume in range
+
+        // DOM Confluence
+        public int domConfluenceAdjustment;  // Score adjustment from DOM
+        public boolean hasDomSupportNearby;  // Is there significant support nearby?
+        public boolean hasDomResistanceNearby;  // Is there significant resistance nearby?
     }
 
     public static class AccountContext {

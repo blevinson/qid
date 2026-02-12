@@ -123,12 +123,14 @@ public class BookmapOrderExecutor implements OrderExecutor {
             log("   Side: %s, Stop Price: %d, Qty: %d", side, stopPrice, quantity);
 
             // Stop loss is a stop market order
-            // Side is opposite of entry
-            boolean isBuy = side == OrderSide.SELL;
+            // side = SELL means we want to SELL when price hits stop (for LONG positions)
+            // side = BUY means we want to BUY when price hits stop (for SHORT positions)
+            // isBuy should match the side - if we want to sell, isBuy=false
+            boolean isBuy = side == OrderSide.BUY;
 
             SimpleOrderSendParameters orderParams = new SimpleOrderSendParameters(
                 alias,                    // alias
-                isBuy,                    // isBuy (opposite of entry)
+                isBuy,                    // isBuy - matches the action we want when triggered
                 quantity,                  // size
                 OrderDuration.GTC,          // duration
                 orderId,                   // order ID
@@ -165,12 +167,14 @@ public class BookmapOrderExecutor implements OrderExecutor {
             log("   Side: %s, Target Price: %d, Qty: %d", side, targetPrice, quantity);
 
             // Take profit is a limit order at target price
-            // Side is opposite of entry
-            boolean isBuy = side == OrderSide.SELL;
+            // side = SELL means we want to SELL at target (for LONG positions)
+            // side = BUY means we want to BUY at target (for SHORT positions)
+            // isBuy should match the side - if we want to sell, isBuy=false
+            boolean isBuy = side == OrderSide.BUY;
 
             SimpleOrderSendParameters orderParams = new SimpleOrderSendParameters(
                 alias,                    // alias
-                isBuy,                    // isBuy (opposite of entry)
+                isBuy,                    // isBuy - matches the action we want
                 quantity,                  // size
                 OrderDuration.GTC,          // duration
                 orderId,                   // order ID

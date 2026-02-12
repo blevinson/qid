@@ -93,6 +93,25 @@ public class AIInvestmentStrategist {
         log("SIGNAL: " + signal.direction + " @ " + signal.price + " | Score: " + signal.score + "/" + signal.threshold);
         log("CVD: " + signal.market.cvd + " (" + signal.market.cvdTrend + ") | Trend: " + signal.market.trend);
 
+        // Log key levels for debugging
+        log("KEY LEVELS:");
+        if (!Double.isNaN(signal.market.vwap) && signal.market.vwap > 0) {
+            log("  VWAP: " + String.format("%.2f", signal.market.vwap) + " (" + signal.market.priceVsVwap + ")");
+        }
+        if (signal.market.pocPrice > 0) {
+            log("  POC: " + signal.market.pocPrice);
+        }
+        if (signal.market.valueAreaLow > 0 && signal.market.valueAreaHigh > 0) {
+            log("  Value Area: " + signal.market.valueAreaLow + " - " + signal.market.valueAreaHigh);
+        }
+        if (signal.market.domSupportPrice > 0) {
+            log("  DOM SUPPORT: " + signal.market.domSupportPrice + " (" + signal.market.domSupportVolume + " contracts)");
+        }
+        if (signal.market.domResistancePrice > 0) {
+            log("  DOM RESISTANCE: " + signal.market.domResistancePrice + " (" + signal.market.domResistanceVolume + " contracts)");
+        }
+        log("  DOM IMBALANCE: " + String.format("%.2f", signal.market.domImbalanceRatio) + " (" + signal.market.domImbalanceSentiment + ")");
+
         // Step 1: Search memory for similar historical setups
         String query = buildMemoryQuery(signal);
         log("Memory Query: " + query);
@@ -189,6 +208,25 @@ public class AIInvestmentStrategist {
         if (signal.market.ema50 > 0) {
             keyLevels.append(String.format("- EMA50: %.2f (%.1f ticks)\n",
                 signal.market.ema50, signal.market.ema50DistanceTicks));
+        }
+
+        // DOM (Order Book) levels - Real-time support/resistance from liquidity
+        if (signal.market.domSupportPrice > 0) {
+            keyLevels.append(String.format("- DOM SUPPORT: %d (%d contracts, %d ticks below)\n",
+                signal.market.domSupportPrice,
+                signal.market.domSupportVolume,
+                signal.market.domSupportDistance));
+        }
+        if (signal.market.domResistancePrice > 0) {
+            keyLevels.append(String.format("- DOM RESISTANCE: %d (%d contracts, %d ticks above)\n",
+                signal.market.domResistancePrice,
+                signal.market.domResistanceVolume,
+                signal.market.domResistanceDistance));
+        }
+        if (signal.market.domImbalanceRatio != 0) {
+            keyLevels.append(String.format("- DOM IMBALANCE: %.2f (%s)\n",
+                signal.market.domImbalanceRatio,
+                signal.market.domImbalanceSentiment));
         }
 
         // If no key levels available, add placeholder
