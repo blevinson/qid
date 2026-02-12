@@ -17,6 +17,13 @@ import java.time.temporal.ChronoUnit;
  */
 public class SessionContext {
 
+    // ========== WARM-UP CONFIGURATION ==========
+    // Signals are suppressed until warm-up is complete
+    // This allows indicators (CVD, VWAP, EMAs, Volume Profile) to accumulate data
+    public static final int WARMUP_MINUTES = 5;        // Wait at least 5 minutes
+    public static final int WARMUP_TRADES = 100;       // Or 100 trades processed
+    public static final int WARMUP_PRICE_TICKS = 50;   // Or 50 price updates
+
     // Session identification
     private String sessionId;
     private LocalDate sessionDate;
@@ -25,6 +32,11 @@ public class SessionContext {
     // Session state
     private boolean isNewSession;
     private int minutesIntoSession;
+
+    // Warm-up tracking
+    private int tradesProcessed;
+    private int priceUpdatesProcessed;
+    private boolean warmupComplete;
 
     // Session performance
     private int tradesThisSession;
@@ -66,6 +78,9 @@ public class SessionContext {
         this.sessionStartTimeMs = System.currentTimeMillis();
         this.isNewSession = true;
         this.minutesIntoSession = 0;
+        this.tradesProcessed = 0;
+        this.priceUpdatesProcessed = 0;
+        this.warmupComplete = false;
         this.tradesThisSession = 0;
         this.winsThisSession = 0;
         this.lossesThisSession = 0;
@@ -87,6 +102,9 @@ public class SessionContext {
         this.sessionStartTimeMs = System.currentTimeMillis();
         this.isNewSession = true;
         this.minutesIntoSession = 0;
+        this.tradesProcessed = 0;
+        this.priceUpdatesProcessed = 0;
+        this.warmupComplete = false;
         this.tradesThisSession = 0;
         this.winsThisSession = 0;
         this.lossesThisSession = 0;
@@ -109,9 +127,13 @@ public class SessionContext {
         this.currentPrice = currentPrice;
         this.sessionHigh = Math.max(sessionHigh, currentPrice);
         this.sessionLow = Math.min(sessionLow, currentPrice);
+        this.priceUpdatesProcessed++;
 
         // Update minutes into session
         this.minutesIntoSession = (int) ((System.currentTimeMillis() - sessionStartTimeMs) / 60000);
+
+        // Check if warm-up is complete
+        checkWarmup();
 
         // Session is no longer "new" after 30 minutes
         if (minutesIntoSession > 30) {
@@ -120,6 +142,52 @@ public class SessionContext {
 
         // Update phase
         updatePhase();
+    }
+
+    /**
+     * Record a processed trade (for CVD/tracking) - call on each trade
+     */
+    public void recordProcessedTrade() {
+        this.tradesProcessed++;
+        checkWarmup();
+    }
+
+    /**
+     * Check if warm-up period is complete
+     * Warm-up ends when ANY of these conditions are met:
+     * - 5 minutes have passed
+     * - 100 trades have been processed
+     * - 50 price updates have occurred
+     */
+    private void checkWarmup() {
+        if (warmupComplete) return;
+
+        warmupComplete = (minutesIntoSession >= WARMUP_MINUTES) ||
+                         (tradesProcessed >= WARMUP_TRADES) ||
+                         (priceUpdatesProcessed >= WARMUP_PRICE_TICKS);
+    }
+
+    /**
+     * Is the warm-up period complete?
+     * Signals should be suppressed until this returns true
+     */
+    public boolean isWarmupComplete() {
+        return warmupComplete;
+    }
+
+    /**
+     * Get warm-up progress description
+     */
+    public String getWarmupStatus() {
+        if (warmupComplete) {
+            return "COMPLETE";
+        }
+
+        String timeStatus = minutesIntoSession + "/" + WARMUP_MINUTES + " min";
+        String tradeStatus = tradesProcessed + "/" + WARMUP_TRADES + " trades";
+        String priceStatus = priceUpdatesProcessed + "/" + WARMUP_PRICE_TICKS + " prices";
+
+        return String.format("WARMUP (%s | %s | %s)", timeStatus, tradeStatus, priceStatus);
     }
 
     /**
@@ -206,6 +274,9 @@ public class SessionContext {
             LocalTime.now().minusMinutes(minutesIntoSession).format(TIME_FMT),
             minutesIntoSession));
 
+        // Warm-up status
+        sb.append(String.format("Warm-up: %s\n", getWarmupStatus()));
+
         // Session phase
         sb.append(String.format("Phase: %s", currentPhase));
         if (isNewSession) {
@@ -229,11 +300,17 @@ public class SessionContext {
             sessionLow, sessionHigh, getSessionRangeTicks(1.0)));
 
         // Important context notes
-        if (isNewSession) {
-            sb.append("\n⚠️ NEW SESSION NOTES:\n");
-            sb.append("- CVD and VWAP have just started accumulating\n");
-            sb.append("- No historical context from today yet\n");
-            sb.append("- Be cautious with first signals of the day\n");
+        if (!warmupComplete) {
+            sb.append("\n⚠️ WARM-UP PERIOD ACTIVE:\n");
+            sb.append("- Indicators are still accumulating data\n");
+            sb.append("- Signals should be suppressed until warm-up completes\n");
+            sb.append("- Wait for: 5 min OR 100 trades OR 50 price updates\n");
+        }
+
+        if (isNewSession && warmupComplete) {
+            sb.append("\n⚠️ NEW SESSION (warm-up complete):\n");
+            sb.append("- CVD and VWAP have accumulated some data\n");
+            sb.append("- Proceed with normal caution\n");
         }
 
         if (currentPhase == SessionPhase.OPENING_BELL || currentPhase == SessionPhase.CLOSING_BELL) {
@@ -259,8 +336,9 @@ public class SessionContext {
      * Brief summary for logging
      */
     public String toSummary() {
-        return String.format("Session %s | %s | %d min | Trades: %d | P&L: $%.2f",
-            sessionId, currentPhase, minutesIntoSession, tradesThisSession, sessionPnl);
+        String warmupStr = warmupComplete ? "" : " | " + getWarmupStatus();
+        return String.format("Session %s | %s | %d min | Trades: %d | P&L: $%.2f%s",
+            sessionId, currentPhase, minutesIntoSession, tradesThisSession, sessionPnl, warmupStr);
     }
 
     // Getters
@@ -282,4 +360,6 @@ public class SessionContext {
     public double getSessionHigh() { return sessionHigh; }
     public double getSessionLow() { return sessionLow; }
     public double getCurrentPrice() { return currentPrice; }
+    public int getTradesProcessed() { return tradesProcessed; }
+    public int getPriceUpdatesProcessed() { return priceUpdatesProcessed; }
 }

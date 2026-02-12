@@ -2171,18 +2171,25 @@ public class OrderFlowStrategyEnhanced implements
                         enableAITrading, aiOrderManager != null ? "ready" : "null", aiStrategist != null ? "ready" : "null"));
 
                     if (enableAITrading && aiOrderManager != null) {
-                        // Create SignalData for AI evaluation
-                        SignalData signalData = createSignalData(isBid, price, totalSize);
-
                         // Update session context with current price
                         if (sessionContext != null) {
                             sessionContext.update(price);
                         }
 
-                        // Use AI Investment Strategist (memory-aware) if available
-                        if (aiStrategist != null) {
-                            log("🧠 Using AI Investment Strategist (memory-aware evaluation)");
-                            aiStrategist.evaluateSetup(signalData, sessionContext, new AIInvestmentStrategist.AIStrategistCallback() {
+                        // ========== WARM-UP CHECK ==========
+                        // Skip signals during warm-up period to let indicators accumulate data
+                        boolean warmupComplete = (sessionContext == null || sessionContext.isWarmupComplete());
+
+                        if (!warmupComplete) {
+                            log(String.format("⏳ WARMUP: Skipping signal - %s", sessionContext.getWarmupStatus()));
+                        } else {
+                            // Create SignalData for AI evaluation
+                            SignalData signalData = createSignalData(isBid, price, totalSize);
+
+                            // Use AI Investment Strategist (memory-aware) if available
+                            if (aiStrategist != null) {
+                                log("🧠 Using AI Investment Strategist (memory-aware evaluation)");
+                                aiStrategist.evaluateSetup(signalData, sessionContext, new AIInvestmentStrategist.AIStrategistCallback() {
                                 @Override
                                 public void onDecision(AIInvestmentStrategist.AIDecision decision) {
                                     // Execute AI decision
@@ -2249,6 +2256,7 @@ public class OrderFlowStrategyEnhanced implements
                                     return null;
                                 });
                         }
+                        }  // end else (warmup complete)
                     }
                     // ============================================
 
@@ -2741,6 +2749,11 @@ public class OrderFlowStrategyEnhanced implements
 
         // Update VWAP
         vwapCalculator.update(price, size);
+
+        // Update session context - track processed trades for warm-up
+        if (sessionContext != null) {
+            sessionContext.recordProcessedTrade();
+        }
 
         // Update ATR (track high/low)
         if (Double.isNaN(currentHigh) || price > currentHigh) {
