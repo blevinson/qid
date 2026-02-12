@@ -222,6 +222,42 @@ Before using real order execution with live trading:
 
 ---
 
+## GitHub Operations
+
+This repo uses local credentials in `.env` for GitHub API operations instead of global `gh` CLI.
+
+**Credentials File:** `.env` (gitignored)
+```
+GITHUB_USERNAME=blevinson
+GITHUB_PAT=<personal-access-token>
+```
+
+**Usage:**
+```bash
+# Source credentials and make API calls
+source .env && curl -u "$GITHUB_USERNAME:$GITHUB_PAT" https://api.github.com/...
+
+# Create PR
+source .env && curl -X POST \
+  -u "$GITHUB_USERNAME:$GITHUB_PAT" \
+  -H "Accept: application/vnd.github+json" \
+  "https://api.github.com/repos/blevinson/qid/pulls" \
+  -d '{"title":"...", "head":"branch", "base":"develop"}'
+
+# Merge PR
+source .env && curl -X PUT \
+  -u "$GITHUB_USERNAME:$GITHUB_PAT" \
+  "https://api.github.com/repos/blevinson/qid/pulls/1/merge" \
+  -d '{"merge_method":"squash"}'
+```
+
+**Why this approach:**
+- `gh` CLI has global account switching which affects other repos
+- Local `.env` keeps credentials scoped to this project
+- Git config is set locally: `brantlevinson@gmail.com`
+
+---
+
 ## Version History
 
 - **v1.0** (2025-02-11) - Initial BookmapOrderExecutor implementation
