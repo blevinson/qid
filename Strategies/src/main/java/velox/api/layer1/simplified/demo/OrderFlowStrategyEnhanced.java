@@ -193,6 +193,12 @@ public class OrderFlowStrategyEnhanced implements
     private Indicator aiExitMarker;         // SL/TP/BE markers
     private Indicator aiSkipMarker;         // WHITE circle markers
 
+    // ========== AI ORDER LEVEL LINES ==========
+    private Indicator aiStopLossLine;       // ORANGE horizontal line at SL
+    private Indicator aiTakeProfitLine;     // GREEN horizontal line at TP
+    private Integer activeStopLossPrice = null;    // Track active SL price
+    private Integer activeTakeProfitPrice = null;  // Track active TP price
+
     // ========== AI COMPONENTS ==========
     private AIIntegrationLayer aiIntegration;
     private AIOrderManager aiOrderManager;
@@ -400,6 +406,13 @@ public class OrderFlowStrategyEnhanced implements
         aiSkipMarker = api.registerIndicator("⚪ AI SKIPS", GraphType.PRIMARY);
         aiSkipMarker.setColor(Color.WHITE);
 
+        // Create AI order level LINE indicators (horizontal lines at SL/TP)
+        aiStopLossLine = api.registerIndicator("🛑 AI Stop Loss", GraphType.PRIMARY);
+        aiStopLossLine.setColor(Color.ORANGE);
+
+        aiTakeProfitLine = api.registerIndicator("💎 AI Take Profit", GraphType.PRIMARY);
+        aiTakeProfitLine.setColor(Color.GREEN);
+
         // Initialize AI components if enabled
         if (enableAITrading && aiAuthToken != null && !aiAuthToken.isEmpty()) {
             log("🤖 Initializing AI Trading System...");
@@ -528,6 +541,15 @@ public class OrderFlowStrategyEnhanced implements
             }
         }, 0, UPDATE_INTERVAL_MS, TimeUnit.MILLISECONDS);
 
+        // Draw SL/TP lines every 100ms if active position exists
+        updateExecutor.scheduleAtFixedRate(() -> {
+            try {
+                drawAITradingLevels();
+            } catch (Exception e) {
+                System.err.println("Error drawing AI levels: " + e.getMessage());
+            }
+        }, 0, 100, TimeUnit.MILLISECONDS);
+
         // Generate performance report every 5 minutes (silent, file only)
         updateExecutor.scheduleAtFixedRate(() -> {
             try {
@@ -536,6 +558,18 @@ public class OrderFlowStrategyEnhanced implements
                 System.err.println("Error generating performance report: " + e.getMessage());
             }
         }, 5, 5, TimeUnit.MINUTES);  // Start after 5 minutes, then every 5 minutes
+    }
+
+    /**
+     * Draw horizontal lines at active SL/TP levels
+     */
+    private void drawAITradingLevels() {
+        if (activeStopLossPrice != null && aiStopLossLine != null) {
+            aiStopLossLine.addPoint(activeStopLossPrice);
+        }
+        if (activeTakeProfitPrice != null && aiTakeProfitLine != null) {
+            aiTakeProfitLine.addPoint(activeTakeProfitPrice);
+        }
     }
 
     // ========== CUSTOM PANELS ==========
@@ -2903,7 +2937,7 @@ public class OrderFlowStrategyEnhanced implements
     // ========== AI MARKER CALLBACK IMPLEMENTATION ==========
 
     @Override
-    public void onEntryMarker(boolean isLong, int price, int score, String reasoning) {
+    public void onEntryMarker(boolean isLong, int price, int score, String reasoning, int stopLossPrice, int takeProfitPrice) {
         try {
             // Create icon based on direction
             BufferedImage icon = isLong ?
@@ -2916,8 +2950,13 @@ public class OrderFlowStrategyEnhanced implements
             // Add marker to chart
             markerIndicator.addIcon(price, icon, 3, 3);
 
+            // Track active SL/TP levels for line drawing
+            activeStopLossPrice = stopLossPrice;
+            activeTakeProfitPrice = takeProfitPrice;
+
             log("📍 AI ENTRY MARKER: " + (isLong ? "LONG" : "SHORT") +
-                " @ " + price + " (Score: " + score + ")");
+                " @ " + price + " (Score: " + score + ")" +
+                " SL: " + stopLossPrice + " TP: " + takeProfitPrice);
         } catch (Exception e) {
             log("❌ Failed to place entry marker: " + e.getMessage());
         }
@@ -2955,9 +2994,13 @@ public class OrderFlowStrategyEnhanced implements
             // Add marker to chart
             aiExitMarker.addIcon(price, icon, 3, 3);
 
+            // Clear SL/TP lines when position closes
+            activeStopLossPrice = null;
+            activeTakeProfitPrice = null;
+
             String emoji = isWin ? "💎" : "🛑";
             log(emoji + " AI EXIT MARKER @ " + price + " (P&L: $" +
-                String.format("%.2f", pnl) + ", Reason: " + reason + ")");
+                String.format("%.2f", pnl) + ", Reason: " + reason + ") - SL/TP lines cleared");
         } catch (Exception e) {
             log("❌ Failed to place exit marker: " + e.getMessage());
         }
@@ -2972,8 +3015,11 @@ public class OrderFlowStrategyEnhanced implements
             // Add marker to chart
             aiExitMarker.addIcon(newStopPrice, icon, 3, 3);
 
+            // Update SL line to new break-even price
+            activeStopLossPrice = newStopPrice;
+
             log("🟡 AI BREAK-EVEN MARKER @ " + newStopPrice +
-                " (Stop moved from " + triggerPrice + ")");
+                " (Stop moved from " + triggerPrice + ") - SL line updated");
         } catch (Exception e) {
             log("❌ Failed to place break-even marker: " + e.getMessage());
         }

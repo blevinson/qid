@@ -122,9 +122,9 @@ public class AIOrderManager {
             // Track position
             activePositions.put(positionId, position);
 
-            // Place AI entry marker on chart
+            // Place AI entry marker on chart (with SL/TP for line drawing)
             if (markerCallback != null) {
-                markerCallback.onEntryMarker(decision.isLong, signal.price, signal.score, decision.reasoning);
+                markerCallback.onEntryMarker(decision.isLong, signal.price, signal.score, decision.reasoning, decision.stopLoss, decision.takeProfit);
             }
 
             log("🤖 AI ENTRY ORDER PLACED:");
@@ -443,8 +443,14 @@ public class AIOrderManager {
     public interface AIMarkerCallback {
         /**
          * Called when AI enters a trade
+         * @param isLong true for long, false for short
+         * @param price entry price
+         * @param score confluence score
+         * @param reasoning AI reasoning
+         * @param stopLossPrice stop loss price level
+         * @param takeProfitPrice take profit price level
          */
-        void onEntryMarker(boolean isLong, int price, int score, String reasoning);
+        void onEntryMarker(boolean isLong, int price, int score, String reasoning, int stopLossPrice, int takeProfitPrice);
 
         /**
          * Called when AI skips a signal
