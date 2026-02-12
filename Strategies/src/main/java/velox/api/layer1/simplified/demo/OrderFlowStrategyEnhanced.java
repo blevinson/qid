@@ -1248,6 +1248,40 @@ public class OrderFlowStrategyEnhanced implements
                 ema9.isInitialized() ? ema9.getEMA() : 0,
                 ema21.isInitialized() ? ema21.getEMA() : 0,
                 ema50.isInitialized() ? ema50.getEMA() : 0));
+
+            // Add DOM (Order Book) levels
+            enhancedPrompt.append("\n=== ORDER BOOK (DOM) ===\n");
+            if (domAnalyzer != null) {
+                var support = domAnalyzer.getNearestSupport();
+                var resistance = domAnalyzer.getNearestResistance();
+                if (support != null) {
+                    enhancedPrompt.append(String.format("Support: %d (%d contracts)\n",
+                        support.price, support.volume));
+                }
+                if (resistance != null) {
+                    enhancedPrompt.append(String.format("Resistance: %d (%d contracts)\n",
+                        resistance.price, resistance.volume));
+                }
+                enhancedPrompt.append(String.format("Imbalance: %.2f (%s)\n",
+                    domAnalyzer.getImbalanceRatio(), domAnalyzer.getImbalanceSentiment()));
+            } else {
+                enhancedPrompt.append("(DOM data not yet available)\n");
+            }
+
+            // Add recent signal decisions
+            enhancedPrompt.append("\n=== RECENT SIGNALS ===\n");
+            if (!trackedSignals.isEmpty()) {
+                int count = 0;
+                for (var entry : trackedSignals.entrySet()) {
+                    if (count++ >= 5) break;  // Last 5 signals
+                    SignalPerformance perf = entry.getValue();
+                    enhancedPrompt.append(String.format("- %s @ %d | Score: %d | %s\n",
+                        perf.isBid ? "BUY" : "SELL", perf.entryPrice, perf.score,
+                        perf.confluenceBreakdown != null ? perf.confluenceBreakdown : ""));
+                }
+            } else {
+                enhancedPrompt.append("(No signals yet this session)\n");
+            }
             enhancedPrompt.append("\n");
 
             // 2. Search memory for relevant context
@@ -2887,6 +2921,9 @@ public class OrderFlowStrategyEnhanced implements
 
     @Override
     public void onTrade(double price, int size, TradeInfo tradeInfo) {
+        // Update last known price for chat context
+        lastKnownPrice = price;
+
         // ========== UPDATE ALL INDICATORS ==========
 
         // Update CVD
