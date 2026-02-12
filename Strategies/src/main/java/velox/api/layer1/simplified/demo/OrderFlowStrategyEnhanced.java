@@ -3039,7 +3039,7 @@ public class OrderFlowStrategyEnhanced implements
                                         log(String.format("📊 FINAL SL/TP: SL=%d TP=%d", stopLossPrice, takeProfitPrice));
 
                                         // Convert to AIIntegrationLayer.AIDecision format for order manager
-                                        AIIntegrationLayer.AIDecision aiDecision = new AIIntegrationLayer.AIDecision();
+                                        final AIIntegrationLayer.AIDecision aiDecision = new AIIntegrationLayer.AIDecision();
                                         aiDecision.action = "TAKE";
                                         aiDecision.confidence = (int)(decision.confidence * 100);  // Convert 0-1 to 0-100
                                         aiDecision.reasoning = decision.reasoning;
@@ -3047,7 +3047,37 @@ public class OrderFlowStrategyEnhanced implements
                                         aiDecision.direction = isLong ? "LONG" : "SHORT";
                                         aiDecision.stopLoss = stopLossPrice;
                                         aiDecision.takeProfit = takeProfitPrice;
-                                        aiOrderManager.executeEntry(aiDecision, signalData);
+
+                                        // Check mode: SEMI_AUTO requires approval, FULL_AUTO executes immediately
+                                        if ("SEMI_AUTO".equals(aiMode)) {
+                                            log("🔒 SEMI_AUTO mode - requesting user approval");
+                                            final int finalStopLoss = stopLossPrice;
+                                            final int finalTakeProfit = takeProfitPrice;
+                                            requestTradeApproval(
+                                                isLong,
+                                                1,  // quantity
+                                                0,  // market order
+                                                decision.plan.orderType != null ? decision.plan.orderType : "AI",
+                                                (int)(decision.confidence * 100),
+                                                () -> {
+                                                    // Approved - execute the trade
+                                                    SwingUtilities.invokeLater(() -> {
+                                                        log("✅ User APPROVED - executing trade");
+                                                        aiOrderManager.executeEntry(aiDecision, signalData);
+                                                    });
+                                                },
+                                                () -> {
+                                                    // Rejected
+                                                    SwingUtilities.invokeLater(() -> {
+                                                        log("❌ User REJECTED - skipping trade");
+                                                        aiOrderManager.executeSkip(aiDecision, signalData);
+                                                    });
+                                                }
+                                            );
+                                        } else {
+                                            // FULL_AUTO - execute immediately
+                                            aiOrderManager.executeEntry(aiDecision, signalData);
+                                        }
                                     } else {
                                         log(String.format("⏭️ AI SKIP: %s (confidence: %.0f%%)",
                                             decision.reasoning, decision.confidence * 100));
@@ -3066,7 +3096,32 @@ public class OrderFlowStrategyEnhanced implements
                                 .thenAccept(decision -> {
                                     // Execute AI decision
                                     if ("TAKE".equals(decision.action)) {
-                                        aiOrderManager.executeEntry(decision, signalData);
+                                        // Check mode: SEMI_AUTO requires approval
+                                        if ("SEMI_AUTO".equals(aiMode)) {
+                                            log("🔒 SEMI_AUTO mode - requesting user approval");
+                                            requestTradeApproval(
+                                                decision.isLong,
+                                                1,  // quantity
+                                                0,  // market order
+                                                "AI",
+                                                decision.confidence,
+                                                () -> {
+                                                    SwingUtilities.invokeLater(() -> {
+                                                        log("✅ User APPROVED - executing trade");
+                                                        aiOrderManager.executeEntry(decision, signalData);
+                                                    });
+                                                },
+                                                () -> {
+                                                    SwingUtilities.invokeLater(() -> {
+                                                        log("❌ User REJECTED - skipping trade");
+                                                        aiOrderManager.executeSkip(decision, signalData);
+                                                    });
+                                                }
+                                            );
+                                        } else {
+                                            // FULL_AUTO - execute immediately
+                                            aiOrderManager.executeEntry(decision, signalData);
+                                        }
                                     } else {
                                         aiOrderManager.executeSkip(decision, signalData);
                                     }
