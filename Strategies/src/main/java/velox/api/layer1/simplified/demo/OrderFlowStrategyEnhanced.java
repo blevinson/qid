@@ -210,6 +210,7 @@ public class OrderFlowStrategyEnhanced implements
     private AIOrderManager aiOrderManager;
     private OrderExecutor orderExecutor;
     private AIThresholdService aiThresholdService;
+    private AIToolsProvider aiToolsProvider;  // Tool functions for AI chat
     private Object memoryService;  // TradingMemoryService - initialized as Object to avoid loading issues
     private AIInvestmentStrategist aiStrategist;
     private final Map<String, SignalData> pendingSignals = new ConcurrentHashMap<>();
@@ -570,6 +571,12 @@ public class OrderFlowStrategyEnhanced implements
         if (aiAuthToken != null && !aiAuthToken.isEmpty()) {
             aiThresholdService = new AIThresholdService(aiAuthToken);
             log("🤖 AI Chat Service initialized");
+
+            // Initialize AI Tools Provider for function calling
+            aiToolsProvider = new AIToolsProvider();
+            setupAIToolsProvider();  // Connect data suppliers
+            aiThresholdService.setToolsProvider(aiToolsProvider);
+            log("🔧 AI Tools Provider initialized (function calling enabled)");
 
             // Trigger initial AI threshold calculation if AI adaptive mode is enabled
             if (useAIAdaptiveThresholds) {
@@ -1323,7 +1330,7 @@ public class OrderFlowStrategyEnhanced implements
 
             return enhancedPrompt.toString();
         })
-        .thenCompose(enhancedPrompt -> aiThresholdService.chat(enhancedPrompt))
+        .thenCompose(enhancedPrompt -> aiThresholdService.chatWithTools(enhancedPrompt))
         .thenAcceptAsync(response -> {
             // Log AI response to unified session transcript
             if (transcriptWriter != null) {
@@ -1912,6 +1919,91 @@ public class OrderFlowStrategyEnhanced implements
         });
 
         lastAIReevaluationTime = System.currentTimeMillis();
+    }
+
+    /**
+     * Set up the AI Tools Provider with data suppliers
+     * This connects real-time trading data to the AI's function calling capability
+     */
+    private void setupAIToolsProvider() {
+        if (aiToolsProvider == null) return;
+
+        // Price supplier
+        aiToolsProvider.setPriceSupplier(() -> lastKnownPrice);
+
+        // CVD supplier
+        aiToolsProvider.setCvdSupplier(() -> cvdCalculator.getCVD());
+
+        // VWAP supplier
+        aiToolsProvider.setVwapSupplier(() ->
+            vwapCalculator.isInitialized() ? vwapCalculator.getVWAP() : 0.0);
+
+        // EMA supplier
+        aiToolsProvider.setEmaSupplier(() -> new double[] {
+            ema9.isInitialized() ? ema9.getEMA() : 0.0,
+            ema21.isInitialized() ? ema21.getEMA() : 0.0,
+            ema50.isInitialized() ? ema50.getEMA() : 0.0
+        });
+
+        // DOM (Order Book) supplier
+        aiToolsProvider.setDomSupplier(() -> {
+            Map<String, Object> dom = new HashMap<>();
+            var support = domAnalyzer.getNearestSupport();
+            var resistance = domAnalyzer.getNearestResistance();
+            if (support != null) {
+                dom.put("supportPrice", support.price);
+                dom.put("supportVolume", support.volume);
+            }
+            if (resistance != null) {
+                dom.put("resistancePrice", resistance.price);
+                dom.put("resistanceVolume", resistance.volume);
+            }
+            dom.put("imbalanceRatio", domAnalyzer.getImbalanceRatio());
+            dom.put("imbalanceSentiment", domAnalyzer.getImbalanceSentiment());
+            return dom;
+        });
+
+        // Recent signals supplier
+        aiToolsProvider.setSignalsSupplier(() -> {
+            List<Map<String, Object>> signals = new ArrayList<>();
+            for (var entry : trackedSignals.entrySet()) {
+                Map<String, Object> sig = new HashMap<>();
+                SignalPerformance perf = entry.getValue();
+                sig.put("direction", perf.isBid ? "BUY" : "SELL");
+                sig.put("price", perf.entryPrice);
+                sig.put("score", perf.score);
+                sig.put("time", new java.text.SimpleDateFormat("HH:mm:ss").format(new java.util.Date(perf.timestamp)));
+                signals.add(sig);
+            }
+            return signals;
+        });
+
+        // Session stats supplier
+        aiToolsProvider.setSessionSupplier(() -> {
+            Map<String, Object> stats = new HashMap<>();
+            if (sessionContext != null) {
+                stats.put("sessionId", sessionContext.getSessionId());
+                stats.put("phase", sessionContext.getCurrentPhase().toString());
+                stats.put("trades", sessionContext.getTradesThisSession());
+                stats.put("wins", sessionContext.getWinsThisSession());
+                stats.put("losses", sessionContext.getLossesThisSession());
+                stats.put("pnl", sessionContext.getSessionPnl());
+                stats.put("warmupComplete", sessionContext.isWarmupComplete());
+            }
+            return stats;
+        });
+
+        // Thresholds supplier
+        aiToolsProvider.setThresholdsSupplier(() -> {
+            Map<String, Integer> thresholds = new HashMap<>();
+            thresholds.put("minConfluenceScore", minConfluenceScore);
+            thresholds.put("confluenceThreshold", confluenceThreshold);
+            thresholds.put("icebergMinOrders", icebergMinOrders);
+            thresholds.put("spoofMinSize", spoofMinSize);
+            thresholds.put("absorptionMinSize", absorptionMinSize);
+            thresholds.put("useAIAdaptive", useAIAdaptiveThresholds ? 1 : 0);
+            return thresholds;
+        });
     }
 
     /**
