@@ -132,7 +132,7 @@ public class OrderFlowStrategyEnhanced implements
 
     // ========== ADAPTIVE MODE PARAMETERS ==========
     @Parameter(name = "Use AI Adaptive Thresholds")
-    private Boolean useAIAdaptiveThresholds = false;  // Default: AI mode disabled
+    private Boolean useAIAdaptiveThresholds = true;  // Default: AI mode ENABLED
 
     @Parameter(name = "AI Re-evaluation Interval (min)")
     private Integer aiReevaluationInterval = 30;  // Re-evaluate every 30 minutes
@@ -165,7 +165,7 @@ public class OrderFlowStrategyEnhanced implements
         public Double dailyLossLimit = 500.0;
         public Boolean simModeOnly = true;
         public Boolean autoExecution = false;
-        public Boolean useAIAdaptiveThresholds = false;
+        public Boolean useAIAdaptiveThresholds = true;
         public Boolean enableAITrading = false;
         public String aiMode = "MANUAL";
         public Integer confluenceThreshold = 50;
@@ -1832,6 +1832,59 @@ public class OrderFlowStrategyEnhanced implements
         lastAIReevaluationTime = System.currentTimeMillis();
     }
 
+    /**
+     * Apply threshold adjustments from AI Investment Strategist
+     * This allows the AI to dynamically tune thresholds based on market conditions
+     */
+    private void applyThresholdAdjustment(AIInvestmentStrategist.ThresholdAdjustment adj) {
+        log("🎚️ AI THRESHOLD ADJUSTMENT:");
+        boolean anyChanged = false;
+
+        if (adj.minConfluenceScore != null && adj.minConfluenceScore != minConfluenceScore) {
+            log(String.format("   minConfluenceScore: %d → %d", minConfluenceScore, adj.minConfluenceScore));
+            minConfluenceScore = adj.minConfluenceScore;
+            anyChanged = true;
+        }
+
+        if (adj.confluenceThreshold != null && adj.confluenceThreshold != confluenceThreshold) {
+            log(String.format("   confluenceThreshold: %d → %d", confluenceThreshold, adj.confluenceThreshold));
+            confluenceThreshold = adj.confluenceThreshold;
+            anyChanged = true;
+        }
+
+        if (adj.icebergMinOrders != null && adj.icebergMinOrders != icebergMinOrders) {
+            log(String.format("   icebergMinOrders: %d → %d", icebergMinOrders, adj.icebergMinOrders));
+            icebergMinOrders = adj.icebergMinOrders;
+            anyChanged = true;
+        }
+
+        if (adj.spoofMinSize != null && adj.spoofMinSize != spoofMinSize) {
+            log(String.format("   spoofMinSize: %d → %d", spoofMinSize, adj.spoofMinSize));
+            spoofMinSize = adj.spoofMinSize;
+            anyChanged = true;
+        }
+
+        if (adj.absorptionMinSize != null && adj.absorptionMinSize != absorptionMinSize) {
+            log(String.format("   absorptionMinSize: %d → %d", absorptionMinSize, adj.absorptionMinSize));
+            absorptionMinSize = adj.absorptionMinSize;
+            anyChanged = true;
+        }
+
+        if (adj.thresholdMultiplier != null && Math.abs(adj.thresholdMultiplier - thresholdMultiplier) > 0.01) {
+            log(String.format("   thresholdMultiplier: %.1f → %.1f", thresholdMultiplier, adj.thresholdMultiplier));
+            thresholdMultiplier = adj.thresholdMultiplier;
+            anyChanged = true;
+        }
+
+        if (anyChanged) {
+            log("   Reasoning: " + (adj.reasoning != null ? adj.reasoning : "N/A"));
+            log("✅ Thresholds updated by AI");
+            saveSettings();  // Persist the changes
+        } else {
+            log("   No changes needed (all values same as current)");
+        }
+    }
+
     // Helper methods for market context
     private double getCurrentPrice() {
         // Return last known price or 0
@@ -2192,6 +2245,11 @@ public class OrderFlowStrategyEnhanced implements
                                 aiStrategist.evaluateSetup(signalData, sessionContext, new AIInvestmentStrategist.AIStrategistCallback() {
                                 @Override
                                 public void onDecision(AIInvestmentStrategist.AIDecision decision) {
+                                    // Handle threshold adjustments from AI
+                                    if (decision.thresholdAdjustment != null && decision.thresholdAdjustment.hasAdjustments()) {
+                                        applyThresholdAdjustment(decision.thresholdAdjustment);
+                                    }
+
                                     // Execute AI decision
                                     if (decision.shouldTake && decision.plan != null) {
                                         log(String.format("✅ AI TAKE: %s (confidence: %.0f%%) - %s",
@@ -2576,12 +2634,57 @@ public class OrderFlowStrategyEnhanced implements
         signal.risk.positionSizeContracts = 1;
         signal.risk.totalRiskPercent = 1.5;
 
+        // ========== THRESHOLD CONTEXT (for AI Adaptive Control) ==========
+        signal.thresholds = new SignalData.ThresholdContext();
+        signal.thresholds.minConfluenceScore = minConfluenceScore;
+        signal.thresholds.confluenceThreshold = confluenceThreshold;
+        signal.thresholds.icebergMinOrders = icebergMinOrders;
+        signal.thresholds.spoofMinSize = spoofMinSize;
+        signal.thresholds.absorptionMinSize = absorptionMinSize;
+        signal.thresholds.adaptiveOrderThreshold = adaptiveOrderThreshold;
+        signal.thresholds.adaptiveSizeThreshold = adaptiveSizeThreshold;
+        signal.thresholds.thresholdMultiplier = thresholdMultiplier;
+        signal.thresholds.signalsLastHour = signalsLastHour;
+        signal.thresholds.recentWinRate = getRecentWinRate();
+        signal.thresholds.isHighVolatility = isHighVolatility();
+
         // ========== CALCULATE FINAL SCORE ==========
         signal.score = calculateConfluenceScore(isBid, price, totalSize);
         signal.threshold = confluenceThreshold;
         signal.thresholdPassed = signal.score >= confluenceThreshold;
 
         return signal;
+    }
+
+    /**
+     * Get number of signals in the last hour
+     */
+    private int signalsLastHour = 0;
+    private long lastHourResetTime = 0;
+
+    private int getSignalsLastHour() {
+        long now = System.currentTimeMillis();
+        if (now - lastHourResetTime > 3600000) {  // Reset every hour
+            signalsLastHour = 0;
+            lastHourResetTime = now;
+        }
+        return signalsLastHour;
+    }
+
+    /**
+     * Get recent win rate (placeholder - implement with actual tracking)
+     */
+    private double getRecentWinRate() {
+        // TODO: Track actual recent win rate from trades
+        return 0.5;  // Default to 50%
+    }
+
+    /**
+     * Check if volatility is high
+     */
+    private boolean isHighVolatility() {
+        // Use ATR or recent price movement to determine
+        return false;  // Placeholder
     }
 
     /**

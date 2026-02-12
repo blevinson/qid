@@ -245,6 +245,12 @@ public class AIInvestmentStrategist {
             sessionContextStr = sessionContext.toAIString();
         }
 
+        // Build threshold context section
+        String thresholdContextStr = "";
+        if (signal.thresholds != null) {
+            thresholdContextStr = signal.thresholds.toAIString();
+        }
+
         return String.format("""
             You are an AI Investment Strategist analyzing a trading setup.
 
@@ -262,7 +268,9 @@ public class AIInvestmentStrategist {
 
             %s
 
-            Based on the signal strength, key levels, session context, and historical memory, should we TAKE or SKIP this setup?
+            %s
+
+            Based on the signal strength, key levels, session context, historical memory, and current thresholds, should we TAKE or SKIP this setup?
 
             IMPORTANT CONSIDERATIONS:
             1. If this is a NEW SESSION, be more cautious - indicators are just starting to accumulate
@@ -272,6 +280,14 @@ public class AIInvestmentStrategist {
                - Place STOP LOSS beyond nearest support/resistance level
                - Place TAKE PROFIT at or before next resistance/support level
                - Consider VWAP and POC as key levels for mean reversion
+
+            THRESHOLD ADJUSTMENT (Optional):
+            You CAN recommend threshold adjustments based on market conditions:
+            - If too many low-quality signals: INCREASE minConfluenceScore or confluenceThreshold
+            - If missing good opportunities: DECREASE thresholds slightly
+            - If high volatility: INCREASE detection thresholds (icebergMinOrders, etc.)
+            - If low volatility: detection thresholds can be lower
+            - Only include thresholdAdjustment if you have a specific recommendation
 
             Respond with JSON:
             {
@@ -283,6 +299,15 @@ public class AIInvestmentStrategist {
                 "entryPrice": %d,
                 "stopLossPrice": calculated based on key levels,
                 "takeProfitPrice": calculated based on key levels
+              },
+              "thresholdAdjustment": {
+                "minConfluenceScore": optional new value,
+                "confluenceThreshold": optional new value,
+                "icebergMinOrders": optional new value,
+                "spoofMinSize": optional new value,
+                "absorptionMinSize": optional new value,
+                "thresholdMultiplier": optional new value,
+                "reasoning": "why you're adjusting thresholds"
               }
             }
             """,
@@ -295,6 +320,7 @@ public class AIInvestmentStrategist {
             signal.market.cvdTrend,
             signal.market.trend,
             keyLevelsStr,
+            thresholdContextStr,
             memoryContext,
             signal.price);
     }
@@ -450,6 +476,36 @@ public class AIInvestmentStrategist {
                 decision.plan = createDefaultPlan(signal);
             }
 
+            // Parse threshold adjustment (optional)
+            if (json.has("thresholdAdjustment")) {
+                JsonObject adjJson = json.getAsJsonObject("thresholdAdjustment");
+                ThresholdAdjustment adj = new ThresholdAdjustment();
+
+                if (adjJson.has("minConfluenceScore")) {
+                    adj.minConfluenceScore = adjJson.get("minConfluenceScore").getAsInt();
+                }
+                if (adjJson.has("confluenceThreshold")) {
+                    adj.confluenceThreshold = adjJson.get("confluenceThreshold").getAsInt();
+                }
+                if (adjJson.has("icebergMinOrders")) {
+                    adj.icebergMinOrders = adjJson.get("icebergMinOrders").getAsInt();
+                }
+                if (adjJson.has("spoofMinSize")) {
+                    adj.spoofMinSize = adjJson.get("spoofMinSize").getAsInt();
+                }
+                if (adjJson.has("absorptionMinSize")) {
+                    adj.absorptionMinSize = adjJson.get("absorptionMinSize").getAsInt();
+                }
+                if (adjJson.has("thresholdMultiplier")) {
+                    adj.thresholdMultiplier = adjJson.get("thresholdMultiplier").getAsDouble();
+                }
+                if (adjJson.has("reasoning")) {
+                    adj.reasoning = adjJson.get("reasoning").getAsString();
+                }
+
+                decision.thresholdAdjustment = adj;
+            }
+
         } catch (Exception e) {
             // Fallback on parse error
             decision.shouldTake = false;
@@ -465,6 +521,10 @@ public class AIInvestmentStrategist {
         if (decision.shouldTake && decision.plan != null) {
             log("Plan: " + decision.plan.orderType + " @ " + decision.plan.entryPrice +
                 " | SL: " + decision.plan.stopLossPrice + " | TP: " + decision.plan.takeProfitPrice);
+        }
+        // Log threshold adjustments if any
+        if (decision.thresholdAdjustment != null && decision.thresholdAdjustment.hasAdjustments()) {
+            log("THRESHOLD ADJUSTMENT: " + decision.thresholdAdjustment.toString());
         }
         log("============================================================");
 
@@ -534,6 +594,61 @@ public class AIInvestmentStrategist {
 
         /** Trade plan with entry, SL, TP */
         public TradePlan plan;
+
+        /** Threshold adjustments (optional - AI can recommend changes) */
+        public ThresholdAdjustment thresholdAdjustment;
+    }
+
+    /**
+     * Threshold Adjustment data class
+     * AI can recommend threshold changes based on market conditions
+     */
+    public static class ThresholdAdjustment {
+        /** Adjust minimum confluence score */
+        public Integer minConfluenceScore;
+
+        /** Adjust confluence threshold */
+        public Integer confluenceThreshold;
+
+        /** Adjust iceberg minimum orders */
+        public Integer icebergMinOrders;
+
+        /** Adjust spoof minimum size */
+        public Integer spoofMinSize;
+
+        /** Adjust absorption minimum size */
+        public Integer absorptionMinSize;
+
+        /** Adjust threshold multiplier */
+        public Double thresholdMultiplier;
+
+        /** Reasoning for the threshold adjustment */
+        public String reasoning;
+
+        /**
+         * Check if any adjustments are proposed
+         */
+        public boolean hasAdjustments() {
+            return minConfluenceScore != null ||
+                   confluenceThreshold != null ||
+                   icebergMinOrders != null ||
+                   spoofMinSize != null ||
+                   absorptionMinSize != null ||
+                   thresholdMultiplier != null;
+        }
+
+        @Override
+        public String toString() {
+            StringBuilder sb = new StringBuilder("ThresholdAdjustment{");
+            if (minConfluenceScore != null) sb.append("minConfluenceScore=").append(minConfluenceScore).append(" ");
+            if (confluenceThreshold != null) sb.append("confluenceThreshold=").append(confluenceThreshold).append(" ");
+            if (icebergMinOrders != null) sb.append("icebergMinOrders=").append(icebergMinOrders).append(" ");
+            if (spoofMinSize != null) sb.append("spoofMinSize=").append(spoofMinSize).append(" ");
+            if (absorptionMinSize != null) sb.append("absorptionMinSize=").append(absorptionMinSize).append(" ");
+            if (thresholdMultiplier != null) sb.append("thresholdMultiplier=").append(thresholdMultiplier).append(" ");
+            sb.append("reasoning='").append(reasoning).append("'}");
+            return sb.toString();
+        }
     }
 
     /**
