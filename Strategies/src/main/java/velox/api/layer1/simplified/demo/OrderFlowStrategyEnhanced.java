@@ -477,9 +477,52 @@ public class OrderFlowStrategyEnhanced implements
             if (aiAuthToken != null && !aiAuthToken.isEmpty()) {
                 log("🧠 Initializing Memory Service...");
 
-                // Get memory directory from user home
+                // Get memory directory - use Bookmap's data folder
                 String userHome = System.getProperty("user.home");
-                Path memoryDir = java.nio.file.Paths.get(userHome, ".qid", "trading-memory");
+                Path memoryDir = null;
+
+                // 1. Check for system property override first
+                String memoryDirOverride = System.getProperty("qid.memory.dir");
+                if (memoryDirOverride != null && !memoryDirOverride.isEmpty()) {
+                    Path overridePath = java.nio.file.Paths.get(memoryDirOverride);
+                    if (java.nio.file.Files.exists(overridePath)) {
+                        memoryDir = overridePath;
+                        log("📁 Using memory directory from system property: " + memoryDir);
+                    }
+                }
+
+                // 2. Use Bookmap's data folder (platform-specific)
+                if (memoryDir == null) {
+                    String osName = System.getProperty("os.name", "").toLowerCase();
+                    Path bookmapDir;
+
+                    if (osName.contains("mac")) {
+                        // macOS: ~/Library/Application Support/Bookmap/
+                        bookmapDir = java.nio.file.Paths.get(userHome, "Library", "Application Support", "Bookmap");
+                    } else if (osName.contains("win")) {
+                        // Windows: C:/Bookmap/ or ~/Bookmap/
+                        bookmapDir = java.nio.file.Paths.get("C:", "Bookmap");
+                        if (!java.nio.file.Files.exists(bookmapDir)) {
+                            bookmapDir = java.nio.file.Paths.get(userHome, "Bookmap");
+                        }
+                    } else {
+                        // Linux/other: ~/.bookmap/
+                        bookmapDir = java.nio.file.Paths.get(userHome, ".bookmap");
+                    }
+
+                    memoryDir = bookmapDir.resolve("trading-memory");
+
+                    // Create directory if it doesn't exist
+                    if (!java.nio.file.Files.exists(memoryDir)) {
+                        try {
+                            java.nio.file.Files.createDirectories(memoryDir);
+                            log("📁 Created Bookmap memory directory: " + memoryDir);
+                        } catch (Exception e) {
+                            log("⚠️ Could not create memory directory: " + e.getMessage());
+                        }
+                    }
+                    log("📁 Using Bookmap memory directory: " + memoryDir);
+                }
 
                 // Import TradingMemoryService
                 velox.api.layer1.simplified.demo.storage.TradingMemoryService service =
