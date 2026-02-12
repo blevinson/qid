@@ -2055,24 +2055,58 @@ public class OrderFlowStrategyEnhanced implements
                     }
 
                     // ========== AI TRADING EVALUATION ==========
-                    if (enableAITrading && aiIntegration != null && aiOrderManager != null) {
+                    if (enableAITrading && aiOrderManager != null) {
                         // Create SignalData for AI evaluation
                         SignalData signalData = createSignalData(isBid, price, totalSize);
 
-                        // Evaluate with AI (asynchronous)
-                        aiIntegration.evaluateSignalAsync(signalData)
-                            .thenAccept(decision -> {
-                                // Execute AI decision
-                                if ("TAKE".equals(decision.action)) {
-                                    aiOrderManager.executeEntry(decision, signalData);
-                                } else {
-                                    aiOrderManager.executeSkip(decision, signalData);
+                        // Use AI Investment Strategist (memory-aware) if available
+                        if (aiStrategist != null) {
+                            log("🧠 Using AI Investment Strategist (memory-aware evaluation)");
+                            aiStrategist.evaluateSetup(signalData, new AIInvestmentStrategist.AIStrategistCallback() {
+                                @Override
+                                public void onDecision(AIInvestmentStrategist.AIDecision decision) {
+                                    // Execute AI decision
+                                    if (decision.shouldTake && decision.plan != null) {
+                                        log(String.format("✅ AI TAKE: %s (confidence: %.0f%%) - %s",
+                                            decision.plan.orderType, decision.confidence * 100, decision.reasoning));
+                                        // Convert to AIIntegrationLayer.AIDecision format for order manager
+                                        AIIntegrationLayer.AIDecision aiDecision = new AIIntegrationLayer.AIDecision();
+                                        aiDecision.action = "TAKE";
+                                        aiDecision.confidence = (int)(decision.confidence * 100);  // Convert 0-1 to 0-100
+                                        aiDecision.reasoning = decision.reasoning;
+                                        aiDecision.isLong = decision.plan.orderType.contains("BUY");
+                                        aiDecision.direction = aiDecision.isLong ? "LONG" : "SHORT";
+                                        aiDecision.stopLoss = decision.plan.stopLossPrice;
+                                        aiDecision.takeProfit = decision.plan.takeProfitPrice;
+                                        aiOrderManager.executeEntry(aiDecision, signalData);
+                                    } else {
+                                        log(String.format("⏭️ AI SKIP: %s (confidence: %.0f%%)",
+                                            decision.reasoning, decision.confidence * 100));
+                                        AIIntegrationLayer.AIDecision aiDecision = new AIIntegrationLayer.AIDecision();
+                                        aiDecision.action = "SKIP";
+                                        aiDecision.confidence = (int)(decision.confidence * 100);
+                                        aiDecision.reasoning = decision.reasoning;
+                                        aiOrderManager.executeSkip(aiDecision, signalData);
+                                    }
                                 }
-                            })
-                            .exceptionally(ex -> {
-                                log("❌ AI evaluation failed: " + ex.getMessage());
-                                return null;
                             });
+                        } else if (aiIntegration != null) {
+                            // Fall back to basic AI integration
+                            log("🤖 Using AI Integration Layer (basic evaluation)");
+                            aiIntegration.evaluateSignalAsync(signalData)
+                                .thenAccept(decision -> {
+                                    // Execute AI decision
+                                    if ("TAKE".equals(decision.action)) {
+                                        aiOrderManager.executeEntry(decision, signalData);
+                                    } else {
+                                        aiOrderManager.executeSkip(decision, signalData);
+                                    }
+                                })
+                                .exceptionally(ex -> {
+                                    log("❌ AI evaluation failed: " + ex.getMessage());
+                                    return null;
+                                });
+                        }
                     }
                     // ============================================
 
