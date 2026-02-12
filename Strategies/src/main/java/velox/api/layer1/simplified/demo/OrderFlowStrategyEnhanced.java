@@ -2196,6 +2196,20 @@ public class OrderFlowStrategyEnhanced implements
                         signalWriter.flush();
                     }
 
+                    // ========== WARM-UP CHECK ==========
+                    // Skip ALL signal processing during warm-up period
+                    // Update session context first
+                    if (sessionContext != null) {
+                        sessionContext.update(price);
+                    }
+
+                    boolean warmupComplete = (sessionContext == null || sessionContext.isWarmupComplete());
+
+                    if (!warmupComplete) {
+                        log(String.format("⏳ WARMUP: Skipping signal - %s", sessionContext.getWarmupStatus()));
+                        return;  // Exit early - no markers, no tracking, no AI
+                    }
+
                     // Add marker point at signal price
                     // Using addIcon() for discrete markers without connecting lines
                     Indicator markerIndicator = isBid ? icebergBuyMarker : icebergSellMarker;
@@ -2239,55 +2253,44 @@ public class OrderFlowStrategyEnhanced implements
                     }
 
                     // ========== AI TRADING EVALUATION ==========
+                    // Warm-up already checked earlier - if we're here, warm-up is complete
                     log(String.format("🤖 AI CHECK: enableAITrading=%s, aiOrderManager=%s, aiStrategist=%s",
                         enableAITrading, aiOrderManager != null ? "ready" : "null", aiStrategist != null ? "ready" : "null"));
 
                     if (enableAITrading && aiOrderManager != null) {
-                        // Update session context with current price
-                        if (sessionContext != null) {
-                            sessionContext.update(price);
-                        }
+                        // Create SignalData for AI evaluation
+                        SignalData signalData = createSignalData(isBid, price, totalSize);
 
-                        // ========== WARM-UP CHECK ==========
-                        // Skip signals during warm-up period to let indicators accumulate data
-                        boolean warmupComplete = (sessionContext == null || sessionContext.isWarmupComplete());
+                        // Use AI Investment Strategist (memory-aware) if available
+                        if (aiStrategist != null) {
+                            log("🧠 Using AI Investment Strategist (memory-aware evaluation)");
+                            aiStrategist.evaluateSetup(signalData, sessionContext, new AIInvestmentStrategist.AIStrategistCallback() {
+                            @Override
+                            public void onDecision(AIInvestmentStrategist.AIDecision decision) {
+                                // Handle threshold adjustments from AI
+                                if (decision.thresholdAdjustment != null && decision.thresholdAdjustment.hasAdjustments()) {
+                                    applyThresholdAdjustment(decision.thresholdAdjustment);
+                                }
 
-                        if (!warmupComplete) {
-                            log(String.format("⏳ WARMUP: Skipping signal - %s", sessionContext.getWarmupStatus()));
-                        } else {
-                            // Create SignalData for AI evaluation
-                            SignalData signalData = createSignalData(isBid, price, totalSize);
+                                // Execute AI decision
+                                if (decision.shouldTake && decision.plan != null) {
+                                    log(String.format("✅ AI TAKE: %s (confidence: %.0f%%) - %s",
+                                        decision.plan.orderType, decision.confidence * 100, decision.reasoning));
 
-                            // Use AI Investment Strategist (memory-aware) if available
-                            if (aiStrategist != null) {
-                                log("🧠 Using AI Investment Strategist (memory-aware evaluation)");
-                                aiStrategist.evaluateSetup(signalData, sessionContext, new AIInvestmentStrategist.AIStrategistCallback() {
-                                @Override
-                                public void onDecision(AIInvestmentStrategist.AIDecision decision) {
-                                    // Handle threshold adjustments from AI
-                                    if (decision.thresholdAdjustment != null && decision.thresholdAdjustment.hasAdjustments()) {
-                                        applyThresholdAdjustment(decision.thresholdAdjustment);
+                                    // Validate SL/TP prices from plan
+                                    int stopLossPrice = decision.plan.stopLossPrice;
+                                    int takeProfitPrice = decision.plan.takeProfitPrice;
+                                    boolean isLong = decision.plan.orderType.contains("BUY");
+
+                                    // Fallback to signal-based calculation if plan prices are 0
+                                    if (stopLossPrice == 0) {
+                                        stopLossPrice = isLong ?
+                                            signalData.price - (30 * signalData.pips) :
+                                            signalData.price + (30 * signalData.pips);
+                                        log("⚠️ SL was 0, calculated fallback: " + stopLossPrice);
                                     }
-
-                                    // Execute AI decision
-                                    if (decision.shouldTake && decision.plan != null) {
-                                        log(String.format("✅ AI TAKE: %s (confidence: %.0f%%) - %s",
-                                            decision.plan.orderType, decision.confidence * 100, decision.reasoning));
-
-                                        // Validate SL/TP prices from plan
-                                        int stopLossPrice = decision.plan.stopLossPrice;
-                                        int takeProfitPrice = decision.plan.takeProfitPrice;
-                                        boolean isLong = decision.plan.orderType.contains("BUY");
-
-                                        // Fallback to signal-based calculation if plan prices are 0
-                                        if (stopLossPrice == 0) {
-                                            stopLossPrice = isLong ?
-                                                signalData.price - (30 * signalData.pips) :
-                                                signalData.price + (30 * signalData.pips);
-                                            log("⚠️ SL was 0, calculated fallback: " + stopLossPrice);
-                                        }
-                                        if (takeProfitPrice == 0) {
-                                            takeProfitPrice = isLong ?
+                                    if (takeProfitPrice == 0) {
+                                        takeProfitPrice = isLong ?
                                                 signalData.price + (70 * signalData.pips) :
                                                 signalData.price - (70 * signalData.pips);
                                             log("⚠️ TP was 0, calculated fallback: " + takeProfitPrice);
@@ -2333,7 +2336,6 @@ public class OrderFlowStrategyEnhanced implements
                                     return null;
                                 });
                         }
-                        }  // end else (warmup complete)
                     }
                     // ============================================
 
