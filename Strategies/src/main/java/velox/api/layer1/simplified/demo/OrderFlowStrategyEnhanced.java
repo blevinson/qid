@@ -90,54 +90,55 @@ public class OrderFlowStrategyEnhanced implements
     }
 
     // ========== PARAMETERS ==========
+    // Using primitive types for proper Bookmap serialization
     @Parameter(name = "Min Confluence Score")
-    private Integer minConfluenceScore = 10;
+    private int minConfluenceScore = 10;
 
     @Parameter(name = "Threshold Multiplier")
-    private Double thresholdMultiplier = 3.0;
+    private double thresholdMultiplier = 3.0;
 
     @Parameter(name = "Iceberg Min Orders")
-    private Integer icebergMinOrders = 10;  // Reduced from 20 to catch more signals
+    private int icebergMinOrders = 10;  // Reduced from 20 to catch more signals
 
     @Parameter(name = "Spoof Max Age (ms)")
-    private Integer spoofMaxAge = 500;
+    private int spoofMaxAge = 500;
 
     @Parameter(name = "Spoof Min Size")
-    private Integer spoofMinSize = 20;  // Increased from 5
+    private int spoofMinSize = 20;  // Increased from 5
 
     @Parameter(name = "Absorption Min Size")
-    private Integer absorptionMinSize = 50;  // Increased from 10
+    private int absorptionMinSize = 50;  // Increased from 10
 
     // ========== RISK MANAGEMENT PARAMETERS ==========
     @Parameter(name = "Max Position Size")
-    private Integer maxPosition = 1;
+    private int maxPosition = 1;
 
     @Parameter(name = "Daily Loss Limit ($)")
-    private Double dailyLossLimit = 500.0;
+    private double dailyLossLimit = 500.0;
 
     // ========== SAFETY PARAMETERS ==========
     @Parameter(name = "Simulation Mode Only")
-    private Boolean simModeOnly = true;
+    private boolean simModeOnly = true;
 
     @Parameter(name = "Enable Auto-Execution")
-    private Boolean autoExecution = false;
+    private boolean autoExecution = false;
 
     // ========== ADAPTIVE MODE PARAMETERS ==========
     @Parameter(name = "Use AI Adaptive Thresholds")
-    private Boolean useAIAdaptiveThresholds = false;  // Default: AI mode disabled
+    private boolean useAIAdaptiveThresholds = false;  // Default: AI mode disabled
 
     @Parameter(name = "AI Re-evaluation Interval (min)")
-    private Integer aiReevaluationInterval = 30;  // Re-evaluate every 30 minutes
+    private int aiReevaluationInterval = 30;  // Re-evaluate every 30 minutes
 
     // ========== AI TRADING PARAMETERS ==========
     @Parameter(name = "Enable AI Trading")
-    private Boolean enableAITrading = false;
+    private boolean enableAITrading = false;
 
     @Parameter(name = "AI Mode")
     private String aiMode = "MANUAL";  // MANUAL, SEMI_AUTO, FULL_AUTO
 
     @Parameter(name = "Confluence Threshold")
-    private Integer confluenceThreshold = 50;
+    private int confluenceThreshold = 50;
 
     @Parameter(name = "AI Auth Token")
     private String aiAuthToken = "8a4f5b950ea142c98746d5a320666414.Yf1MQwtkwfuDbyHw";
@@ -523,14 +524,14 @@ public class OrderFlowStrategyEnhanced implements
         gbc.gridy = 2;
         settingsPanel.add(new JLabel("Min Confluence Score:"), gbc);
         gbc.gridx = 1;
-        minConfluenceSpinner = new JSpinner(new SpinnerNumberModel(minConfluenceScore.intValue(), 8, 15, 1));
+        minConfluenceSpinner = new JSpinner(new SpinnerNumberModel(minConfluenceScore, 8, 15, 1));
         minConfluenceSpinner.addChangeListener(e -> updateMinConfluence());
         settingsPanel.add(minConfluenceSpinner, gbc);
 
         gbc.gridx = 0; gbc.gridy = 3;
         settingsPanel.add(new JLabel("Threshold Multiplier:"), gbc);
         gbc.gridx = 1;
-        thresholdMultSpinner = new JSpinner(new SpinnerNumberModel(thresholdMultiplier.doubleValue(), 1.5, 5.0, 0.5));
+        thresholdMultSpinner = new JSpinner(new SpinnerNumberModel(thresholdMultiplier, 1.5, 5.0, 0.5));
         thresholdMultSpinner.addChangeListener(e -> updateThresholdMultiplier());
         settingsPanel.add(thresholdMultSpinner, gbc);
 
@@ -540,7 +541,7 @@ public class OrderFlowStrategyEnhanced implements
         icebergOrdersLabel.setToolTipText("Minimum orders at one price to trigger iceberg signal");
         settingsPanel.add(icebergOrdersLabel, gbc);
         gbc.gridx = 1;
-        JSpinner icebergOrdersSpinner = new JSpinner(new SpinnerNumberModel(icebergMinOrders.intValue(), 5, 100, 5));
+        JSpinner icebergOrdersSpinner = new JSpinner(new SpinnerNumberModel(icebergMinOrders, 5, 100, 5));
         icebergOrdersSpinner.setToolTipText("Higher = fewer but more reliable signals (default: 20)");
         icebergOrdersSpinner.addChangeListener(e -> icebergMinOrders = (Integer) icebergOrdersSpinner.getValue());
         settingsPanel.add(icebergOrdersSpinner, gbc);
@@ -550,7 +551,7 @@ public class OrderFlowStrategyEnhanced implements
         spoofSizeLabel.setToolTipText("Minimum order size to consider as potential spoof");
         settingsPanel.add(spoofSizeLabel, gbc);
         gbc.gridx = 1;
-        JSpinner spoofSizeSpinner = new JSpinner(new SpinnerNumberModel(spoofMinSize.intValue(), 5, 100, 5));
+        JSpinner spoofSizeSpinner = new JSpinner(new SpinnerNumberModel(spoofMinSize, 5, 100, 5));
         spoofSizeSpinner.setToolTipText("Higher = fewer spoof signals (default: 20)");
         spoofSizeSpinner.addChangeListener(e -> spoofMinSize = (Integer) spoofSizeSpinner.getValue());
         settingsPanel.add(spoofSizeSpinner, gbc);
@@ -560,7 +561,7 @@ public class OrderFlowStrategyEnhanced implements
         absorbSizeLabel.setToolTipText("Minimum trade size to detect absorption");
         settingsPanel.add(absorbSizeLabel, gbc);
         gbc.gridx = 1;
-        JSpinner absorbSizeSpinner = new JSpinner(new SpinnerNumberModel(absorptionMinSize.intValue(), 10, 200, 10));
+        JSpinner absorbSizeSpinner = new JSpinner(new SpinnerNumberModel(absorptionMinSize, 10, 200, 10));
         absorbSizeSpinner.setToolTipText("Higher = fewer absorption signals (default: 50)");
         absorbSizeSpinner.addChangeListener(e -> absorptionMinSize = (Integer) absorbSizeSpinner.getValue());
         settingsPanel.add(absorbSizeSpinner, gbc);
@@ -650,7 +651,7 @@ public class OrderFlowStrategyEnhanced implements
         gbc.gridx = 0; gbc.gridy = 20;
         settingsPanel.add(new JLabel("Confluence Threshold:"), gbc);
         gbc.gridx = 1;
-        JSpinner confThresholdSpinner = new JSpinner(new SpinnerNumberModel(confluenceThreshold.intValue(), 0, 135, 5));
+        JSpinner confThresholdSpinner = new JSpinner(new SpinnerNumberModel(confluenceThreshold, 0, 135, 5));
         confThresholdSpinner.addChangeListener(e -> confluenceThreshold = (Integer) confThresholdSpinner.getValue());
         settingsPanel.add(confThresholdSpinner, gbc);
 
@@ -681,14 +682,14 @@ public class OrderFlowStrategyEnhanced implements
         gbc.gridy = 25; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Max Position:"), gbc);
         gbc.gridx = 1;
-        JSpinner maxPosSpinner = new JSpinner(new SpinnerNumberModel(maxPosition.intValue(), 1, 10, 1));
+        JSpinner maxPosSpinner = new JSpinner(new SpinnerNumberModel(maxPosition, 1, 10, 1));
         maxPosSpinner.addChangeListener(e -> maxPosition = (Integer) maxPosSpinner.getValue());
         settingsPanel.add(maxPosSpinner, gbc);
 
         gbc.gridx = 0; gbc.gridy = 26;
         settingsPanel.add(new JLabel("Daily Loss Limit ($):"), gbc);
         gbc.gridx = 1;
-        JSpinner lossLimitSpinner = new JSpinner(new SpinnerNumberModel(dailyLossLimit.intValue(), 100.0, 5000.0, 100.0));
+        JSpinner lossLimitSpinner = new JSpinner(new SpinnerNumberModel(dailyLossLimit, 100.0, 5000.0, 100.0));
         lossLimitSpinner.addChangeListener(e -> dailyLossLimit = (Double) lossLimitSpinner.getValue());
         settingsPanel.add(lossLimitSpinner, gbc);
 
@@ -1815,7 +1816,7 @@ public class OrderFlowStrategyEnhanced implements
         // Use a larger percentage to reduce noise
         int minSizeToCheck = Math.max(
             adaptiveSizeThreshold / 2,  // Increased from /5 to /2
-            spoofMinSize.intValue()
+            spoofMinSize
         );
 
         if (size >= minSizeToCheck) {
@@ -1882,11 +1883,11 @@ public class OrderFlowStrategyEnhanced implements
         // Calculate adaptive thresholds
         adaptiveOrderThreshold = Math.max(
             (int) (avgOrderCount * 5.0),  // Increased multiplier from 2.0 to 5.0
-            icebergMinOrders.intValue()
+            icebergMinOrders
         );
         adaptiveSizeThreshold = Math.max(
             (int) (avgTotalSize * 5.0),  // Increased multiplier from 2.0 to 5.0
-            absorptionMinSize.intValue()
+            absorptionMinSize
         );
 
         // Ensure minimums
