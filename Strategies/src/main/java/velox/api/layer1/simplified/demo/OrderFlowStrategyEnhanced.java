@@ -634,6 +634,97 @@ public class OrderFlowStrategyEnhanced implements
                 System.err.println("Error generating performance report: " + e.getMessage());
             }
         }, 5, 5, TimeUnit.MINUTES);  // Start after 5 minutes, then every 5 minutes
+
+        // Periodic threshold reassessment every 5 minutes
+        // This ensures thresholds are adjusted when session phase changes, even if no signals come in
+        updateExecutor.scheduleAtFixedRate(() -> {
+            try {
+                periodicThresholdReassessment();
+            } catch (Exception e) {
+                System.err.println("Error in threshold reassessment: " + e.getMessage());
+            }
+        }, 5, 5, TimeUnit.MINUTES);  // Start after 5 minutes, then every 5 minutes
+    }
+
+    // Track last reassessed phase to detect changes
+    private SessionContext.SessionPhase lastReassessedPhase = null;
+
+    /**
+     * Periodic threshold reassessment
+     * Called every 5 minutes to check if thresholds should be adjusted
+     * based on session phase changes, even when no signals are coming in
+     */
+    private void periodicThresholdReassessment() {
+        if (sessionContext == null || !enableAITrading || aiStrategist == null) {
+            return;
+        }
+
+        SessionContext.SessionPhase currentPhase = sessionContext.getCurrentPhase();
+
+        // Check if phase has changed since last reassessment
+        if (lastReassessedPhase != null && currentPhase == lastReassessedPhase) {
+            // No phase change, no need to reassess
+            return;
+        }
+
+        log("🔄 PERIODIC REASSESSMENT: Phase changed from " + lastReassessedPhase + " to " + currentPhase);
+
+        // Build market context for reassessment
+        AIThresholdService.MarketContext context = buildMarketContext();
+
+        // Ask AI to reassess thresholds for this phase
+        String reassessmentPrompt = String.format("""
+            PERIODIC THRESHOLD REASSESSMENT
+
+            The trading session has moved into a new phase: %s
+
+            Current market state:
+            - Price: %.2f
+            - CVD: %d
+            - Session: %d minutes in, %d trades
+            - Current thresholds: minScore=%d, icebergMinOrders=%d
+
+            Should we adjust thresholds for this phase? Consider:
+            1. Phase-specific volatility (opening/closing = higher, lunch = lower)
+            2. Current CVD trend strength
+            3. Time into session (early = more caution, established = can be more aggressive)
+
+            If adjustment is needed, respond with JSON:
+            {"thresholdAdjustment": {"field": value, "reasoning": "why"}}
+
+            If no adjustment needed, respond with:
+            {"thresholdAdjustment": null}
+            """,
+            currentPhase,
+            context.currentPrice,
+            (long) context.cvd,
+            sessionContext.getMinutesIntoSession(),
+            sessionContext.getTradesThisSession(),
+            minConfluenceScore,
+            icebergMinOrders
+        );
+
+        // Use AI threshold service for reassessment
+        aiThresholdService.chatWithTools(reassessmentPrompt)
+            .thenAccept(response -> {
+                try {
+                    // Parse response for threshold adjustment
+                    if (response.contains("thresholdAdjustment") && !response.contains("\"null\"")) {
+                        log("📊 Threshold adjustment suggested: " + response);
+                        // The adjustment will be parsed and applied by the existing mechanism
+                    } else {
+                        log("✅ No threshold adjustment needed for " + currentPhase);
+                    }
+                } catch (Exception e) {
+                    log("Error parsing reassessment response: " + e.getMessage());
+                }
+            })
+            .exceptionally(ex -> {
+                log("❌ Reassessment failed: " + ex.getMessage());
+                return null;
+            });
+
+        lastReassessedPhase = currentPhase;
     }
 
     /**
