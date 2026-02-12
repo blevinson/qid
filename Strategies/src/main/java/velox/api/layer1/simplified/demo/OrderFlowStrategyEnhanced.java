@@ -633,18 +633,23 @@ public class OrderFlowStrategyEnhanced implements
         long now = System.currentTimeMillis();
         if (now - lastLevelLogTime > 5000) {
             lastLevelLogTime = now;
-            if (hasStop || hasTp) {
-                log(String.format("📊 AI LEVELS: SL=%s (%s) TP=%s (%s)",
-                    activeStopLossPrice, hasStop ? "drawing" : "no indicator",
-                    activeTakeProfitPrice, hasTp ? "drawing" : "no indicator"));
-            }
+            log(String.format("📊 drawAITradingLevels: hasStop=%s hasTp=%s SL=%s TP=%s",
+                hasStop, hasTp, activeStopLossPrice, activeTakeProfitPrice));
+            if (aiStopLossLine == null) log("⚠️ aiStopLossLine is NULL!");
+            if (aiTakeProfitLine == null) log("⚠️ aiTakeProfitLine is NULL!");
         }
 
-        if (hasStop) {
-            aiStopLossLine.addPoint(activeStopLossPrice);
-        }
-        if (hasTp) {
-            aiTakeProfitLine.addPoint(activeTakeProfitPrice);
+        try {
+            if (hasStop) {
+                aiStopLossLine.addPoint(activeStopLossPrice);
+            }
+            if (hasTp) {
+                aiTakeProfitLine.addPoint(activeTakeProfitPrice);
+            }
+        } catch (Exception e) {
+            if (now - lastLevelLogTime > 5000) {
+                log("❌ Error drawing levels: " + e.getMessage());
+            }
         }
     }
 
