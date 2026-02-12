@@ -179,24 +179,26 @@ public class OrderFlowStrategyEnhanced implements
     private void loadSettings() {
         try {
             File file = new File(SETTINGS_FILE);
-            if (file.exists()) {
-                Settings settings = SETTINGS_GSON.fromJson(new FileReader(file), Settings.class);
-                if (settings != null) {
-                    if (settings.minConfluenceScore != null) minConfluenceScore = settings.minConfluenceScore;
-                    if (settings.thresholdMultiplier != null) thresholdMultiplier = settings.thresholdMultiplier;
-                    if (settings.icebergMinOrders != null) icebergMinOrders = settings.icebergMinOrders;
-                    if (settings.spoofMinSize != null) spoofMinSize = settings.spoofMinSize;
-                    if (settings.absorptionMinSize != null) absorptionMinSize = settings.absorptionMinSize;
-                    if (settings.maxPosition != null) maxPosition = settings.maxPosition;
-                    if (settings.dailyLossLimit != null) dailyLossLimit = settings.dailyLossLimit;
-                    if (settings.simModeOnly != null) simModeOnly = settings.simModeOnly;
-                    if (settings.autoExecution != null) autoExecution = settings.autoExecution;
-                    if (settings.useAIAdaptiveThresholds != null) useAIAdaptiveThresholds = settings.useAIAdaptiveThresholds;
-                    if (settings.enableAITrading != null) enableAITrading = settings.enableAITrading;
-                    if (settings.aiMode != null) aiMode = settings.aiMode;
-                    if (settings.confluenceThreshold != null) confluenceThreshold = settings.confluenceThreshold;
-                    if (settings.aiAuthToken != null) aiAuthToken = settings.aiAuthToken;
-                    log("📂 Loaded settings from: " + SETTINGS_FILE);
+            if (file.exists() && file.length() > 0) {
+                try (FileReader reader = new FileReader(file)) {
+                    Settings settings = SETTINGS_GSON.fromJson(reader, Settings.class);
+                    if (settings != null) {
+                        if (settings.minConfluenceScore != null) minConfluenceScore = settings.minConfluenceScore;
+                        if (settings.thresholdMultiplier != null) thresholdMultiplier = settings.thresholdMultiplier;
+                        if (settings.icebergMinOrders != null) icebergMinOrders = settings.icebergMinOrders;
+                        if (settings.spoofMinSize != null) spoofMinSize = settings.spoofMinSize;
+                        if (settings.absorptionMinSize != null) absorptionMinSize = settings.absorptionMinSize;
+                        if (settings.maxPosition != null) maxPosition = settings.maxPosition;
+                        if (settings.dailyLossLimit != null) dailyLossLimit = settings.dailyLossLimit;
+                        if (settings.simModeOnly != null) simModeOnly = settings.simModeOnly;
+                        if (settings.autoExecution != null) autoExecution = settings.autoExecution;
+                        if (settings.useAIAdaptiveThresholds != null) useAIAdaptiveThresholds = settings.useAIAdaptiveThresholds;
+                        if (settings.enableAITrading != null) enableAITrading = settings.enableAITrading;
+                        if (settings.aiMode != null) aiMode = settings.aiMode;
+                        if (settings.confluenceThreshold != null) confluenceThreshold = settings.confluenceThreshold;
+                        if (settings.aiAuthToken != null) aiAuthToken = settings.aiAuthToken;
+                        log("📂 Loaded settings from: " + SETTINGS_FILE);
+                    }
                 }
             }
         } catch (Exception e) {
@@ -229,7 +231,10 @@ public class OrderFlowStrategyEnhanced implements
             File file = new File(SETTINGS_FILE);
             file.getParentFile().mkdirs();
 
-            SETTINGS_GSON.toJson(settings, new FileWriter(file));
+            // Write with try-with-resources to ensure file is closed
+            try (FileWriter writer = new FileWriter(file)) {
+                SETTINGS_GSON.toJson(settings, writer);
+            }
             log("💾 Saved settings to: " + SETTINGS_FILE);
         } catch (Exception e) {
             log("⚠️ Could not save settings: " + e.getMessage());
