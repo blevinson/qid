@@ -1,6 +1,7 @@
 package velox.api.layer1.simplified.demo;
 
 import velox.api.layer1.simplified.demo.storage.TradingMemoryService;
+import velox.api.layer1.simplified.demo.storage.TranscriptWriter;
 import velox.api.layer1.simplified.demo.memory.MemorySearchResult;
 
 import com.google.gson.Gson;
@@ -15,6 +16,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -24,12 +26,15 @@ import java.util.concurrent.CompletableFuture;
  *
  * This class evaluates trading setups by searching memory for similar historical patterns
  * and using AI to make strategic decisions about whether to take or skip a setup.
+ *
+ * Unified Session: All decisions are logged to TranscriptWriter for shared context with AI chat.
  */
 public class AIInvestmentStrategist {
     private final TradingMemoryService memoryService;
     private final String apiToken;
     private final HttpClient httpClient;
     private final Gson gson;
+    private final TranscriptWriter transcriptWriter;  // Unified session transcript
     private static final String API_URL = "https://api.z.ai/api/anthropic/v1/messages";
     private static final String MODEL = "glm-5";
 
@@ -42,16 +47,21 @@ public class AIInvestmentStrategist {
      *
      * @param memoryService TradingMemoryService for searching historical patterns
      * @param apiToken API token for Claude API calls
+     * @param transcriptWriter Unified session transcript (shared with AI chat)
      */
-    public AIInvestmentStrategist(TradingMemoryService memoryService, String apiToken) {
+    public AIInvestmentStrategist(TradingMemoryService memoryService, String apiToken, TranscriptWriter transcriptWriter) {
         this.memoryService = memoryService;
         this.apiToken = apiToken;
+        this.transcriptWriter = transcriptWriter;
         this.gson = new Gson();
         this.httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(30))
             .build();
 
         log("========== AI Investment Strategist Initialized ==========");
+        if (transcriptWriter != null) {
+            log("📝 Session transcript logging: ENABLED");
+        }
     }
 
     /**
@@ -527,6 +537,20 @@ public class AIInvestmentStrategist {
             log("THRESHOLD ADJUSTMENT: " + decision.thresholdAdjustment.toString());
         }
         log("============================================================");
+
+        // Log to unified session transcript (shared with AI chat)
+        if (transcriptWriter != null) {
+            String signalId = UUID.randomUUID().toString().substring(0, 8);
+            transcriptWriter.logSignalDecision(
+                signalId,
+                signal.direction,
+                signal.price,
+                signal.score,
+                decisionType,
+                decision.confidence,
+                decision.reasoning
+            );
+        }
 
         return decision;
     }

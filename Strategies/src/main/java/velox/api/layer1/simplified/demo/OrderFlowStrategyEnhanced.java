@@ -214,6 +214,9 @@ public class OrderFlowStrategyEnhanced implements
     private AIInvestmentStrategist aiStrategist;
     private final Map<String, SignalData> pendingSignals = new ConcurrentHashMap<>();
 
+    // Unified Session Transcript - shared by AI chat and AI Investment Strategist
+    private velox.api.layer1.simplified.demo.storage.TranscriptWriter transcriptWriter;
+
     // Session Context - tracks trading session state for AI
     private SessionContext sessionContext;
 
@@ -546,8 +549,14 @@ public class OrderFlowStrategyEnhanced implements
                 sessionContext = new SessionContext();
                 log("✅ Session Context initialized");
 
-                // Initialize AI Investment Strategist (Phase 3)
-                aiStrategist = new AIInvestmentStrategist(service, aiAuthToken);
+                // Initialize Unified Session Transcript (shared by AI chat and strategist)
+                java.nio.file.Path sessionsDir = java.nio.file.Path.of("sessions");
+                transcriptWriter = new velox.api.layer1.simplified.demo.storage.TranscriptWriter(sessionsDir);
+                transcriptWriter.initializeSession();
+                log("✅ Session Transcript initialized: " + sessionsDir);
+
+                // Initialize AI Investment Strategist (Phase 3) with transcript
+                aiStrategist = new AIInvestmentStrategist(service, aiAuthToken, transcriptWriter);
                 log("✅ AI Investment Strategist initialized");
             } else {
                 log("⚠️ Memory Service disabled (no API token)");
@@ -1189,6 +1198,11 @@ public class OrderFlowStrategyEnhanced implements
         appendChatMessage("You", userMessage);
         chatInputField.setText("");
 
+        // Log user message to unified session transcript
+        if (transcriptWriter != null) {
+            transcriptWriter.logMessage("user", userMessage);
+        }
+
         // Show typing indicator
         appendChatMessage("AI", "Thinking...");
 
@@ -1248,6 +1262,11 @@ public class OrderFlowStrategyEnhanced implements
         })
         .thenCompose(enhancedPrompt -> aiThresholdService.chat(enhancedPrompt))
         .thenAcceptAsync(response -> {
+            // Log AI response to unified session transcript
+            if (transcriptWriter != null) {
+                transcriptWriter.logMessage("assistant", response);
+            }
+
             // Remove "Thinking..." and add actual response
             SwingUtilities.invokeLater(() -> {
                 // Remove last line (Thinking...)
