@@ -150,7 +150,8 @@ public class OrderFlowStrategyEnhanced implements
     private String aiAuthToken = "8a4f5b950ea142c98746d5a320666414.Yf1MQwtkwfuDbyHw";
 
     // ========== SETTINGS PERSISTENCE ==========
-    private static final String SETTINGS_FILE = System.getProperty("user.home") + "/.qid/order-flow-settings.json";
+    private static final String SETTINGS_FILE = System.getProperty("user.home") +
+        "/Library/Application Support/Bookmap/addons/order-flow-settings.json";
     private static final Gson SETTINGS_GSON = new GsonBuilder().setPrettyPrinting().create();
 
     /**
