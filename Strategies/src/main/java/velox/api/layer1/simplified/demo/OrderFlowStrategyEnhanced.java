@@ -3886,13 +3886,17 @@ public class OrderFlowStrategyEnhanced implements
     public void onBbo(int priceBid, int priceAsk, int sizeBid, int sizeAsk) {
         // Use mid price for most accurate current price
         int midPrice = (priceBid + priceAsk) / 2;
-        lastKnownPrice = midPrice;  // Update for AI tools/chat
 
-        // Debug: Log price conversion details (only occasionally to avoid spam)
-        if (System.currentTimeMillis() % 30000 < 100) {  // Every ~30 seconds
-            log(String.format("📊 PRICE DEBUG: bid=%d ask=%d mid=%d pips=%.4f actual=%.2f",
+        // Debug: Log BBO prices to understand units (log every 30 seconds)
+        long now = System.currentTimeMillis();
+        if (now % 30000 < 500) {
+            log(String.format("📊 BBO DEBUG: bid=%d ask=%d mid=%d pips=%.4f calculated=%.2f",
                 priceBid, priceAsk, midPrice, pips, midPrice * pips));
+            log(String.format("📊 BBO UNITS CHECK: if mid=%d is ticks, actual=%.2f; if mid is actual, this is correct",
+                midPrice, midPrice * pips));
         }
+
+        lastKnownPrice = midPrice;  // Update for AI tools/chat
 
         // Monitor positions on BBO update
         if (aiOrderManager != null) {
