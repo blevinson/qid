@@ -652,6 +652,15 @@ public class OrderFlowStrategyEnhanced implements
                 System.err.println("Error in threshold reassessment: " + e.getMessage());
             }
         }, 5, 5, TimeUnit.MINUTES);  // Start after 5 minutes, then every 5 minutes
+
+        // Draw SL/TP lines every 100ms (creates horizontal line effect)
+        updateExecutor.scheduleAtFixedRate(() -> {
+            try {
+                drawAITradingLevels();
+            } catch (Exception e) {
+                System.err.println("Error drawing AI levels: " + e.getMessage());
+            }
+        }, 0, 100, TimeUnit.MILLISECONDS);
     }
 
     // Track last reassessed phase to detect changes
