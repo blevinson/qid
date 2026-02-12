@@ -4,8 +4,6 @@ import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.awt.image.BufferedImage;
-import java.io.File;
-import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -23,10 +21,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import javax.swing.*;
 import java.nio.file.Path;
 
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
-import com.google.gson.reflect.TypeToken;
-
 import velox.api.layer1.annotations.Layer1ApiVersion;
 import velox.api.layer1.annotations.Layer1ApiVersionValue;
 import velox.api.layer1.annotations.Layer1SimpleAttachable;
@@ -34,6 +28,7 @@ import velox.api.layer1.annotations.Layer1StrategyName;
 import velox.api.layer1.data.InstrumentInfo;
 import velox.api.layer1.data.TradeInfo;
 import velox.api.layer1.messages.indicators.Layer1ApiUserMessageModifyIndicator.GraphType;
+import velox.api.layer1.settings.StrategySettingsVersion;
 import velox.api.layer1.simplified.Api;
 import velox.api.layer1.simplified.BboListener;
 import velox.api.layer1.simplified.CustomModule;
@@ -149,96 +144,37 @@ public class OrderFlowStrategyEnhanced implements
     @Parameter(name = "AI Auth Token")
     private String aiAuthToken = "8a4f5b950ea142c98746d5a320666414.Yf1MQwtkwfuDbyHw";
 
-    // ========== SETTINGS PERSISTENCE ==========
-    private static final String SETTINGS_FILE = System.getProperty("user.home") +
-        "/Library/Application Support/Bookmap/addons/order-flow-settings.json";
-    private static final Gson SETTINGS_GSON = new GsonBuilder().setPrettyPrinting().create();
-
+    // ========== SETTINGS PERSISTENCE (Native Bookmap API) ==========
     /**
-     * Settings class for JSON serialization
+     * Settings class for Bookmap native persistence
      */
-    private static class Settings {
-        Integer minConfluenceScore;
-        Double thresholdMultiplier;
-        Integer icebergMinOrders;
-        Integer spoofMinSize;
-        Integer absorptionMinSize;
-        Integer maxPosition;
-        Double dailyLossLimit;
-        Boolean simModeOnly;
-        Boolean autoExecution;
-        Boolean useAIAdaptiveThresholds;
-        Boolean enableAITrading;
-        String aiMode;
-        Integer confluenceThreshold;
-        String aiAuthToken;
+    @StrategySettingsVersion(currentVersion = 1, compatibleVersions = {})
+    public static class Settings {
+        public Integer minConfluenceScore = 10;
+        public Double thresholdMultiplier = 3.0;
+        public Integer icebergMinOrders = 10;
+        public Integer spoofMinSize = 20;
+        public Integer absorptionMinSize = 50;
+        public Integer maxPosition = 1;
+        public Double dailyLossLimit = 500.0;
+        public Boolean simModeOnly = true;
+        public Boolean autoExecution = false;
+        public Boolean useAIAdaptiveThresholds = false;
+        public Boolean enableAITrading = false;
+        public String aiMode = "MANUAL";
+        public Integer confluenceThreshold = 50;
+        public String aiAuthToken = "8a4f5b950ea142c98746d5a320666414.Yf1MQwtkwfuDbyHw";
     }
 
-    /**
-     * Load settings from JSON file
-     */
-    private void loadSettings() {
-        try {
-            File file = new File(SETTINGS_FILE);
-            if (file.exists() && file.length() > 0) {
-                try (FileReader reader = new FileReader(file)) {
-                    Settings settings = SETTINGS_GSON.fromJson(reader, Settings.class);
-                    if (settings != null) {
-                        if (settings.minConfluenceScore != null) minConfluenceScore = settings.minConfluenceScore;
-                        if (settings.thresholdMultiplier != null) thresholdMultiplier = settings.thresholdMultiplier;
-                        if (settings.icebergMinOrders != null) icebergMinOrders = settings.icebergMinOrders;
-                        if (settings.spoofMinSize != null) spoofMinSize = settings.spoofMinSize;
-                        if (settings.absorptionMinSize != null) absorptionMinSize = settings.absorptionMinSize;
-                        if (settings.maxPosition != null) maxPosition = settings.maxPosition;
-                        if (settings.dailyLossLimit != null) dailyLossLimit = settings.dailyLossLimit;
-                        if (settings.simModeOnly != null) simModeOnly = settings.simModeOnly;
-                        if (settings.autoExecution != null) autoExecution = settings.autoExecution;
-                        if (settings.useAIAdaptiveThresholds != null) useAIAdaptiveThresholds = settings.useAIAdaptiveThresholds;
-                        if (settings.enableAITrading != null) enableAITrading = settings.enableAITrading;
-                        if (settings.aiMode != null) aiMode = settings.aiMode;
-                        if (settings.confluenceThreshold != null) confluenceThreshold = settings.confluenceThreshold;
-                        if (settings.aiAuthToken != null) aiAuthToken = settings.aiAuthToken;
-                        log("📂 Loaded settings from: " + SETTINGS_FILE);
-                    }
-                }
-            }
-        } catch (Exception e) {
-            log("⚠️ Could not load settings: " + e.getMessage());
-        }
-    }
+    private Settings settings;
 
     /**
-     * Save settings to JSON file
+     * Save settings using Bookmap's native API
      */
     private void saveSettings() {
-        try {
-            Settings settings = new Settings();
-            settings.minConfluenceScore = minConfluenceScore;
-            settings.thresholdMultiplier = thresholdMultiplier;
-            settings.icebergMinOrders = icebergMinOrders;
-            settings.spoofMinSize = spoofMinSize;
-            settings.absorptionMinSize = absorptionMinSize;
-            settings.maxPosition = maxPosition;
-            settings.dailyLossLimit = dailyLossLimit;
-            settings.simModeOnly = simModeOnly;
-            settings.autoExecution = autoExecution;
-            settings.useAIAdaptiveThresholds = useAIAdaptiveThresholds;
-            settings.enableAITrading = enableAITrading;
-            settings.aiMode = aiMode;
-            settings.confluenceThreshold = confluenceThreshold;
-            settings.aiAuthToken = aiAuthToken;
-
-            // Ensure directory exists
-            File file = new File(SETTINGS_FILE);
-            file.getParentFile().mkdirs();
-
-            // Write with try-with-resources to ensure file is closed
-            try (FileWriter writer = new FileWriter(file)) {
-                SETTINGS_GSON.toJson(settings, writer);
-            }
-            log("💾 Saved settings to: " + SETTINGS_FILE);
-        } catch (Exception e) {
-            log("⚠️ Could not save settings: " + e.getMessage());
+        if (api != null && settings != null) {
+            api.setSettings(settings);
+            log("💾 Settings saved");
         }
     }
 
@@ -417,8 +353,25 @@ public class OrderFlowStrategyEnhanced implements
         log("Instrument: " + alias);
         log("Pip size: " + pips);
 
-        // Load persisted settings BEFORE creating UI
-        loadSettings();
+        // Load persisted settings using Bookmap's native API
+        settings = api.getSettings(Settings.class);
+        log("📂 Settings loaded");
+
+        // Sync local fields from settings (for compatibility with existing code)
+        minConfluenceScore = settings.minConfluenceScore;
+        thresholdMultiplier = settings.thresholdMultiplier;
+        icebergMinOrders = settings.icebergMinOrders;
+        spoofMinSize = settings.spoofMinSize;
+        absorptionMinSize = settings.absorptionMinSize;
+        maxPosition = settings.maxPosition;
+        dailyLossLimit = settings.dailyLossLimit;
+        simModeOnly = settings.simModeOnly;
+        autoExecution = settings.autoExecution;
+        useAIAdaptiveThresholds = settings.useAIAdaptiveThresholds;
+        enableAITrading = settings.enableAITrading;
+        aiMode = settings.aiMode;
+        confluenceThreshold = settings.confluenceThreshold;
+        aiAuthToken = settings.aiAuthToken;
 
         // Create detection MARKER indicators (Layer 1)
         // These will use custom icons instead of continuous lines
@@ -1486,12 +1439,14 @@ public class OrderFlowStrategyEnhanced implements
 
     private void updateMinConfluence() {
         minConfluenceScore = (Integer) minConfluenceSpinner.getValue();
+        settings.minConfluenceScore = minConfluenceScore;
         log("📊 Min Confluence Score updated: " + minConfluenceScore);
         saveSettings();
     }
 
     private void updateThresholdMultiplier() {
         thresholdMultiplier = (Double) thresholdMultSpinner.getValue();
+        settings.thresholdMultiplier = thresholdMultiplier;
         log("📊 Threshold Multiplier updated: " + thresholdMultiplier);
         saveSettings();
     }
@@ -1824,7 +1779,23 @@ public class OrderFlowStrategyEnhanced implements
     }
 
     private void applySettings() {
-        saveSettings();  // Persist all current settings
+        // Sync all local fields to settings object
+        settings.minConfluenceScore = minConfluenceScore;
+        settings.thresholdMultiplier = thresholdMultiplier;
+        settings.icebergMinOrders = icebergMinOrders;
+        settings.spoofMinSize = spoofMinSize;
+        settings.absorptionMinSize = absorptionMinSize;
+        settings.maxPosition = maxPosition;
+        settings.dailyLossLimit = dailyLossLimit;
+        settings.simModeOnly = simModeOnly;
+        settings.autoExecution = autoExecution;
+        settings.useAIAdaptiveThresholds = useAIAdaptiveThresholds;
+        settings.enableAITrading = enableAITrading;
+        settings.aiMode = aiMode;
+        settings.confluenceThreshold = confluenceThreshold;
+        settings.aiAuthToken = aiAuthToken;
+
+        saveSettings();
         log("✅ Settings applied and saved");
         JOptionPane.showMessageDialog(settingsPanel,
             "✅ Settings have been applied and saved!",
