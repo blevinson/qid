@@ -2349,8 +2349,8 @@ public class OrderFlowStrategyEnhanced implements
     private AIThresholdService.MarketContext buildMarketContext() {
         AIThresholdService.MarketContext context = new AIThresholdService.MarketContext(alias);
 
-        // Current market state
-        context.currentPrice = getCurrentPrice();
+        // Current market state - use actual price (not tick price)
+        context.currentPrice = getCurrentPrice() * pips;
         context.totalVolume = totalVolume.get();
         context.cvd = cvdCalculator.getCVD();
         context.trend = "NEUTRAL";  // Simplified - can be enhanced later
@@ -2426,7 +2426,11 @@ public class OrderFlowStrategyEnhanced implements
         if (aiToolsProvider == null) return;
 
         // Price supplier - convert tick price to actual price
-        aiToolsProvider.setPriceSupplier(() -> lastKnownPrice * pips);
+        aiToolsProvider.setPriceSupplier(() -> {
+            double actualPrice = lastKnownPrice * pips;
+            // Debug logging (only log occasionally to avoid spam)
+            return actualPrice;
+        });
 
         // CVD supplier
         aiToolsProvider.setCvdSupplier(() -> cvdCalculator.getCVD());
@@ -3783,6 +3787,12 @@ public class OrderFlowStrategyEnhanced implements
         // Use mid price for most accurate current price
         int midPrice = (priceBid + priceAsk) / 2;
         lastKnownPrice = midPrice;  // Update for AI tools/chat
+
+        // Debug: Log price conversion details (only occasionally to avoid spam)
+        if (System.currentTimeMillis() % 30000 < 100) {  // Every ~30 seconds
+            log(String.format("📊 PRICE DEBUG: bid=%d ask=%d mid=%d pips=%.4f actual=%.2f",
+                priceBid, priceAsk, midPrice, pips, midPrice * pips));
+        }
 
         // Monitor positions on BBO update
         if (aiOrderManager != null) {
