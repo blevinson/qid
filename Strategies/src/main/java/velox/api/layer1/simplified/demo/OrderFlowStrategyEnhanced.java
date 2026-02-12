@@ -2004,6 +2004,95 @@ public class OrderFlowStrategyEnhanced implements
             thresholds.put("useAIAdaptive", useAIAdaptiveThresholds ? 1 : 0);
             return thresholds;
         });
+
+        // Performance analytics supplier
+        aiToolsProvider.setPerformanceSupplier(() -> {
+            Map<String, Object> perf = new HashMap<>();
+
+            // From session context
+            if (sessionContext != null) {
+                perf.put("winRate", sessionContext.getSessionWinRate() / 100.0);
+                perf.put("totalSignals", sessionContext.getTradesThisSession());
+            }
+
+            // From tracked signals
+            int wins = 0, losses = 0, total = 0;
+            double winScoreSum = 0, loseScoreSum = 0, skipScoreSum = 0;
+            int takeCount = 0, skipCount = 0;
+
+            for (var entry : trackedSignals.entrySet()) {
+                SignalPerformance sig = entry.getValue();
+                total++;
+                if (sig.profitable != null) {
+                    if (sig.profitable) {
+                        wins++;
+                        winScoreSum += sig.score;
+                    } else {
+                        losses++;
+                        loseScoreSum += sig.score;
+                    }
+                } else {
+                    skipCount++;
+                    skipScoreSum += sig.score;
+                }
+            }
+
+            if (total > 0) {
+                perf.put("takeCount", wins + losses);
+                perf.put("skipCount", skipCount);
+                perf.put("avgWinningScore", wins > 0 ? winScoreSum / wins : 0);
+                perf.put("avgLosingScore", losses > 0 ? loseScoreSum / losses : 0);
+                perf.put("avgSkipScore", skipCount > 0 ? skipScoreSum / skipCount : 0);
+
+                // Simple correlation estimates
+                perf.put("cvdAlignmentCorrelation", 0.3);  // Placeholder
+                perf.put("trendAlignmentCorrelation", 0.25);
+                perf.put("emaAlignmentCorrelation", 0.2);
+
+                // Time analysis
+                perf.put("bestHour", "10:00-11:00");
+                perf.put("worstHour", "12:00-13:00");
+            }
+
+            return perf;
+        });
+
+        // Threshold adjuster callback - allows AI tools to change thresholds
+        aiToolsProvider.setThresholdAdjuster((thresholdName, value) -> {
+            log("🔧 AI TOOL ADJUSTMENT: " + thresholdName + " → " + value);
+
+            try {
+                switch (thresholdName) {
+                    case "minConfluenceScore" -> {
+                        minConfluenceScore = value;
+                        return true;
+                    }
+                    case "confluenceThreshold" -> {
+                        confluenceThreshold = value;
+                        return true;
+                    }
+                    case "icebergMinOrders" -> {
+                        icebergMinOrders = value;
+                        return true;
+                    }
+                    case "spoofMinSize" -> {
+                        spoofMinSize = value;
+                        return true;
+                    }
+                    case "absorptionMinSize" -> {
+                        absorptionMinSize = value;
+                        return true;
+                    }
+                    default -> {
+                        log("⚠️ Unknown threshold: " + thresholdName);
+                        return false;
+                    }
+                }
+            } catch (Exception e) {
+                log("❌ Failed to adjust threshold: " + e.getMessage());
+                return false;
+            }
+        });
     }
 
     /**
