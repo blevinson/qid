@@ -157,6 +157,43 @@ public class AIInvestmentStrategist {
      * @return AI prompt string
      */
     private String buildAIPrompt(SignalData signal, String memoryContext) {
+        // Build key levels section
+        StringBuilder keyLevels = new StringBuilder();
+
+        // VWAP
+        if (!Double.isNaN(signal.market.vwap) && signal.market.vwap > 0) {
+            keyLevels.append(String.format("- VWAP: %.2f (%s, %.1f ticks away)\n",
+                signal.market.vwap,
+                signal.market.priceVsVwap,
+                signal.market.vwapDistanceTicks));
+        }
+
+        // Volume Profile levels (POC, Value Area)
+        if (signal.market.pocPrice > 0) {
+            keyLevels.append(String.format("- POC (Point of Control): %d\n", signal.market.pocPrice));
+        }
+        if (signal.market.valueAreaLow > 0 && signal.market.valueAreaHigh > 0) {
+            keyLevels.append(String.format("- Value Area: %d - %d\n",
+                signal.market.valueAreaLow, signal.market.valueAreaHigh));
+        }
+
+        // EMA levels
+        if (signal.market.ema9 > 0) {
+            keyLevels.append(String.format("- EMA9: %.2f (%.1f ticks)\n",
+                signal.market.ema9, signal.market.ema9DistanceTicks));
+        }
+        if (signal.market.ema21 > 0) {
+            keyLevels.append(String.format("- EMA21: %.2f (%.1f ticks)\n",
+                signal.market.ema21, signal.market.ema21DistanceTicks));
+        }
+        if (signal.market.ema50 > 0) {
+            keyLevels.append(String.format("- EMA50: %.2f (%.1f ticks)\n",
+                signal.market.ema50, signal.market.ema50DistanceTicks));
+        }
+
+        // If no key levels available, add placeholder
+        String keyLevelsStr = keyLevels.length() > 0 ? keyLevels.toString() : "- (calculating...)\n";
+
         return String.format("""
             You are an AI Investment Strategist analyzing a trading setup.
 
@@ -167,19 +204,28 @@ public class AIInvestmentStrategist {
             - CVD: %d (%s)
             - Trend: %s
 
+            KEY LEVELS (use for SL/TP placement):
             %s
 
-            Based on the signal strength and historical memory, should we TAKE or SKIP this setup?
+            %s
+
+            Based on the signal strength, key levels, and historical memory, should we TAKE or SKIP this setup?
+
+            IMPORTANT: When placing SL/TP, use the KEY LEVELS above:
+            - Place STOP LOSS beyond nearest support/resistance level
+            - Place TAKE PROFIT at or before next resistance/support level
+            - Consider VWAP and POC as key levels for mean reversion
+
             Respond with JSON:
             {
               "action": "TAKE" | "SKIP",
               "confidence": 0.0-1.0,
-              "reasoning": "brief explanation",
+              "reasoning": "brief explanation referencing key levels",
               "plan": {
-                "orderType": "BUY_STOP" | "SELL_STOP",
+                "orderType": "BUY" | "SELL",
                 "entryPrice": %d,
-                "stopLossPrice": calculated,
-                "takeProfitPrice": calculated
+                "stopLossPrice": calculated based on key levels,
+                "takeProfitPrice": calculated based on key levels
               }
             }
             """,
@@ -190,6 +236,7 @@ public class AIInvestmentStrategist {
             signal.market.cvd,
             signal.market.cvdTrend,
             signal.market.trend,
+            keyLevelsStr,
             memoryContext,
             signal.price);
     }

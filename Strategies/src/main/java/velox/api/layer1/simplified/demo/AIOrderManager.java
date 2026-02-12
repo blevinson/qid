@@ -90,9 +90,9 @@ public class AIOrderManager {
                 OrderExecutor.OrderSide.BUY : OrderExecutor.OrderSide.SELL;
 
             String entryOrderId = orderExecutor.placeEntry(
-                OrderExecutor.OrderType.STOP_MARKET,  // Use stop market for entry
+                OrderExecutor.OrderType.MARKET,  // Use market orders for immediate execution
                 entrySide,
-                signal.price,
+                signal.price,  // Price ignored for market orders
                 positionSize
             );
 
