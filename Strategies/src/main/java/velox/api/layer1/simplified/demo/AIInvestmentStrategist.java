@@ -5,11 +5,15 @@ import velox.api.layer1.simplified.demo.memory.MemorySearchResult;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
+import java.io.FileWriter;
+import java.io.PrintWriter;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
@@ -29,6 +33,10 @@ public class AIInvestmentStrategist {
     private static final String API_URL = "https://api.z.ai/api/anthropic/v1/messages";
     private static final String MODEL = "glm-5";
 
+    // File logging
+    private static final String LOG_FILE = System.getProperty("user.home") + "/ai-strategist.log";
+    private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
+
     /**
      * Constructor for AIInvestmentStrategist
      *
@@ -42,6 +50,22 @@ public class AIInvestmentStrategist {
         this.httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(30))
             .build();
+
+        log("========== AI Investment Strategist Initialized ==========");
+    }
+
+    /**
+     * Log to file (and console)
+     */
+    private void log(String message) {
+        String timestamp = LocalDateTime.now().format(TIME_FMT);
+        String logLine = timestamp + " | " + message;
+        System.out.println(logLine);
+        try (PrintWriter writer = new PrintWriter(new FileWriter(LOG_FILE, true))) {
+            writer.println(logLine);
+        } catch (Exception e) {
+            // Ignore file write errors
+        }
     }
 
     /**
@@ -65,24 +89,20 @@ public class AIInvestmentStrategist {
             return;
         }
 
-        System.out.println("🧠 ========== AI STRATEGIST EVALUATION ==========");
-        System.out.println("📊 SIGNAL DETAILS:");
-        System.out.println("   Direction: " + signal.direction);
-        System.out.println("   Price: " + signal.price);
-        System.out.println("   Score: " + signal.score + " (threshold: " + signal.threshold + ")");
-        System.out.println("   CVD: " + signal.market.cvd + " (" + signal.market.cvdTrend + ")");
-        System.out.println("   Trend: " + signal.market.trend);
+        log("========== AI STRATEGIST EVALUATION ==========");
+        log("SIGNAL: " + signal.direction + " @ " + signal.price + " | Score: " + signal.score + "/" + signal.threshold);
+        log("CVD: " + signal.market.cvd + " (" + signal.market.cvdTrend + ") | Trend: " + signal.market.trend);
 
         // Step 1: Search memory for similar historical setups
         String query = buildMemoryQuery(signal);
-        System.out.println("🔍 Memory Query: " + query);
+        log("Memory Query: " + query);
         List<MemorySearchResult> memoryResults = memoryService.search(query, 5);
-        System.out.println("📚 Memory Results: " + memoryResults.size() + " similar setups found");
+        log("Memory Results: " + memoryResults.size() + " similar setups found");
 
         // Step 2: Analyze memory results
         String context = buildMemoryContext(memoryResults);
         if (memoryResults.isEmpty()) {
-            System.out.println("⚠️ No memory context - AI will use general analysis");
+            log("WARNING: No memory context - AI will use general analysis");
         }
 
         // Step 3: Ask AI to make decision
@@ -321,17 +341,18 @@ public class AIInvestmentStrategist {
             decision.shouldTake = false;
             decision.confidence = 0.0;
             decision.reasoning = "Failed to parse AI response: " + e.getMessage();
+            log("ERROR: Failed to parse AI response: " + e.getMessage());
         }
 
         // Log the final decision
-        System.out.println("🤖 AI DECISION: " + (decision.shouldTake ? "✅ TAKE" : "⏭️ SKIP"));
-        System.out.println("   Confidence: " + (decision.confidence * 100) + "%");
-        System.out.println("   Reasoning: " + decision.reasoning);
+        String decisionType = decision.shouldTake ? "TAKE" : "SKIP";
+        log("AI DECISION: " + decisionType + " | Confidence: " + String.format("%.0f%%", decision.confidence * 100));
+        log("Reasoning: " + decision.reasoning);
         if (decision.shouldTake && decision.plan != null) {
-            System.out.println("   Plan: " + decision.plan.orderType + " @ " + decision.plan.entryPrice);
-            System.out.println("   SL: " + decision.plan.stopLossPrice + " | TP: " + decision.plan.takeProfitPrice);
+            log("Plan: " + decision.plan.orderType + " @ " + decision.plan.entryPrice +
+                " | SL: " + decision.plan.stopLossPrice + " | TP: " + decision.plan.takeProfitPrice);
         }
-        System.out.println("===============================================");
+        log("============================================================");
 
         return decision;
     }
