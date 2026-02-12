@@ -694,7 +694,7 @@ public class OrderFlowStrategyEnhanced implements
         gbc.gridy = 2;
         settingsPanel.add(new JLabel("Min Confluence Score:"), gbc);
         gbc.gridx = 1;
-        minConfluenceSpinner = new JSpinner(new SpinnerNumberModel(minConfluenceScore.intValue(), 8, 15, 1));
+        minConfluenceSpinner = new JSpinner(new SpinnerNumberModel(minConfluenceScore.intValue(), 0, 150, 5));
         minConfluenceSpinner.addChangeListener(e -> updateMinConfluence());
         settingsPanel.add(minConfluenceSpinner, gbc);
 
