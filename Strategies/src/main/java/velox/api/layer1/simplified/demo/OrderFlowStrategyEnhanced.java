@@ -3702,10 +3702,12 @@ public class OrderFlowStrategyEnhanced implements
 
     @Override
     public void onBbo(int priceBid, int priceAsk, int sizeBid, int sizeAsk) {
+        // Use mid price for most accurate current price
+        int midPrice = (priceBid + priceAsk) / 2;
+        lastKnownPrice = midPrice;  // Update for AI tools/chat
+
         // Monitor positions on BBO update
         if (aiOrderManager != null) {
-            // Use mid price for monitoring
-            int midPrice = (priceBid + priceAsk) / 2;
             aiOrderManager.onPriceUpdate(midPrice, System.currentTimeMillis());
         }
     }
