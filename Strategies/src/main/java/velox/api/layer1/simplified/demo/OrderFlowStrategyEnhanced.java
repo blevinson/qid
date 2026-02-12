@@ -613,11 +613,26 @@ public class OrderFlowStrategyEnhanced implements
     /**
      * Draw horizontal lines at active SL/TP levels
      */
+    private long lastLevelLogTime = 0;
     private void drawAITradingLevels() {
-        if (activeStopLossPrice != null && aiStopLossLine != null) {
+        boolean hasStop = activeStopLossPrice != null && aiStopLossLine != null;
+        boolean hasTp = activeTakeProfitPrice != null && aiTakeProfitLine != null;
+
+        // Log every 5 seconds for debugging
+        long now = System.currentTimeMillis();
+        if (now - lastLevelLogTime > 5000) {
+            lastLevelLogTime = now;
+            if (hasStop || hasTp) {
+                log(String.format("📊 AI LEVELS: SL=%s (%s) TP=%s (%s)",
+                    activeStopLossPrice, hasStop ? "drawing" : "no indicator",
+                    activeTakeProfitPrice, hasTp ? "drawing" : "no indicator"));
+            }
+        }
+
+        if (hasStop) {
             aiStopLossLine.addPoint(activeStopLossPrice);
         }
-        if (activeTakeProfitPrice != null && aiTakeProfitLine != null) {
+        if (hasTp) {
             aiTakeProfitLine.addPoint(activeTakeProfitPrice);
         }
     }
@@ -2162,15 +2177,37 @@ public class OrderFlowStrategyEnhanced implements
                                     if (decision.shouldTake && decision.plan != null) {
                                         log(String.format("✅ AI TAKE: %s (confidence: %.0f%%) - %s",
                                             decision.plan.orderType, decision.confidence * 100, decision.reasoning));
+
+                                        // Validate SL/TP prices from plan
+                                        int stopLossPrice = decision.plan.stopLossPrice;
+                                        int takeProfitPrice = decision.plan.takeProfitPrice;
+                                        boolean isLong = decision.plan.orderType.contains("BUY");
+
+                                        // Fallback to signal-based calculation if plan prices are 0
+                                        if (stopLossPrice == 0) {
+                                            stopLossPrice = isLong ?
+                                                signalData.price - (30 * signalData.pips) :
+                                                signalData.price + (30 * signalData.pips);
+                                            log("⚠️ SL was 0, calculated fallback: " + stopLossPrice);
+                                        }
+                                        if (takeProfitPrice == 0) {
+                                            takeProfitPrice = isLong ?
+                                                signalData.price + (70 * signalData.pips) :
+                                                signalData.price - (70 * signalData.pips);
+                                            log("⚠️ TP was 0, calculated fallback: " + takeProfitPrice);
+                                        }
+
+                                        log(String.format("📊 FINAL SL/TP: SL=%d TP=%d", stopLossPrice, takeProfitPrice));
+
                                         // Convert to AIIntegrationLayer.AIDecision format for order manager
                                         AIIntegrationLayer.AIDecision aiDecision = new AIIntegrationLayer.AIDecision();
                                         aiDecision.action = "TAKE";
                                         aiDecision.confidence = (int)(decision.confidence * 100);  // Convert 0-1 to 0-100
                                         aiDecision.reasoning = decision.reasoning;
-                                        aiDecision.isLong = decision.plan.orderType.contains("BUY");
-                                        aiDecision.direction = aiDecision.isLong ? "LONG" : "SHORT";
-                                        aiDecision.stopLoss = decision.plan.stopLossPrice;
-                                        aiDecision.takeProfit = decision.plan.takeProfitPrice;
+                                        aiDecision.isLong = isLong;
+                                        aiDecision.direction = isLong ? "LONG" : "SHORT";
+                                        aiDecision.stopLoss = stopLossPrice;
+                                        aiDecision.takeProfit = takeProfitPrice;
                                         aiOrderManager.executeEntry(aiDecision, signalData);
                                     } else {
                                         log(String.format("⏭️ AI SKIP: %s (confidence: %.0f%%)",
@@ -3028,6 +3065,15 @@ public class OrderFlowStrategyEnhanced implements
     @Override
     public void onEntryMarker(boolean isLong, int price, int score, String reasoning, int stopLossPrice, int takeProfitPrice) {
         try {
+            log("📍 AI ENTRY MARKER CALLBACK INVOKED:");
+            log(String.format("   isLong=%s, price=%d, score=%d", isLong, price, score));
+            log(String.format("   stopLossPrice=%d, takeProfitPrice=%d", stopLossPrice, takeProfitPrice));
+
+            // Validate SL/TP values
+            if (stopLossPrice == 0 || takeProfitPrice == 0) {
+                log("⚠️ WARNING: SL or TP is 0! This might indicate a missing plan in AI decision");
+            }
+
             // Create icon based on direction
             BufferedImage icon = isLong ?
                 AIMarkerIcons.createLongEntryIcon() :   // CYAN circle
@@ -3043,11 +3089,13 @@ public class OrderFlowStrategyEnhanced implements
             activeStopLossPrice = stopLossPrice;
             activeTakeProfitPrice = takeProfitPrice;
 
-            log("📍 AI ENTRY MARKER: " + (isLong ? "LONG" : "SHORT") +
-                " @ " + price + " (Score: " + score + ")" +
-                " SL: " + stopLossPrice + " TP: " + takeProfitPrice);
+            log(String.format("✅ SL/TP levels set: SL=%d TP=%d (indicators: %s, %s)",
+                activeStopLossPrice, activeTakeProfitPrice,
+                aiStopLossLine != null ? "OK" : "NULL",
+                aiTakeProfitLine != null ? "OK" : "NULL"));
         } catch (Exception e) {
             log("❌ Failed to place entry marker: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
