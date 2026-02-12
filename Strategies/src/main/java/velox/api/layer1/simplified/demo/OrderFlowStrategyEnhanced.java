@@ -25,9 +25,11 @@ import velox.api.layer1.annotations.Layer1ApiVersion;
 import velox.api.layer1.annotations.Layer1ApiVersionValue;
 import velox.api.layer1.annotations.Layer1SimpleAttachable;
 import velox.api.layer1.annotations.Layer1StrategyName;
-import velox.api.layer1.simplified.NoAutosubscription;
+import velox.api.layer1.annotations.Layer1TradingStrategy;
 import velox.api.layer1.data.InstrumentInfo;
 import velox.api.layer1.data.TradeInfo;
+import velox.api.layer1.data.ExecutionInfo;
+import velox.api.layer1.data.OrderInfoUpdate;
 import velox.api.layer1.messages.indicators.Layer1ApiUserMessageModifyIndicator.GraphType;
 import velox.api.layer1.settings.StrategySettingsVersion;
 import velox.api.layer1.simplified.Api;
@@ -37,6 +39,7 @@ import velox.api.layer1.simplified.CustomSettingsPanelProvider;
 import velox.api.layer1.simplified.Indicator;
 import velox.api.layer1.simplified.InitialState;
 import velox.api.layer1.simplified.MarketByOrderDepthDataListener;
+import velox.api.layer1.simplified.OrdersListener;
 import velox.api.layer1.simplified.Parameter;
 import velox.api.layer1.simplified.TradeDataListener;
 import velox.gui.StrategyPanel;
@@ -57,15 +60,16 @@ import velox.gui.StrategyPanel;
  * - ABSORPTION: Large trades eating levels (yellow dots)
  */
 @Layer1SimpleAttachable
+@Layer1TradingStrategy
 @Layer1StrategyName("Order Flow Enhanced")
 @Layer1ApiVersion(Layer1ApiVersionValue.VERSION2)
-@NoAutosubscription
 public class OrderFlowStrategyEnhanced implements
     CustomModule,
     MarketByOrderDepthDataListener,
     TradeDataListener,
     BboListener,
     CustomSettingsPanelProvider,
+    OrdersListener,
     AIOrderManager.AIMarkerCallback {
 
     // ========== PERFORMANCE TRACKING ==========
@@ -2091,6 +2095,9 @@ public class OrderFlowStrategyEnhanced implements
                     }
 
                     // ========== AI TRADING EVALUATION ==========
+                    log(String.format("🤖 AI CHECK: enableAITrading=%s, aiOrderManager=%s, aiStrategist=%s",
+                        enableAITrading, aiOrderManager != null ? "ready" : "null", aiStrategist != null ? "ready" : "null"));
+
                     if (enableAITrading && aiOrderManager != null) {
                         // Create SignalData for AI evaluation
                         SignalData signalData = createSignalData(isBid, price, totalSize);
@@ -3024,6 +3031,26 @@ public class OrderFlowStrategyEnhanced implements
                 " (Stop moved from " + triggerPrice + ") - SL line updated");
         } catch (Exception e) {
             log("❌ Failed to place break-even marker: " + e.getMessage());
+        }
+    }
+
+    // ========== OrdersListener Implementation ==========
+
+    @Override
+    public void onOrderUpdated(OrderInfoUpdate orderInfoUpdate) {
+        log("📋 ORDER UPDATED: " + orderInfoUpdate.orderId + " status=" + orderInfoUpdate.status);
+        // Delegate to order executor if available
+        if (orderExecutor != null && orderExecutor instanceof BookmapOrderExecutor) {
+            // Order tracking is handled internally by executor
+        }
+    }
+
+    @Override
+    public void onOrderExecuted(ExecutionInfo executionInfo) {
+        log("💰 ORDER EXECUTED: " + executionInfo.orderId + " @ " + executionInfo.price);
+        // Delegate to order executor if available
+        if (orderExecutor != null && orderExecutor instanceof BookmapOrderExecutor) {
+            // Execution tracking is handled internally by executor
         }
     }
 }

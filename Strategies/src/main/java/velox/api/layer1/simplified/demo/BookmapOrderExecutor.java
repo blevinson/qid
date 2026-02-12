@@ -2,7 +2,6 @@ package velox.api.layer1.simplified.demo;
 
 import velox.api.layer1.data.*;
 import velox.api.layer1.simplified.Api;
-import velox.api.layer1.simplified.OrdersListener;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -16,13 +15,13 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * Key features:
  * 1. Uses Bookmap's SimpleOrderSendParameters for order placement
- * 2. Implements OrdersListener for order status updates
+ * 2. Order status updates handled by parent strategy (OrdersListener)
  * 3. Handles partial fills and order modifications
  * 4. Proper error handling and logging
  *
  * API Reference: https://github.com/BookmapAPI/ExchangePortDemo
  */
-public class BookmapOrderExecutor implements OrderExecutor, OrdersListener {
+public class BookmapOrderExecutor implements OrderExecutor {
     private final Api api;
     private final AIIntegrationLayer.AIStrategyLogger logger;
     private final String alias;
@@ -43,8 +42,7 @@ public class BookmapOrderExecutor implements OrderExecutor, OrdersListener {
         this.alias = alias;
         this.logger = logger;
 
-        // Register order listener
-        api.addOrdersListeners(this);
+        // Note: Order listener is handled by parent strategy via @Layer1TradingStrategy
 
         log("✅ BookmapOrderExecutor initialized with real API");
     }
@@ -318,60 +316,6 @@ public class BookmapOrderExecutor implements OrderExecutor, OrdersListener {
     @Override
     public double getAccountBalance() {
         return accountBalance.get();
-    }
-
-    // ============================================================================
-    // OrdersListener Implementation
-    // ============================================================================
-
-    @Override
-    public void onOrderUpdated(OrderInfoUpdate orderInfoUpdate) {
-        String orderId = orderInfoUpdate.orderId;
-        OrderStatus status = orderInfoUpdate.status;
-
-        log("📋 ORDER UPDATED:");
-        log("   Order ID: %s", orderId);
-        log("   Status: %s", status);
-        log("   Filled: %d / %d",
-            orderInfoUpdate.filled,
-            orderInfoUpdate.filled + orderInfoUpdate.unfilled);
-
-        // Update active orders map
-        if (status == OrderStatus.REJECTED ||
-            status == OrderStatus.CANCELLED ||
-            status == OrderStatus.FILLED) {
-            activeOrders.remove(orderId);
-        } else {
-            activeOrders.put(orderId, orderInfoUpdate);
-        }
-
-        // Notify callback if exists
-        OrderCallback callback = orderCallbacks.get(orderId);
-        if (callback != null) {
-            callback.onUpdate(orderInfoUpdate);
-        }
-    }
-
-    @Override
-    public void onOrderExecuted(ExecutionInfo executionInfo) {
-        log("💰 ORDER EXECUTED:");
-        log("   Execution ID: %s", executionInfo.executionId);
-        log("   Order ID: %s", executionInfo.orderId);
-        log("   Price: %d, Size: %d", executionInfo.price, executionInfo.size);
-
-        // Update position based on execution
-        // Note: ExecutionInfo doesn't have isBuy field, so we look up the order
-        OrderInfoUpdate order = activeOrders.get(executionInfo.orderId);
-        boolean isBuy = (order != null) ? order.isBuy : true;  // Default to buy if not found
-        int size = executionInfo.size;
-
-        if (isBuy) {
-            currentPosition.addAndGet(size);
-        } else {
-            currentPosition.addAndGet(-size);
-        }
-
-        log("   Current Position: %d", currentPosition.get());
     }
 
     // ============================================================================
