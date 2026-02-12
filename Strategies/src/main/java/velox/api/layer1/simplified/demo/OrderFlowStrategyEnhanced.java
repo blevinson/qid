@@ -2419,34 +2419,34 @@ public class OrderFlowStrategyEnhanced implements
     private void setupAIToolsProvider() {
         if (aiToolsProvider == null) return;
 
-        // Price supplier
-        aiToolsProvider.setPriceSupplier(() -> lastKnownPrice);
+        // Price supplier - convert tick price to actual price
+        aiToolsProvider.setPriceSupplier(() -> lastKnownPrice * pips);
 
         // CVD supplier
         aiToolsProvider.setCvdSupplier(() -> cvdCalculator.getCVD());
 
-        // VWAP supplier
+        // VWAP supplier - convert to actual price
         aiToolsProvider.setVwapSupplier(() ->
-            vwapCalculator.isInitialized() ? vwapCalculator.getVWAP() : 0.0);
+            vwapCalculator.isInitialized() ? vwapCalculator.getVWAP() * pips : 0.0);
 
-        // EMA supplier
+        // EMA supplier - convert to actual prices
         aiToolsProvider.setEmaSupplier(() -> new double[] {
-            ema9.isInitialized() ? ema9.getEMA() : 0.0,
-            ema21.isInitialized() ? ema21.getEMA() : 0.0,
-            ema50.isInitialized() ? ema50.getEMA() : 0.0
+            ema9.isInitialized() ? ema9.getEMA() * pips : 0.0,
+            ema21.isInitialized() ? ema21.getEMA() * pips : 0.0,
+            ema50.isInitialized() ? ema50.getEMA() * pips : 0.0
         });
 
-        // DOM (Order Book) supplier
+        // DOM (Order Book) supplier - convert prices to actual
         aiToolsProvider.setDomSupplier(() -> {
             Map<String, Object> dom = new HashMap<>();
             var support = domAnalyzer.getNearestSupport();
             var resistance = domAnalyzer.getNearestResistance();
             if (support != null) {
-                dom.put("supportPrice", support.price);
+                dom.put("supportPrice", support.price * pips);
                 dom.put("supportVolume", support.volume);
             }
             if (resistance != null) {
-                dom.put("resistancePrice", resistance.price);
+                dom.put("resistancePrice", resistance.price * pips);
                 dom.put("resistanceVolume", resistance.volume);
             }
             dom.put("imbalanceRatio", domAnalyzer.getImbalanceRatio());
@@ -2454,14 +2454,14 @@ public class OrderFlowStrategyEnhanced implements
             return dom;
         });
 
-        // Recent signals supplier
+        // Recent signals supplier - convert prices to actual
         aiToolsProvider.setSignalsSupplier(() -> {
             List<Map<String, Object>> signals = new ArrayList<>();
             for (var entry : trackedSignals.entrySet()) {
                 Map<String, Object> sig = new HashMap<>();
                 SignalPerformance perf = entry.getValue();
                 sig.put("direction", perf.isBid ? "BUY" : "SELL");
-                sig.put("price", perf.entryPrice);
+                sig.put("price", perf.entryPrice * pips);
                 sig.put("score", perf.score);
                 sig.put("time", new java.text.SimpleDateFormat("HH:mm:ss").format(new java.util.Date(perf.timestamp)));
                 signals.add(sig);

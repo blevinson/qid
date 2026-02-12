@@ -101,7 +101,8 @@ public class AIInvestmentStrategist {
         }
 
         log("========== AI STRATEGIST EVALUATION ==========");
-        log("SIGNAL: " + signal.direction + " @ " + signal.price + " | Score: " + signal.score + "/" + signal.threshold);
+        double actualPrice = signal.price * signal.pips;  // Convert ticks to actual price
+        log("SIGNAL: " + signal.direction + " @ " + String.format("%.2f", actualPrice) + " | Score: " + signal.score + "/" + signal.threshold);
         log("CVD: " + signal.market.cvd + " (" + signal.market.cvdTrend + ") | Trend: " + signal.market.trend);
 
         // Log session context
@@ -109,22 +110,22 @@ public class AIInvestmentStrategist {
             log("SESSION: " + sessionContext.toSummary());
         }
 
-        // Log key levels for debugging
+        // Log key levels for debugging (convert to actual prices)
         log("KEY LEVELS:");
         if (!Double.isNaN(signal.market.vwap) && signal.market.vwap > 0) {
-            log("  VWAP: " + String.format("%.2f", signal.market.vwap) + " (" + signal.market.priceVsVwap + ")");
+            log("  VWAP: " + String.format("%.2f", signal.market.vwap * signal.pips) + " (" + signal.market.priceVsVwap + ")");
         }
         if (signal.market.pocPrice > 0) {
-            log("  POC: " + signal.market.pocPrice);
+            log("  POC: " + String.format("%.2f", signal.market.pocPrice * signal.pips));
         }
         if (signal.market.valueAreaLow > 0 && signal.market.valueAreaHigh > 0) {
-            log("  Value Area: " + signal.market.valueAreaLow + " - " + signal.market.valueAreaHigh);
+            log("  Value Area: " + String.format("%.2f", signal.market.valueAreaLow * signal.pips) + " - " + String.format("%.2f", signal.market.valueAreaHigh * signal.pips));
         }
         if (signal.market.domSupportPrice > 0) {
-            log("  DOM SUPPORT: " + signal.market.domSupportPrice + " (" + signal.market.domSupportVolume + " contracts)");
+            log("  DOM SUPPORT: " + String.format("%.2f", signal.market.domSupportPrice * signal.pips) + " (" + signal.market.domSupportVolume + " contracts)");
         }
         if (signal.market.domResistancePrice > 0) {
-            log("  DOM RESISTANCE: " + signal.market.domResistancePrice + " (" + signal.market.domResistanceVolume + " contracts)");
+            log("  DOM RESISTANCE: " + String.format("%.2f", signal.market.domResistancePrice * signal.pips) + " (" + signal.market.domResistanceVolume + " contracts)");
         }
         log("  DOM IMBALANCE: " + String.format("%.2f", signal.market.domImbalanceRatio) + " (" + signal.market.domImbalanceSentiment + ")");
 
@@ -193,50 +194,53 @@ public class AIInvestmentStrategist {
      * @return AI prompt string
      */
     private String buildAIPrompt(SignalData signal, String memoryContext, SessionContext sessionContext) {
+        double pips = signal.pips;  // For converting tick prices to actual prices
+        double actualPrice = signal.price * pips;
+
         // Build key levels section
         StringBuilder keyLevels = new StringBuilder();
 
         // VWAP
         if (!Double.isNaN(signal.market.vwap) && signal.market.vwap > 0) {
             keyLevels.append(String.format("- VWAP: %.2f (%s, %.1f ticks away)\n",
-                signal.market.vwap,
+                signal.market.vwap * pips,
                 signal.market.priceVsVwap,
                 signal.market.vwapDistanceTicks));
         }
 
         // Volume Profile levels (POC, Value Area)
         if (signal.market.pocPrice > 0) {
-            keyLevels.append(String.format("- POC (Point of Control): %d\n", signal.market.pocPrice));
+            keyLevels.append(String.format("- POC (Point of Control): %.2f\n", signal.market.pocPrice * pips));
         }
         if (signal.market.valueAreaLow > 0 && signal.market.valueAreaHigh > 0) {
-            keyLevels.append(String.format("- Value Area: %d - %d\n",
-                signal.market.valueAreaLow, signal.market.valueAreaHigh));
+            keyLevels.append(String.format("- Value Area: %.2f - %.2f\n",
+                signal.market.valueAreaLow * pips, signal.market.valueAreaHigh * pips));
         }
 
         // EMA levels
         if (signal.market.ema9 > 0) {
             keyLevels.append(String.format("- EMA9: %.2f (%.1f ticks)\n",
-                signal.market.ema9, signal.market.ema9DistanceTicks));
+                signal.market.ema9 * pips, signal.market.ema9DistanceTicks));
         }
         if (signal.market.ema21 > 0) {
             keyLevels.append(String.format("- EMA21: %.2f (%.1f ticks)\n",
-                signal.market.ema21, signal.market.ema21DistanceTicks));
+                signal.market.ema21 * pips, signal.market.ema21DistanceTicks));
         }
         if (signal.market.ema50 > 0) {
             keyLevels.append(String.format("- EMA50: %.2f (%.1f ticks)\n",
-                signal.market.ema50, signal.market.ema50DistanceTicks));
+                signal.market.ema50 * pips, signal.market.ema50DistanceTicks));
         }
 
         // DOM (Order Book) levels - Real-time support/resistance from liquidity
         if (signal.market.domSupportPrice > 0) {
-            keyLevels.append(String.format("- DOM SUPPORT: %d (%d contracts, %d ticks below)\n",
-                signal.market.domSupportPrice,
+            keyLevels.append(String.format("- DOM SUPPORT: %.2f (%d contracts, %d ticks below)\n",
+                signal.market.domSupportPrice * pips,
                 signal.market.domSupportVolume,
                 signal.market.domSupportDistance));
         }
         if (signal.market.domResistancePrice > 0) {
-            keyLevels.append(String.format("- DOM RESISTANCE: %d (%d contracts, %d ticks above)\n",
-                signal.market.domResistancePrice,
+            keyLevels.append(String.format("- DOM RESISTANCE: %.2f (%d contracts, %d ticks above)\n",
+                signal.market.domResistancePrice * pips,
                 signal.market.domResistanceVolume,
                 signal.market.domResistanceDistance));
         }
@@ -268,7 +272,7 @@ public class AIInvestmentStrategist {
 
             SIGNAL:
             - Type: %s %s
-            - Price: %d
+            - Price: %.2f
             - Confluence Score: %d
             - CVD: %d (%s)
             - Trend: %s
@@ -324,7 +328,7 @@ public class AIInvestmentStrategist {
             sessionContextStr,
             signal.direction,
             signal.detection.type,
-            signal.price,
+            actualPrice,
             signal.score,
             signal.market.cvd,
             signal.market.cvdTrend,
@@ -332,7 +336,7 @@ public class AIInvestmentStrategist {
             keyLevelsStr,
             thresholdContextStr,
             memoryContext,
-            signal.price);
+            actualPrice);
     }
 
     /**
