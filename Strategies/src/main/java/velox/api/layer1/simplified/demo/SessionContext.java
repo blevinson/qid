@@ -165,6 +165,12 @@ public class SessionContext {
         warmupComplete = (minutesIntoSession >= WARMUP_MINUTES) ||
                          (tradesProcessed >= WARMUP_TRADES) ||
                          (priceUpdatesProcessed >= WARMUP_PRICE_TICKS);
+
+        // Clear reset flags once warm-up completes - indicators have data now
+        if (warmupComplete) {
+            this.cvdReset = false;
+            this.vwapReset = false;
+        }
     }
 
     /**
