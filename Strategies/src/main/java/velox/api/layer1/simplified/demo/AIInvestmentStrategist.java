@@ -225,7 +225,12 @@ public class AIInvestmentStrategist {
         requestBody.addProperty("model", MODEL);
         requestBody.addProperty("max_tokens", 1024);
 
-        String systemPrompt = """
+        // Use signal's threshold in system prompt
+        int threshold = signal.threshold;
+        int strongThreshold = threshold + 30;
+        int moderateThreshold = threshold + 10;
+
+        String systemPrompt = String.format("""
             You are an AI Investment Strategist specializing in order flow trading.
 
             PHILOSOPHY: "Investment strategist vs speed daemon"
@@ -234,10 +239,10 @@ public class AIInvestmentStrategist {
             - Wait for perfect setups
 
             DECISION FRAMEWORK:
-            1. Signal Quality (score 0-135)
-               - 80+ = Strong signal
-               - 60-80 = Moderate signal
-               - Below 60 = Weak signal, skip
+            1. Signal Quality (score 0-135, threshold: %d)
+               - %d+ = Strong signal (TAKE freely)
+               - %d-%d = Moderate signal (TAKE if context supports)
+               - Below %d = Weak signal, SKIP unless exceptional context
 
             2. Market Context
                - CVD direction alignment
@@ -250,7 +255,11 @@ public class AIInvestmentStrategist {
                - Lessons learned
 
             Respond ONLY with valid JSON:
-            """;
+            """,
+            threshold,
+            strongThreshold,
+            threshold, strongThreshold,
+            threshold);
 
         requestBody.addProperty("system", systemPrompt);
 
