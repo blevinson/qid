@@ -82,7 +82,7 @@ public class OrderFlowStrategyEnhanced implements
     private static final long SIGNAL_DEDUP_MS = 60 * 1000;  // 60 seconds dedup window
 
     // Pre-filter constants
-    private static final int CVD_STRONG_THRESHOLD = 3000;  // Skip counter-trend if CVD > this
+    private static final int CVD_STRONG_THRESHOLD = 8000;  // Skip counter-trend only if EXTREMELY strong
     private static final int SCORE_FLOOR_OFFSET = 20;      // Score must be >= threshold - this
 
     private static class SignalPerformance {
@@ -2974,6 +2974,57 @@ public class OrderFlowStrategyEnhanced implements
                         return;  // Exit early - no markers, no tracking, no AI
                     }
 
+                    // ========== PRE-FILTERS (check BEFORE adding markers/tracking) ==========
+                    boolean sendToAI = true;
+                    String skipReason = null;
+
+                    // Calculate score early for filtering
+                    int signalScore = calculateConfluenceScore(isBid, price, totalSize);
+                    long cvd = cvdCalculator.getCVD();
+
+                    // 1. Minimum score floor filter
+                    int scoreFloor = confluenceThreshold - SCORE_FLOOR_OFFSET;
+                    if (signalScore < scoreFloor) {
+                        sendToAI = false;
+                        skipReason = String.format("Score %d < floor %d (threshold %d - %d)",
+                            signalScore, scoreFloor, confluenceThreshold, SCORE_FLOOR_OFFSET);
+                    }
+
+                    // 2. Strong counter-trend filter
+                    boolean isStrongCounterTrend = (isBid && cvd < -CVD_STRONG_THRESHOLD) ||
+                                                   (!isBid && cvd > CVD_STRONG_THRESHOLD);
+                    if (sendToAI && isStrongCounterTrend) {
+                        sendToAI = false;
+                        skipReason = String.format("Strong counter-trend (signal=%s, CVD=%d, threshold=±%d)",
+                            isBid ? "BUY" : "SELL", cvd, CVD_STRONG_THRESHOLD);
+                    }
+
+                    // 3. Signal deduplication filter
+                    if (sendToAI) {
+                        String signalKey = (isBid ? "BUY@" : "SELL@") + price;
+                        Long lastSent = recentSignalsSent.get(signalKey);
+                        long currentTime = System.currentTimeMillis();
+                        if (lastSent != null && (currentTime - lastSent) < SIGNAL_DEDUP_MS) {
+                            sendToAI = false;
+                            skipReason = String.format("Duplicate signal %s (%.0fs ago)",
+                                signalKey, (currentTime - lastSent) / 1000.0);
+                        } else {
+                            recentSignalsSent.put(signalKey, currentTime);
+                            // Clean up old dedup entries (prevent memory leak)
+                            recentSignalsSent.entrySet().removeIf(e -> (currentTime - e.getValue()) > SIGNAL_DEDUP_MS * 2);
+                        }
+                    }
+
+                    // If filtered out, log and exit - NO marker, NO tracking
+                    if (!sendToAI) {
+                        log("⏭️ PRE-FILTER SKIP: " + skipReason);
+                        return;
+                    }
+
+                    // ========== SIGNAL PASSED FILTERS - Now add marker and tracking ==========
+                    log(String.format("✅ PRE-FILTER PASS: Score=%d >= %d, CVD=%d, sending to AI",
+                        signalScore, scoreFloor, cvd));
+
                     // Add marker point at signal price
                     // Using addIcon() for discrete markers without connecting lines
                     Indicator markerIndicator = isBid ? icebergBuyMarker : icebergSellMarker;
@@ -2987,10 +3038,10 @@ public class OrderFlowStrategyEnhanced implements
                     perf.timestamp = now;
                     perf.isBid = isBid;
                     perf.entryPrice = price;
-                    perf.score = calculateConfluenceScore(isBid, price, totalSize);
+                    perf.score = signalScore;
                     perf.totalSize = totalSize;
-                    perf.cvdAtSignal = cvdCalculator.getCVD();
-                    perf.trendAtSignal = perf.cvdAtSignal > 0 ? "BULLISH" : "BEARISH";
+                    perf.cvdAtSignal = cvd;
+                    perf.trendAtSignal = cvd > 0 ? "BULLISH" : "BEARISH";
                     perf.emaAlignmentAtSignal = ema9.isInitialized() && ema21.isInitialized() && ema50.isInitialized() ? 3 : 0;
                     perf.profitable = null;  // Still open
 
@@ -3022,52 +3073,10 @@ public class OrderFlowStrategyEnhanced implements
                         enableAITrading, aiOrderManager != null ? "ready" : "null", aiStrategist != null ? "ready" : "null"));
 
                     if (enableAITrading && aiOrderManager != null) {
-                        // ========== PRE-FILTERS (save AI API calls) ==========
-                        boolean sendToAI = true;
-                        String skipReason = null;
+                        // Pre-filters already passed above - proceed to AI evaluation
 
-                        // 1. Minimum score floor filter
-                        int scoreFloor = confluenceThreshold - SCORE_FLOOR_OFFSET;
-                        if (perf.score < scoreFloor) {
-                            sendToAI = false;
-                            skipReason = String.format("Score %d < floor %d (threshold %d - %d)",
-                                perf.score, scoreFloor, confluenceThreshold, SCORE_FLOOR_OFFSET);
-                        }
-
-                        // 2. Strong counter-trend filter
-                        long cvd = cvdCalculator.getCVD();
-                        boolean isStrongCounterTrend = (isBid && cvd < -CVD_STRONG_THRESHOLD) ||
-                                                       (!isBid && cvd > CVD_STRONG_THRESHOLD);
-                        if (sendToAI && isStrongCounterTrend) {
-                            sendToAI = false;
-                            skipReason = String.format("Strong counter-trend (signal=%s, CVD=%d, threshold=±%d)",
-                                isBid ? "BUY" : "SELL", cvd, CVD_STRONG_THRESHOLD);
-                        }
-
-                        // 3. Signal deduplication filter
-                        if (sendToAI) {
-                            String signalKey = (isBid ? "BUY@" : "SELL@") + price;
-                            Long lastSent = recentSignalsSent.get(signalKey);
-                            long currentTime = System.currentTimeMillis();
-                            if (lastSent != null && (currentTime - lastSent) < SIGNAL_DEDUP_MS) {
-                                sendToAI = false;
-                                skipReason = String.format("Duplicate signal %s (%.0fs ago)",
-                                    signalKey, (currentTime - lastSent) / 1000.0);
-                            } else {
-                                recentSignalsSent.put(signalKey, currentTime);
-                                // Clean up old dedup entries (prevent memory leak)
-                                recentSignalsSent.entrySet().removeIf(e -> (currentTime - e.getValue()) > SIGNAL_DEDUP_MS * 2);
-                            }
-                        }
-
-                        if (!sendToAI) {
-                            log("⏭️ PRE-FILTER SKIP: " + skipReason);
-                        } else {
-                            log(String.format("✅ PRE-FILTER PASS: Score=%d >= %d, CVD=%d, sending to AI",
-                                perf.score, scoreFloor, cvd));
-
-                            // Create SignalData for AI evaluation
-                            SignalData signalData = createSignalData(isBid, price, totalSize);
+                        // Create SignalData for AI evaluation
+                        SignalData signalData = createSignalData(isBid, price, totalSize);
 
                         // Use AI Investment Strategist (memory-aware) if available
                         if (aiStrategist != null) {
@@ -3204,8 +3213,7 @@ public class OrderFlowStrategyEnhanced implements
                                     return null;
                                 });
                         }
-                        }  // end else (sendToAI)
-                    }
+                    }  // end if (enableAITrading)
                     // ============================================
 
                     lastSignal = Integer.valueOf(totalSize);  // Store size as last signal
