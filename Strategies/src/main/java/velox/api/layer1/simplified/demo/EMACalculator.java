@@ -60,7 +60,7 @@ public class EMACalculator {
     /**
      * Get distance in ticks from EMA
      */
-    public double getDistance(double price, int pips) {
+    public double getDistance(double price, double pips) {
         if (Double.isNaN(ema)) return 0;
         return (price - ema) / pips;
     }

@@ -392,7 +392,7 @@ public class OrderFlowStrategyEnhanced implements
 
     // API and helpers
     private Api api;
-    private int pips;
+    private double pips;
     private String alias;
 
     // Logging
@@ -409,7 +409,7 @@ public class OrderFlowStrategyEnhanced implements
     public void initialize(String alias, InstrumentInfo info, Api api, InitialState initialState) {
         this.api = api;
         this.alias = alias;
-        this.pips = (int) info.pips;
+        this.pips = info.pips;
 
         log("========== OrderFlowStrategyEnhanced.initialize() ==========");
         log("Instrument: " + alias);
@@ -3083,14 +3083,14 @@ public class OrderFlowStrategyEnhanced implements
                                     // Fallback to signal-based calculation if plan prices are 0
                                     if (stopLossPrice == 0) {
                                         stopLossPrice = isLong ?
-                                            signalData.price - (30 * signalData.pips) :
-                                            signalData.price + (30 * signalData.pips);
+                                            signalData.price - 30 :  // 30 ticks
+                                            signalData.price + 30;
                                         log("⚠️ SL was 0, calculated fallback: " + stopLossPrice);
                                     }
                                     if (takeProfitPrice == 0) {
                                         takeProfitPrice = isLong ?
-                                                signalData.price + (70 * signalData.pips) :
-                                                signalData.price - (70 * signalData.pips);
+                                                signalData.price + 70 :  // 70 ticks
+                                                signalData.price - 70;
                                             log("⚠️ TP was 0, calculated fallback: " + takeProfitPrice);
                                         }
 
@@ -3498,13 +3498,13 @@ public class OrderFlowStrategyEnhanced implements
         int stopLossTicks = 20;  // 20 ticks = $250 for ES
         int takeProfitTicks = 40;  // 40 ticks = $500 for ES (1:2 ratio)
         signal.risk.stopLossTicks = stopLossTicks;
-        signal.risk.stopLossPrice = isBid ? price - (stopLossTicks * pips) : price + (stopLossTicks * pips);
+        signal.risk.stopLossPrice = isBid ? price - stopLossTicks : price + stopLossTicks;
         signal.risk.stopLossValue = stopLossTicks * 12.5;  // ES futures
         signal.risk.takeProfitTicks = takeProfitTicks;
-        signal.risk.takeProfitPrice = isBid ? price + (takeProfitTicks * pips) : price - (takeProfitTicks * pips);
+        signal.risk.takeProfitPrice = isBid ? price + takeProfitTicks : price - takeProfitTicks;
         signal.risk.takeProfitValue = takeProfitTicks * 12.5;
         signal.risk.breakEvenTicks = 3;
-        signal.risk.breakEvenPrice = isBid ? price + (3 * pips) : price - (3 * pips);
+        signal.risk.breakEvenPrice = isBid ? price + 3 : price - 3;
         signal.risk.riskRewardRatio = "1:2";
         signal.risk.positionSizeContracts = 1;
         signal.risk.totalRiskPercent = 1.5;
