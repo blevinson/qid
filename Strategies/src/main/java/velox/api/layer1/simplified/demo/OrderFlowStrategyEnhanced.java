@@ -3200,6 +3200,14 @@ public class OrderFlowStrategyEnhanced implements
                         // Create SignalData for AI evaluation
                         SignalData signalData = createSignalData(isBid, price, totalSize);
 
+                        // Log timestamp info for debugging replay mode
+                        java.time.ZoneId etZone = java.time.ZoneId.of("America/New_York");
+                        java.time.ZonedDateTime dataTime = java.time.Instant.ofEpochMilli(currentDataTimestampMs).atZone(etZone);
+                        log(String.format("⏰ TIMESTAMP DEBUG: dataTs=%d | ET time=%s | phase=%s | replayMin=%d",
+                            currentDataTimestampMs, dataTime.format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss")),
+                            sessionContext != null ? sessionContext.getCurrentPhase() : "null",
+                            sessionContext != null ? sessionContext.getMinutesIntoSession() : -1));
+
                         // Use AI Investment Strategist (memory-aware) if available
                         if (aiStrategist != null) {
                             log("🧠 Using AI Investment Strategist (memory-aware evaluation)");

@@ -336,10 +336,7 @@ public class SessionContext {
 
         sb.append("═══ SESSION CONTEXT ═══\n");
         sb.append(String.format("Session ID: %s | Date: %s\n", sessionId, sessionDate));
-
-        // Clarify replay vs market time
         sb.append(String.format("Market Phase: %s\n", currentPhase));
-        sb.append(String.format("Replay/Strategy Time: %d minutes since start\n", minutesIntoSession));
 
         // Warm-up status
         sb.append(String.format("Warm-up: %s\n", getWarmupStatus()));
