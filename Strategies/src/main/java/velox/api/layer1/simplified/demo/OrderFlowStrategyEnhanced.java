@@ -137,6 +137,9 @@ public class OrderFlowStrategyEnhanced implements
     @Parameter(name = "Daily Loss Limit ($)")
     private Double dailyLossLimit = 500.0;
 
+    @Parameter(name = "Max Slippage (ticks)")
+    private Integer maxSlippageTicks = 20;  // Skip if price moved > 20 ticks
+
     // ========== SAFETY PARAMETERS ==========
     @Parameter(name = "Simulation Mode Only")
     private Boolean simModeOnly = true;
@@ -983,11 +986,27 @@ public class OrderFlowStrategyEnhanced implements
         confThresholdSpinner.addChangeListener(e -> confluenceThreshold = (Integer) confThresholdSpinner.getValue());
         settingsPanel.add(confThresholdSpinner, gbc);
 
+        gbc.gridx = 0; gbc.gridy = 22;
+        JLabel slippageLabel = new JLabel("Max Slippage (ticks):");
+        slippageLabel.setToolTipText("Reject signal if price moved more than this many ticks");
+        settingsPanel.add(slippageLabel, gbc);
+        gbc.gridx = 1;
+        JSpinner slippageSpinner = new JSpinner(new SpinnerNumberModel(maxSlippageTicks.intValue(), 5, 100, 5));
+        slippageSpinner.setToolTipText("Higher = allow more price movement (default: 20)");
+        slippageSpinner.addChangeListener(e -> {
+            maxSlippageTicks = (Integer) slippageSpinner.getValue();
+            if (aiOrderManager != null) {
+                aiOrderManager.maxPriceSlippageTicks = maxSlippageTicks;
+            }
+            log("📏 Max Slippage: " + maxSlippageTicks + " ticks");
+        });
+        settingsPanel.add(slippageSpinner, gbc);
+
         // Safety Controls section
-        gbc.gridx = 0; gbc.gridy = 22; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 24; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Safety Controls", gbc);
 
-        gbc.gridy = 23; gbc.gridwidth = 1;
+        gbc.gridy = 25; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Simulation Mode Only:"), gbc);
         gbc.gridx = 1;
         simModeCheckBox = new JCheckBox();
@@ -995,7 +1014,7 @@ public class OrderFlowStrategyEnhanced implements
         simModeCheckBox.addActionListener(e -> updateSimMode());
         settingsPanel.add(simModeCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 24;
+        gbc.gridx = 0; gbc.gridy = 26;
         settingsPanel.add(new JLabel("Enable Auto-Execution:"), gbc);
         gbc.gridx = 1;
         autoExecCheckBox = new JCheckBox();
@@ -1004,17 +1023,17 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(autoExecCheckBox, gbc);
 
         // Risk Management section
-        gbc.gridx = 0; gbc.gridy = 25; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 27; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Risk Management", gbc);
 
-        gbc.gridy = 26; gbc.gridwidth = 1;
+        gbc.gridy = 28; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Max Position:"), gbc);
         gbc.gridx = 1;
         JSpinner maxPosSpinner = new JSpinner(new SpinnerNumberModel(maxPosition.intValue(), 1, 10, 1));
         maxPosSpinner.addChangeListener(e -> maxPosition = (Integer) maxPosSpinner.getValue());
         settingsPanel.add(maxPosSpinner, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 27;
+        gbc.gridx = 0; gbc.gridy = 29;
         settingsPanel.add(new JLabel("Daily Loss Limit ($):"), gbc);
         gbc.gridx = 1;
         JSpinner lossLimitSpinner = new JSpinner(new SpinnerNumberModel(dailyLossLimit.doubleValue(), 100.0, 5000.0, 100.0));
@@ -1022,10 +1041,10 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(lossLimitSpinner, gbc);
 
         // Notifications section
-        gbc.gridx = 0; gbc.gridy = 28; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 30; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Notifications", gbc);
 
-        gbc.gridy = 29; gbc.gridwidth = 1;
+        gbc.gridy = 31; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Event Notifications:"), gbc);
         gbc.gridx = 1;
         JCheckBox eventNotifCheckBox = new JCheckBox();
@@ -2324,6 +2343,7 @@ public class OrderFlowStrategyEnhanced implements
             aiOrderManager.breakEvenTicks = 3;
             aiOrderManager.maxPositions = maxPosition;
             aiOrderManager.maxDailyLoss = dailyLossLimit;
+            aiOrderManager.maxPriceSlippageTicks = maxSlippageTicks;
 
             // Set up price supplier for staleness checks
             aiOrderManager.setCurrentPriceSupplier(() -> (int) lastKnownPrice);
