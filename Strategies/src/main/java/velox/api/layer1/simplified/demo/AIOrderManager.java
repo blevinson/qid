@@ -328,12 +328,36 @@ public class AIOrderManager {
                 return;
             }
 
+            // Check if this is a bracket order (placeholder ID ends with -SL)
+            // Bracket orders have SL/TP managed by Bookmap - we can't modify them directly
+            boolean isBracketOrder = stopOrderId.endsWith("-SL");
+            if (isBracketOrder) {
+                log("⚠️ Break-even for bracket order: visual update only (Bookmap manages SL/TP)");
+                fileLog("🟡 moveStopToBreakEven: BRACKET ORDER detected, skipping order modification");
+
+                // Still update internal tracking and visual line
+                int newStopPriceTicks = position.breakEvenStopPrice;
+                position.stopLossPrice.set(newStopPriceTicks);
+                position.breakEvenMoved.set(true);
+
+                // Place break-even marker on chart (updates visual line)
+                if (markerCallback != null) {
+                    markerCallback.onBreakEvenMarker(newStopPriceTicks, position.breakEvenTriggerPrice);
+                }
+
+                log("🟡 BREAK-EVEN TRIGGERED (visual only):");
+                log("   Position: %s", position.id.substring(0, 8));
+                log("   Stop moved: %d → %d ticks (Bookmap manages actual order)",
+                    position.breakEvenTriggerPrice, newStopPriceTicks);
+                return;
+            }
+
             int newStopPriceTicks = position.breakEvenStopPrice;
             double newStopPriceActual = newStopPriceTicks * pips;  // Convert to actual price
 
             fileLog("🟡 moveStopToBreakEven: orderId=" + stopOrderId + ", newStopPrice=" + newStopPriceActual);
 
-            // Modify stop loss order
+            // Modify stop loss order (for non-bracket orders)
             String newStopOrderId = orderExecutor.modifyStopLoss(
                 stopOrderId,
                 newStopPriceActual,  // Actual price
@@ -366,6 +390,27 @@ public class AIOrderManager {
      */
     private void trailStop(ActivePosition position, int currentPrice) {
         try {
+            String stopOrderId = position.stopLossOrderId.get();
+
+            // Check if this is a bracket order (placeholder ID ends with -SL)
+            boolean isBracketOrder = stopOrderId != null && stopOrderId.endsWith("-SL");
+            if (isBracketOrder) {
+                // For bracket orders, just update internal tracking (Bookmap manages the order)
+                int newStopPriceTicks = position.calculateTrailStop(currentPrice);
+                int oldStop = position.stopLossPrice.get();
+                position.stopLossPrice.set(newStopPriceTicks);
+
+                double lockedProfit = position.isLong ?
+                    (currentPrice - newStopPriceTicks) * 12.5 :
+                    (newStopPriceTicks - currentPrice) * 12.5;
+
+                log("📍 TRAILING STOP (visual only for bracket order):");
+                log("   Position: %s", position.id.substring(0, 8));
+                log("   Stop trailed: %d → %d ticks (Bookmap manages actual order)", oldStop, newStopPriceTicks);
+                log("   Locked in profit: $%.2f", lockedProfit);
+                return;
+            }
+
             int newStopPriceTicks = position.calculateTrailStop(currentPrice);
             double newStopPriceActual = newStopPriceTicks * pips;  // Convert to actual price
 

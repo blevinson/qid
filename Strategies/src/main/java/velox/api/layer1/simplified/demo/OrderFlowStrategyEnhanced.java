@@ -754,11 +754,37 @@ public class OrderFlowStrategyEnhanced implements
 
     /**
      * Draw horizontal lines at active SL/TP levels
-     * DISABLED - Using Bookmap's native SL/TP instead
+     * Uses addPoint() to draw horizontal lines on the chart
      */
     private long lastLevelLogTime = 0;
     private void drawAITradingLevels() {
-        // DISABLED - was causing issues, use Bookmap native SL/TP instead
+        try {
+            // Only draw if we have active SL/TP levels and valid indicators
+            if (activeStopLossPrice == null || activeTakeProfitPrice == null) {
+                return;
+            }
+            if (aiStopLossLine == null || aiTakeProfitLine == null) {
+                return;
+            }
+
+            // Add points to draw horizontal lines at SL/TP levels
+            // addPoint() expects tick values, which we already have
+            aiStopLossLine.addPoint(activeStopLossPrice);
+            aiTakeProfitLine.addPoint(activeTakeProfitPrice);
+
+            // Throttled logging (every 10 seconds)
+            long now = System.currentTimeMillis();
+            if (now - lastLevelLogTime > 10000) {
+                fileLog("📐 drawAITradingLevels: SL=" + activeStopLossPrice + " TP=" + activeTakeProfitPrice + " ticks");
+                lastLevelLogTime = now;
+            }
+        } catch (Exception e) {
+            // Don't spam logs for drawing errors
+            if (System.currentTimeMillis() - lastLevelLogTime > 60000) {
+                fileLog("❌ drawAITradingLevels error: " + e.getMessage());
+                lastLevelLogTime = System.currentTimeMillis();
+            }
+        }
     }
 
     // ========== CUSTOM PANELS ==========
