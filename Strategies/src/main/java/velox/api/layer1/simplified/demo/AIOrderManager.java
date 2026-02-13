@@ -194,73 +194,50 @@ public class AIOrderManager {
                 decision
             );
 
-            // Place entry order
-            // Convert tick prices to actual prices for Bookmap API
-            this.pips = signal.pips;  // Store for later use in modify/stop methods
-            double entryPriceActual = signal.price * pips;
-            double stopLossPriceActual = decision.stopLoss * pips;
-            double takeProfitPriceActual = decision.takeProfit * pips;
+            // Place bracket order with native SL/TP (Bookmap managed)
+            // Offsets are in TICKS (distance from entry price)
+            this.pips = signal.pips;  // Store for later use
 
-            log("📊 Price conversion: pips=%.4f", pips);
-            log("📊 Entry: %d ticks → %.2f actual", signal.price, entryPriceActual);
-            log("📊 SL: %d ticks → %.2f actual", decision.stopLoss, stopLossPriceActual);
-            log("📊 TP: %d ticks → %.2f actual", decision.takeProfit, takeProfitPriceActual);
+            // Calculate offsets in ticks
+            int slOffsetTicks = Math.abs(signal.price - decision.stopLoss);
+            int tpOffsetTicks = Math.abs(decision.takeProfit - signal.price);
 
-            log("📤 Placing ENTRY order: %s %d @ %.2f", decision.isLong ? "BUY" : "SELL", positionSize, entryPriceActual);
+            log("📊 Bracket order offsets (ticks): SL=%d, TP=%d", slOffsetTicks, tpOffsetTicks);
+            log("📊 Entry: %d ticks, SL: %d ticks, TP: %d ticks", signal.price, decision.stopLoss, decision.takeProfit);
+            fileLog("📝 NATIVE BRACKET: entry=" + signal.price + " SL=" + decision.stopLoss + " TP=" + decision.takeProfit + " (offsets: SL=" + slOffsetTicks + " TP=" + tpOffsetTicks + ")");
+
             OrderExecutor.OrderSide entrySide = decision.isLong ?
                 OrderExecutor.OrderSide.BUY : OrderExecutor.OrderSide.SELL;
 
-            String entryOrderId = orderExecutor.placeEntry(
-                OrderExecutor.OrderType.MARKET,  // Use market orders for immediate execution
+            // Use bracket order - single order with native SL/TP managed by Bookmap
+            String entryOrderId = orderExecutor.placeBracketOrder(
+                OrderExecutor.OrderType.MARKET,
                 entrySide,
-                entryPriceActual,  // Actual price (ticks * pips)
-                positionSize
+                Double.NaN,  // Market order - no price needed
+                positionSize,
+                slOffsetTicks,   // Stop loss offset in ticks
+                tpOffsetTicks    // Take profit offset in ticks
             );
-            log("📥 Entry order ID: %s", entryOrderId);
 
-            position.entryOrderId.set(entryOrderId);
-
-            // Place stop loss
-            log("📤 Placing STOP LOSS order: %s @ %.2f", decision.isLong ? "SELL" : "BUY", stopLossPriceActual);
-            OrderExecutor.OrderSide stopSide = decision.isLong ?
-                OrderExecutor.OrderSide.SELL : OrderExecutor.OrderSide.BUY;
-
-            String stopOrderId = orderExecutor.placeStopLoss(
-                stopSide,
-                stopLossPriceActual,  // Actual price
-                positionSize
-            );
-            log("📥 Stop loss order ID: %s", stopOrderId);
-
-            position.stopLossOrderId.set(stopOrderId);
-
-            // Place take profit
-            log("📤 Placing TAKE PROFIT order: %s @ %.2f", decision.isLong ? "SELL" : "BUY", takeProfitPriceActual);
-            String targetOrderId = orderExecutor.placeTakeProfit(
-                stopSide,  // Same side as stop (opposite of entry)
-                takeProfitPriceActual,  // Actual price
-                positionSize
-            );
-            log("📥 Take profit order ID: %s", targetOrderId);
-
-            position.takeProfitOrderId.set(targetOrderId);
-
-            // Validate all orders were placed
-            if (entryOrderId == null || stopOrderId == null || targetOrderId == null) {
-                log("❌ ORDER PLACEMENT FAILED - one or more orders returned null!");
-                log("   Entry: %s, SL: %s, TP: %s", entryOrderId, stopOrderId, targetOrderId);
-                log("   Marker will NOT be placed, position NOT tracked");
-                fileLog("❌ ORDER PLACEMENT FAILED - Entry: " + entryOrderId + ", SL: " + stopOrderId + ", TP: " + targetOrderId);
+            if (entryOrderId == null) {
+                log("❌ BRACKET ORDER FAILED!");
+                fileLog("❌ BRACKET ORDER FAILED!");
                 return null;
             }
 
-            fileLog("✅ ALL ORDERS PLACED - Entry: " + entryOrderId + ", SL: " + stopOrderId + ", TP: " + targetOrderId);
+            log("📥 Bracket order ID: %s (Bookmap manages SL/TP)", entryOrderId);
+            fileLog("✅ BRACKET ORDER PLACED: " + entryOrderId);
+
+            position.entryOrderId.set(entryOrderId);
+            // SL/TP order IDs are managed by Bookmap, not tracked separately
+            position.stopLossOrderId.set(entryOrderId + "-SL");  // Placeholder for tracking
+            position.takeProfitOrderId.set(entryOrderId + "-TP");
 
             // Track position
             activePositions.put(positionId, position);
             log("✅ Position tracked: %s", positionId.substring(0, 8));
 
-            // Place AI entry marker on chart (with SL/TP for line drawing)
+            // Place AI entry marker on chart
             log("📍 Calling markerCallback.onEntryMarker...");
             fileLog("📍 markerCallback is: " + (markerCallback != null ? "NOT NULL" : "NULL"));
             if (markerCallback != null) {
