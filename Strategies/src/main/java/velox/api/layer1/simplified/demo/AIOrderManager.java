@@ -319,8 +319,18 @@ public class AIOrderManager {
             }
 
             // Check break-even trigger
+            // Note: For bracket orders, skip internal break-even since Bookmap manages SL/TP
             if (breakEvenEnabled && position.shouldTriggerBreakEven(currentPrice)) {
-                moveStopToBreakEven(position);
+                String stopOrderId = position.stopLossOrderId.get();
+                boolean isBracketOrder = stopOrderId != null && stopOrderId.endsWith("-SL");
+                if (isBracketOrder) {
+                    // Skip break-even for bracket orders - Bookmap manages the order
+                    // Just mark it as moved so we don't keep checking
+                    position.breakEvenMoved.set(true);
+                    fileLog("🟡 Break-even skipped for bracket order (Bookmap manages SL/TP)");
+                } else {
+                    moveStopToBreakEven(position);
+                }
             }
 
             // Check trailing stop
