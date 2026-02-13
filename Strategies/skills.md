@@ -258,6 +258,37 @@ source .env && curl -X PUT \
 
 ---
 
+## Debugging & Log Files
+
+**Important Log Locations:**
+- `~/ai-execution.log` - AI order execution debug log (executeEntry calls, order success/fail)
+- `~/sltp-test.log` - SL/TP line drawing test log
+- `~/Library/Application Support/Bookmap/Logs/` - Bookmap system logs
+  - `log_YYYYMMDD_HHMMSS_PID-common-01.txt` - General Bookmap logs
+  - `log_YYYYMMDD_HHMMSS_PID-trading.txt` - Trading-specific logs
+
+**How to Check AI Execution Logs:**
+```bash
+# Check AI execution log
+cat ~/ai-execution.log
+
+# Check most recent Bookmap log
+ls -lt ~/Library/Application\ Support/Bookmap/Logs/*.txt | head -1 | xargs tail -100
+
+# Check for order-related messages in Bookmap logs
+grep -i "order" ~/Library/Application\ Support/Bookmap/Logs/log_*.txt | tail -50
+```
+
+**Key Log Messages to Look For:**
+- `🔥 executeEntry CALLED` - AI decided to take a trade
+- `✅ ALL ORDERS PLACED` - Orders were sent successfully
+- `❌ ORDER PLACEMENT FAILED` - One or more orders failed
+- `📝 placeEntry` - Entry order being placed
+- `✅ ENTRY ORDER SENT` - Order sent to Bookmap API
+- `❌ ENTRY ORDER ERROR` - Error placing order
+
+---
+
 ## Version History
 
 - **v1.0** (2025-02-11) - Initial BookmapOrderExecutor implementation

@@ -48,12 +48,15 @@ public class BookmapOrderExecutor implements OrderExecutor {
     }
 
     @Override
-    public String placeEntry(OrderType type, OrderSide side, int price, int quantity) {
+    public String placeEntry(OrderType type, OrderSide side, double price, int quantity) {
         try {
             String orderId = generateOrderId();
             log("📝 PLACING ENTRY ORDER:");
             log("   Order ID: %s", orderId);
-            log("   Type: %s, Side: %s, Qty: %d, Price: %d", type, side, quantity, price);
+            log("   Type: %s, Side: %s, Qty: %d, Price: %.2f", type, side, quantity, price);
+
+            // FILE LOG for debugging
+            fileLog("📝 placeEntry: " + orderId + " " + type + " " + side + " " + quantity + " @ " + price);
 
             boolean isBuy = side == OrderSide.BUY;
             double limitPrice;
@@ -105,22 +108,91 @@ public class BookmapOrderExecutor implements OrderExecutor {
             orderCallbacks.put(orderId, callback);
 
             log("   ✅ Order sent to Bookmap API");
+            fileLog("✅ ENTRY ORDER SENT: " + orderId);
             return orderId;
 
         } catch (Exception e) {
             log("   ❌ ERROR placing entry order: %s", e.getMessage());
+            fileLog("❌ ENTRY ORDER ERROR: " + e.getMessage());
             e.printStackTrace();
             return null;
         }
     }
 
     @Override
-    public String placeStopLoss(OrderSide side, int stopPrice, int quantity) {
+    public String placeBracketOrder(OrderType type, OrderSide side, double price, int quantity,
+                                    double stopLossOffset, double takeProfitOffset) {
+        try {
+            String orderId = generateOrderId();
+            log("📝 PLACING BRACKET ORDER (Native SL/TP):");
+            log("   Order ID: %s", orderId);
+            log("   Type: %s, Side: %s, Qty: %d, Price: %.2f", type, side, quantity, price);
+            log("   SL Offset: %.2f, TP Offset: %.2f", stopLossOffset, takeProfitOffset);
+
+            fileLog("📝 placeBracketOrder: " + orderId + " " + type + " " + side + " " + quantity + " @ " + price +
+                    " SL=" + stopLossOffset + " TP=" + takeProfitOffset);
+
+            boolean isBuy = side == OrderSide.BUY;
+            double limitPrice;
+            double stopPrice;
+
+            // Convert OrderType to Bookmap order parameters
+            switch (type) {
+                case LIMIT:
+                    limitPrice = price;
+                    stopPrice = Double.NaN;
+                    break;
+                case MARKET:
+                    limitPrice = Double.NaN;
+                    stopPrice = Double.NaN;
+                    break;
+                default:
+                    limitPrice = Double.NaN;
+                    stopPrice = Double.NaN;
+            }
+
+            // Create bracket order with native SL/TP offsets
+            // Note: SL/TP offsets are in TICKS (int), not price units
+            SimpleOrderSendParameters orderParams = new SimpleOrderSendParameters(
+                alias,                    // alias (instrument)
+                isBuy,                    // isBuy
+                quantity,                  // size
+                OrderDuration.GTC,         // duration - Good Till Cancel
+                orderId,                   // user-defined order ID
+                limitPrice,                // limit price
+                stopPrice,                 // stop price
+                (int) takeProfitOffset,    // take profit offset (in ticks!)
+                (int) stopLossOffset,      // stop loss offset (in ticks!)
+                0,                         // trailing stop offset
+                0,                         // trailing step
+                false                      // reduce only flag
+            );
+
+            api.sendOrder(orderParams);
+
+            // Store callback for async confirmation
+            OrderCallback callback = new OrderCallback(orderId, type, side, quantity, price);
+            orderCallbacks.put(orderId, callback);
+
+            log("   ✅ Bracket order sent to Bookmap API (native SL/TP)");
+            fileLog("✅ BRACKET ORDER SENT: " + orderId + " with native SL=" + stopLossOffset + " TP=" + takeProfitOffset);
+            return orderId;
+
+        } catch (Exception e) {
+            log("   ❌ ERROR placing bracket order: %s", e.getMessage());
+            fileLog("❌ BRACKET ORDER ERROR: " + e.getMessage());
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    @Override
+    public String placeStopLoss(OrderSide side, double stopPrice, int quantity) {
         try {
             String orderId = generateOrderId();
             log("🛑 PLACING STOP LOSS:");
             log("   Order ID: %s", orderId);
-            log("   Side: %s, Stop Price: %d, Qty: %d", side, stopPrice, quantity);
+            log("   Side: %s, Stop Price: %.2f, Qty: %d", side, stopPrice, quantity);
 
             // Stop loss is a stop market order
             // side = SELL means we want to SELL when price hits stop (for LONG positions)
@@ -159,12 +231,12 @@ public class BookmapOrderExecutor implements OrderExecutor {
     }
 
     @Override
-    public String placeTakeProfit(OrderSide side, int targetPrice, int quantity) {
+    public String placeTakeProfit(OrderSide side, double targetPrice, int quantity) {
         try {
             String orderId = generateOrderId();
             log("💎 PLACING TAKE PROFIT:");
             log("   Order ID: %s", orderId);
-            log("   Side: %s, Target Price: %d, Qty: %d", side, targetPrice, quantity);
+            log("   Side: %s, Target Price: %.2f, Qty: %d", side, targetPrice, quantity);
 
             // Take profit is a limit order at target price
             // side = SELL means we want to SELL at target (for LONG positions)
@@ -203,11 +275,18 @@ public class BookmapOrderExecutor implements OrderExecutor {
     }
 
     @Override
-    public String modifyStopLoss(String orderId, int newStopPrice, int quantity) {
+    public String modifyStopLoss(String orderId, double newStopPrice, int quantity) {
         try {
             log("🔄 MODIFYING STOP LOSS:");
             log("   Original Order: %s", orderId);
-            log("   New Stop Price: %d, Qty: %d", newStopPrice, quantity);
+            log("   New Stop Price: %.2f, Qty: %d", newStopPrice, quantity);
+
+            // Check if order ID is valid
+            if (orderId == null || orderId.isEmpty()) {
+                log("   ❌ ERROR: orderId is null or empty");
+                fileLog("❌ modifyStopLoss: orderId is null or empty");
+                return null;
+            }
 
             // Use OrderMoveParameters to change the price
             OrderMoveParameters moveParams = new OrderMoveParameters(
@@ -216,24 +295,27 @@ public class BookmapOrderExecutor implements OrderExecutor {
                 Double.NaN          // new limit price (NaN if not a limit order)
             );
 
+            fileLog("🔄 modifyStopLoss: calling api.updateOrder with orderId=" + orderId);
             api.updateOrder(moveParams);
 
             log("   ✅ Stop loss modified");
+            fileLog("✅ modifyStopLoss: success for " + orderId);
             return orderId;
 
         } catch (Exception e) {
             log("   ❌ ERROR modifying stop loss: %s", e.getMessage());
+            fileLog("❌ modifyStopLoss ERROR: " + e.getMessage() + " for orderId=" + orderId);
             e.printStackTrace();
             return null;
         }
     }
 
     @Override
-    public String modifyTakeProfit(String orderId, int newTargetPrice, int quantity) {
+    public String modifyTakeProfit(String orderId, double newTargetPrice, int quantity) {
         try {
             log("🔄 MODIFYING TAKE PROFIT:");
             log("   Original Order: %s", orderId);
-            log("   New Target Price: %d, Qty: %d", newTargetPrice, quantity);
+            log("   New Target Price: %.2f, Qty: %d", newTargetPrice, quantity);
 
             // Use OrderMoveParameters to change the price
             OrderMoveParameters moveParams = new OrderMoveParameters(
@@ -342,6 +424,19 @@ public class BookmapOrderExecutor implements OrderExecutor {
         }
     }
 
+    /**
+     * File log for debugging
+     */
+    private void fileLog(String message) {
+        try (java.io.PrintWriter fw = new java.io.PrintWriter(
+                new java.io.FileWriter(System.getProperty("user.home") + "/ai-execution.log", true))) {
+            fw.println(new java.util.Date() + " " + message);
+            fw.flush();
+        } catch (Exception e) {
+            // Ignore
+        }
+    }
+
     // ============================================================================
     // Inner Classes
     // ============================================================================
@@ -354,10 +449,10 @@ public class BookmapOrderExecutor implements OrderExecutor {
         final OrderType type;
         final OrderSide side;
         final int quantity;
-        final int price;
+        final double price;
         boolean filled = false;
 
-        OrderCallback(String orderId, OrderType type, OrderSide side, int quantity, int price) {
+        OrderCallback(String orderId, OrderType type, OrderSide side, int quantity, double price) {
             this.orderId = orderId;
             this.type = type;
             this.side = side;

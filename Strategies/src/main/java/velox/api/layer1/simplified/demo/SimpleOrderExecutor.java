@@ -32,11 +32,11 @@ public class SimpleOrderExecutor implements OrderExecutor {
     }
 
     @Override
-    public String placeEntry(OrderType type, OrderSide side, int price, int quantity) {
+    public String placeEntry(OrderType type, OrderSide side, double price, int quantity) {
         String orderId = generateOrderId();
         log("📝 ENTRY ORDER PLACED:");
         log("   Order ID: %s", orderId);
-        log("   %s %s %d contract(s) @ %d", type, side, quantity, price);
+        log("   %s %s %d contract(s) @ %.2f", type, side, quantity, price);
 
         // Simulate order fill (in production, would wait for actual fill)
         simulateFill(orderId, side, quantity);
@@ -45,40 +45,55 @@ public class SimpleOrderExecutor implements OrderExecutor {
     }
 
     @Override
-    public String placeStopLoss(OrderSide side, int stopPrice, int quantity) {
+    public String placeBracketOrder(OrderType type, OrderSide side, double price, int quantity,
+                                    double stopLossOffset, double takeProfitOffset) {
+        String orderId = generateOrderId();
+        log("📝 BRACKET ORDER PLACED:");
+        log("   Order ID: %s", orderId);
+        log("   %s %s %d contract(s) @ %.2f", type, side, quantity, price);
+        log("   SL Offset: %.2f, TP Offset: %.2f", stopLossOffset, takeProfitOffset);
+
+        // Simulate order fill
+        simulateFill(orderId, side, quantity);
+
+        return orderId;
+    }
+
+    @Override
+    public String placeStopLoss(OrderSide side, double stopPrice, int quantity) {
         String orderId = generateOrderId();
         log("🛑 STOP LOSS PLACED:");
         log("   Order ID: %s", orderId);
-        log("   %s %d @ %d (%d contract(s))", side, stopPrice, stopPrice, quantity);
+        log("   %s %.2f (%d contract(s))", side, stopPrice, quantity);
         return orderId;
     }
 
     @Override
-    public String placeTakeProfit(OrderSide side, int targetPrice, int quantity) {
+    public String placeTakeProfit(OrderSide side, double targetPrice, int quantity) {
         String orderId = generateOrderId();
         log("💎 TAKE PROFIT PLACED:");
         log("   Order ID: %s", orderId);
-        log("   %s %d @ %d (%d contract(s))", side, targetPrice, targetPrice, quantity);
+        log("   %s %.2f (%d contract(s))", side, targetPrice, quantity);
         return orderId;
     }
 
     @Override
-    public String modifyStopLoss(String orderId, int newStopPrice, int quantity) {
+    public String modifyStopLoss(String orderId, double newStopPrice, int quantity) {
         String newOrderId = generateOrderId();
         log("🔄 STOP LOSS MODIFIED:");
         log("   Old Order: %s", orderId);
         log("   New Order: %s", newOrderId);
-        log("   New Stop: %d (%d contract(s))", newStopPrice, quantity);
+        log("   New Stop: %.2f (%d contract(s))", newStopPrice, quantity);
         return newOrderId;
     }
 
     @Override
-    public String modifyTakeProfit(String orderId, int newTargetPrice, int quantity) {
+    public String modifyTakeProfit(String orderId, double newTargetPrice, int quantity) {
         String newOrderId = generateOrderId();
         log("🔄 TAKE PROFIT MODIFIED:");
         log("   Old Order: %s", orderId);
         log("   New Order: %s", newOrderId);
-        log("   New Target: %d (%d contract(s))", newTargetPrice, quantity);
+        log("   New Target: %.2f (%d contract(s))", newTargetPrice, quantity);
         return newOrderId;
     }
 

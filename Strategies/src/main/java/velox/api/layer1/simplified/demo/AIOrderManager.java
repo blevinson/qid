@@ -23,6 +23,7 @@ public class AIOrderManager {
     public boolean trailingStopEnabled = false;  // Disabled by default
     public int breakEvenTicks = 3;
     public int trailAmountTicks = 2;
+    private double pips = 1.0;  // Tick size - set from signal during executeEntry
 
     // Risk limits
     public int maxPositions = 1;
@@ -31,7 +32,7 @@ public class AIOrderManager {
     // Signal staleness protection (configurable)
     // Note: Threshold must account for AI response time (can be 60+ seconds with retries)
     public long maxSignalAgeMs = 180_000;  // 3 minutes - allows for AI response delays
-    public int maxPriceSlippageTicks = 10; // Skip if price moved > 10 ticks (0 = disabled)
+    public int maxPriceSlippageTicks = 20; // Skip if price moved > 20 ticks (reasonable for ES)
     private Supplier<Integer> currentPriceSupplier;  // Supplies current price in tick units
 
     // Statistics
@@ -39,10 +40,29 @@ public class AIOrderManager {
     private final AtomicInteger winningTrades = new AtomicInteger(0);
     private double dailyPnl = 0.0;
 
+    // Unique instance ID for debugging
+    private final String instanceId = UUID.randomUUID().toString().substring(0, 8);
+
     public AIOrderManager(OrderExecutor orderExecutor, AIIntegrationLayer.AIStrategyLogger logger, AIMarkerCallback markerCallback) {
         this.orderExecutor = orderExecutor;
         this.logger = logger;
         this.markerCallback = markerCallback;
+        // Log if callback is null at creation time
+        fileLog("🏗️ AIOrderManager[" + instanceId + "] constructor: markerCallback=" + (markerCallback != null ? "NOT NULL" : "NULL") + ", orderExecutor=" + (orderExecutor != null ? "NOT NULL" : "NULL") + ", logger=" + (logger != null ? "NOT NULL" : "NULL"));
+    }
+
+    /**
+     * Check if marker callback is set (for debugging)
+     */
+    public boolean hasMarkerCallback() {
+        return markerCallback != null;
+    }
+
+    /**
+     * Get instance ID (for debugging)
+     */
+    public String getInstanceId() {
+        return instanceId;
     }
 
     /**
@@ -81,6 +101,10 @@ public class AIOrderManager {
         if (maxPriceSlippageTicks > 0 && currentPriceSupplier != null && signal.pips > 0) {
             int currentPrice = currentPriceSupplier.get();
 
+            // Debug: Log price values to understand unit mismatch
+            fileLog("🔍 STALENESS DEBUG: signalPrice=" + signal.price + " ticks, currentPrice=" + currentPrice + " ticks, pips=" + signal.pips);
+            fileLog("🔍 STALENESS DEBUG: signal.actualPrice=" + (signal.price * signal.pips) + ", current.actualPrice=" + (currentPrice * signal.pips));
+
             // Only check slippage if we have a valid current price (> 0)
             if (currentPrice > 0) {
                 int signalPrice = signal.price;
@@ -105,31 +129,40 @@ public class AIOrderManager {
      * Execute AI decision to TAKE a signal
      */
     public String executeEntry(AIIntegrationLayer.AIDecision decision, SignalData signal) {
-        log("🔥 executeEntry CALLED: isLong=%s, price=%d, SL=%d, TP=%d".formatted(
-            decision.isLong, signal.price, decision.stopLoss, decision.takeProfit));
+        // FILE LOG for debugging - include instance ID
+        fileLog("🔥 executeEntry[" + instanceId + "] CALLED: isLong=%s, price=%d, SL=%d, TP=%d, hasCallback=%s".formatted(
+            decision.isLong, signal.price, decision.stopLoss, decision.takeProfit, markerCallback != null));
 
+        log("🔥 executeEntry[" + instanceId + "] CALLED: isLong=%s, price=%d, SL=%d, TP=%d".formatted(
+            decision.isLong, signal.price, decision.stopLoss, decision.takeProfit));
         try {
             // Check signal staleness
             String stalenessReason = checkSignalStaleness(signal);
             if (stalenessReason != null) {
                 log("🚫 STALE SIGNAL REJECTED: %s", stalenessReason);
+                fileLog("🚫 STALE SIGNAL REJECTED: " + stalenessReason);
                 return null;
             }
             log("✅ Staleness check PASSED");
+            fileLog("✅ Staleness check PASSED");
 
             // Check if we can add a position
             if (activePositions.size() >= maxPositions) {
                 log("⚠️ MAX POSITIONS REACHED (%d), cannot take signal", maxPositions);
+                fileLog("⚠️ MAX POSITIONS REACHED: " + maxPositions);
                 return null;
             }
             log("✅ Max positions check PASSED (current: %d)", activePositions.size());
+            fileLog("✅ Max positions check PASSED (current: " + activePositions.size() + ")");
 
             // Check daily loss limit
             if (dailyPnl <= -maxDailyLoss) {
                 log("⚠️ DAILY LOSS LIMIT REACHED ($%.2f), stopping trading", dailyPnl);
+                fileLog("⚠️ DAILY LOSS LIMIT REACHED: $" + dailyPnl);
                 return null;
             }
             log("✅ Daily loss check PASSED (current PnL: $%.2f)", dailyPnl);
+            fileLog("✅ Daily loss check PASSED (current PnL: $" + dailyPnl + ")");
 
             // Calculate position size based on risk
             int positionSize = calculatePositionSize(signal);
@@ -162,14 +195,25 @@ public class AIOrderManager {
             );
 
             // Place entry order
-            log("📤 Placing ENTRY order: %s %d @ %d", decision.isLong ? "BUY" : "SELL", positionSize, signal.price);
+            // Convert tick prices to actual prices for Bookmap API
+            this.pips = signal.pips;  // Store for later use in modify/stop methods
+            double entryPriceActual = signal.price * pips;
+            double stopLossPriceActual = decision.stopLoss * pips;
+            double takeProfitPriceActual = decision.takeProfit * pips;
+
+            log("📊 Price conversion: pips=%.4f", pips);
+            log("📊 Entry: %d ticks → %.2f actual", signal.price, entryPriceActual);
+            log("📊 SL: %d ticks → %.2f actual", decision.stopLoss, stopLossPriceActual);
+            log("📊 TP: %d ticks → %.2f actual", decision.takeProfit, takeProfitPriceActual);
+
+            log("📤 Placing ENTRY order: %s %d @ %.2f", decision.isLong ? "BUY" : "SELL", positionSize, entryPriceActual);
             OrderExecutor.OrderSide entrySide = decision.isLong ?
                 OrderExecutor.OrderSide.BUY : OrderExecutor.OrderSide.SELL;
 
             String entryOrderId = orderExecutor.placeEntry(
                 OrderExecutor.OrderType.MARKET,  // Use market orders for immediate execution
                 entrySide,
-                signal.price,  // Price ignored for market orders
+                entryPriceActual,  // Actual price (ticks * pips)
                 positionSize
             );
             log("📥 Entry order ID: %s", entryOrderId);
@@ -177,13 +221,13 @@ public class AIOrderManager {
             position.entryOrderId.set(entryOrderId);
 
             // Place stop loss
-            log("📤 Placing STOP LOSS order: %s @ %d", decision.isLong ? "SELL" : "BUY", decision.stopLoss);
+            log("📤 Placing STOP LOSS order: %s @ %.2f", decision.isLong ? "SELL" : "BUY", stopLossPriceActual);
             OrderExecutor.OrderSide stopSide = decision.isLong ?
                 OrderExecutor.OrderSide.SELL : OrderExecutor.OrderSide.BUY;
 
             String stopOrderId = orderExecutor.placeStopLoss(
                 stopSide,
-                decision.stopLoss,
+                stopLossPriceActual,  // Actual price
                 positionSize
             );
             log("📥 Stop loss order ID: %s", stopOrderId);
@@ -191,15 +235,26 @@ public class AIOrderManager {
             position.stopLossOrderId.set(stopOrderId);
 
             // Place take profit
-            log("📤 Placing TAKE PROFIT order: %s @ %d", decision.isLong ? "SELL" : "BUY", decision.takeProfit);
+            log("📤 Placing TAKE PROFIT order: %s @ %.2f", decision.isLong ? "SELL" : "BUY", takeProfitPriceActual);
             String targetOrderId = orderExecutor.placeTakeProfit(
                 stopSide,  // Same side as stop (opposite of entry)
-                decision.takeProfit,
+                takeProfitPriceActual,  // Actual price
                 positionSize
             );
             log("📥 Take profit order ID: %s", targetOrderId);
 
             position.takeProfitOrderId.set(targetOrderId);
+
+            // Validate all orders were placed
+            if (entryOrderId == null || stopOrderId == null || targetOrderId == null) {
+                log("❌ ORDER PLACEMENT FAILED - one or more orders returned null!");
+                log("   Entry: %s, SL: %s, TP: %s", entryOrderId, stopOrderId, targetOrderId);
+                log("   Marker will NOT be placed, position NOT tracked");
+                fileLog("❌ ORDER PLACEMENT FAILED - Entry: " + entryOrderId + ", SL: " + stopOrderId + ", TP: " + targetOrderId);
+                return null;
+            }
+
+            fileLog("✅ ALL ORDERS PLACED - Entry: " + entryOrderId + ", SL: " + stopOrderId + ", TP: " + targetOrderId);
 
             // Track position
             activePositions.put(positionId, position);
@@ -207,11 +262,14 @@ public class AIOrderManager {
 
             // Place AI entry marker on chart (with SL/TP for line drawing)
             log("📍 Calling markerCallback.onEntryMarker...");
+            fileLog("📍 markerCallback is: " + (markerCallback != null ? "NOT NULL" : "NULL"));
             if (markerCallback != null) {
                 markerCallback.onEntryMarker(decision.isLong, signal.price, signal.score, decision.reasoning, decision.stopLoss, decision.takeProfit);
                 log("✅ markerCallback.onEntryMarker completed");
+                fileLog("✅ markerCallback.onEntryMarker completed");
             } else {
                 log("⚠️ markerCallback is NULL!");
+                fileLog("⚠️ markerCallback is NULL!");
             }
 
             log("🤖 AI ENTRY ORDER PLACED:");
@@ -285,29 +343,40 @@ public class AIOrderManager {
      */
     private void moveStopToBreakEven(ActivePosition position) {
         try {
-            int newStopPrice = position.breakEvenStopPrice;
+            // Check if we have a valid stop loss order ID
+            String stopOrderId = position.stopLossOrderId.get();
+            if (stopOrderId == null || stopOrderId.isEmpty()) {
+                log("⚠️ Cannot move to break-even: no stop loss order ID");
+                fileLog("⚠️ moveStopToBreakEven: no stop loss order ID for position " + position.id);
+                return;
+            }
+
+            int newStopPriceTicks = position.breakEvenStopPrice;
+            double newStopPriceActual = newStopPriceTicks * pips;  // Convert to actual price
+
+            fileLog("🟡 moveStopToBreakEven: orderId=" + stopOrderId + ", newStopPrice=" + newStopPriceActual);
 
             // Modify stop loss order
             String newStopOrderId = orderExecutor.modifyStopLoss(
-                position.stopLossOrderId.get(),
-                newStopPrice,
+                stopOrderId,
+                newStopPriceActual,  // Actual price
                 position.quantity
             );
 
             if (newStopOrderId != null) {
                 position.stopLossOrderId.set(newStopOrderId);
-                position.stopLossPrice.set(newStopPrice);
+                position.stopLossPrice.set(newStopPriceTicks);  // Keep tick value for internal tracking
                 position.breakEvenMoved.set(true);
 
                 // Place break-even marker on chart
                 if (markerCallback != null) {
-                    markerCallback.onBreakEvenMarker(newStopPrice, position.breakEvenTriggerPrice);
+                    markerCallback.onBreakEvenMarker(newStopPriceTicks, position.breakEvenTriggerPrice);
                 }
 
                 log("🟡 BREAK-EVEN TRIGGERED:");
                 log("   Position: %s", position.id.substring(0, 8));
-                log("   Stop moved: %d → %d",
-                    position.breakEvenTriggerPrice, newStopPrice);
+                log("   Stop moved: %d → %d (actual: %.2f)",
+                    position.breakEvenTriggerPrice, newStopPriceTicks, newStopPriceActual);
                 log("   Now risking only 1 tick");
             }
         } catch (Exception e) {
@@ -320,27 +389,28 @@ public class AIOrderManager {
      */
     private void trailStop(ActivePosition position, int currentPrice) {
         try {
-            int newStopPrice = position.calculateTrailStop(currentPrice);
+            int newStopPriceTicks = position.calculateTrailStop(currentPrice);
+            double newStopPriceActual = newStopPriceTicks * pips;  // Convert to actual price
 
             // Modify stop loss order
             String newStopOrderId = orderExecutor.modifyStopLoss(
                 position.stopLossOrderId.get(),
-                newStopPrice,
+                newStopPriceActual,  // Actual price
                 position.quantity
             );
 
             if (newStopOrderId != null) {
                 int oldStop = position.stopLossPrice.get();
                 position.stopLossOrderId.set(newStopOrderId);
-                position.stopLossPrice.set(newStopPrice);
+                position.stopLossPrice.set(newStopPriceTicks);  // Keep tick value for internal tracking
 
                 double lockedProfit = position.isLong ?
-                    (currentPrice - newStopPrice) * 12.5 :
-                    (newStopPrice - currentPrice) * 12.5;
+                    (currentPrice - newStopPriceTicks) * 12.5 :
+                    (newStopPriceTicks - currentPrice) * 12.5;
 
                 log("📍 TRAILING STOP:");
                 log("   Position: %s", position.id.substring(0, 8));
-                log("   Stop trailed: %d → %d", oldStop, newStopPrice);
+                log("   Stop trailed: %d → %d (actual: %.2f)", oldStop, newStopPriceTicks, newStopPriceActual);
                 log("   Locked in profit: $%.2f", lockedProfit);
             }
         } catch (Exception e) {
@@ -535,6 +605,19 @@ public class AIOrderManager {
     private void log(String message, Object... args) {
         if (logger != null) {
             logger.log(String.format(message, args));
+        }
+    }
+
+    /**
+     * File log for debugging
+     */
+    private void fileLog(String message) {
+        try (java.io.PrintWriter fw = new java.io.PrintWriter(
+                new java.io.FileWriter(System.getProperty("user.home") + "/ai-execution.log", true))) {
+            fw.println(new java.util.Date() + " " + message);
+            fw.flush();
+        } catch (Exception e) {
+            // Ignore
         }
     }
 

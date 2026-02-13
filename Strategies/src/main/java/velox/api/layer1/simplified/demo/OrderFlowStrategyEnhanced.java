@@ -202,6 +202,7 @@ public class OrderFlowStrategyEnhanced implements
         public String aiAuthToken = "8a4f5b950ea142c98746d5a320666414.Yf1MQwtkwfuDbyHw";
         public Integer replayStartHour = 9;   // Hour (24h) when replay data starts (9 = 9:00 AM)
         public Integer replayStartMinute = 30; // Minute when replay data starts (30 = :30)
+        public Boolean devMode = false;  // Dev mode for permissive AI testing
     }
 
     private Settings settings;
@@ -358,6 +359,7 @@ public class OrderFlowStrategyEnhanced implements
 
     // Market state tracking
     private double lastKnownPrice = 0;
+    private long lastPriceDebugLog = 0;  // For throttling price debug logs
     private double priceVolatility = 0;
     private AtomicLong totalVolume = new AtomicLong(0);
 
@@ -752,34 +754,11 @@ public class OrderFlowStrategyEnhanced implements
 
     /**
      * Draw horizontal lines at active SL/TP levels
+     * DISABLED - Using Bookmap's native SL/TP instead
      */
     private long lastLevelLogTime = 0;
     private void drawAITradingLevels() {
-        boolean hasStop = activeStopLossPrice != null && aiStopLossLine != null;
-        boolean hasTp = activeTakeProfitPrice != null && aiTakeProfitLine != null;
-
-        // Log every 5 seconds for debugging
-        long now = System.currentTimeMillis();
-        if (now - lastLevelLogTime > 5000) {
-            lastLevelLogTime = now;
-            log(String.format("📊 drawAITradingLevels: hasStop=%s hasTp=%s SL=%s TP=%s",
-                hasStop, hasTp, activeStopLossPrice, activeTakeProfitPrice));
-            if (aiStopLossLine == null) log("⚠️ aiStopLossLine is NULL!");
-            if (aiTakeProfitLine == null) log("⚠️ aiTakeProfitLine is NULL!");
-        }
-
-        try {
-            if (hasStop) {
-                aiStopLossLine.addPoint(activeStopLossPrice);
-            }
-            if (hasTp) {
-                aiTakeProfitLine.addPoint(activeTakeProfitPrice);
-            }
-        } catch (Exception e) {
-            if (now - lastLevelLogTime > 5000) {
-                log("❌ Error drawing levels: " + e.getMessage());
-            }
-        }
+        // DISABLED - was causing issues, use Bookmap native SL/TP instead
     }
 
     // ========== CUSTOM PANELS ==========
@@ -957,13 +936,19 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(new JLabel("Dev Mode:"), gbc);
         gbc.gridx = 1;
         JCheckBox devModeCheckBox = new JCheckBox();
-        devModeCheckBox.setSelected(devMode);
+        devModeCheckBox.setSelected(settings.devMode != null ? settings.devMode : devMode);
         devModeCheckBox.setToolTipText("In Dev Mode, AI is more permissive for testing execution flow");
         devModeCheckBox.addActionListener(e -> {
             devMode = devModeCheckBox.isSelected();
+            settings.devMode = devMode;
             log("🔧 Dev Mode: " + (devMode ? "ENABLED (permissive AI)" : "DISABLED (normal AI)"));
+            saveSettings();
         });
         settingsPanel.add(devModeCheckBox, gbc);
+        // Sync local var with saved setting
+        if (settings.devMode != null) {
+            devMode = settings.devMode;
+        }
 
         gbc.gridx = 0; gbc.gridy = 21;
         settingsPanel.add(new JLabel("Confluence Threshold:"), gbc);
@@ -1068,8 +1053,31 @@ public class OrderFlowStrategyEnhanced implements
         applyButton.addActionListener(e -> applySettings());
         settingsPanel.add(applyButton, gbc);
 
+        // ========== TEST SL/TP LINES BUTTON ==========
+        gbc.gridx = 0; gbc.gridy = 34; gbc.gridwidth = 2;
+        gbc.anchor = GridBagConstraints.CENTER;
+        JButton testLinesButton = new JButton("TEST SL/TP LINES");
+        testLinesButton.setToolTipText("Click to test SL/TP line drawing independently of AI/signals");
+        testLinesButton.setOpaque(true);
+        testLinesButton.setEnabled(true);
+        testLinesButton.addActionListener(e -> {
+            System.out.println("=== TEST BUTTON CLICKED ===");
+            testSlTpLines();
+        });
+        settingsPanel.add(testLinesButton, gbc);
+
+        // Clear lines button
+        gbc.gridy = 35;
+        JButton clearLinesButton = new JButton("Clear Lines");
+        clearLinesButton.setToolTipText("Clear the test SL/TP lines");
+        clearLinesButton.setOpaque(true);
+        clearLinesButton.setEnabled(true);
+        clearLinesButton.addActionListener(e -> clearSlTpLines());
+        settingsPanel.add(clearLinesButton, gbc);
+        gbc.anchor = GridBagConstraints.WEST;  // Reset anchor
+
         // Version label (bottom right)
-        gbc.gridx = 1; gbc.gridy = 34; gbc.gridwidth = 1;
+        gbc.gridx = 1; gbc.gridy = 36; gbc.gridwidth = 1;
         gbc.anchor = GridBagConstraints.EAST;
         gbc.weightx = 1.0;
         JLabel versionLabel = new JLabel("Qid v2.1 - AI Trading with Memory");
@@ -2273,12 +2281,19 @@ public class OrderFlowStrategyEnhanced implements
             aiIntegration.setSessionPlan(sessionPlan);
 
             // Create AI order manager with logger wrapper and marker callback
+            // Debug: Check if 'this' is null before passing
+            fileLog("🔍 BEFORE AIOrderManager creation: this=" + (this != null ? "NOT NULL" : "NULL"));
+            fileLog("🔍 this implements AIMarkerCallback: " + (this instanceof AIOrderManager.AIMarkerCallback));
+
             aiOrderManager = new AIOrderManager(orderExecutor, new AIIntegrationLayer.AIStrategyLogger() {
                 @Override
                 public void log(String message, Object... args) {
                     OrderFlowStrategyEnhanced.this.log(message);
                 }
             }, this);  // Pass 'this' as the marker callback
+
+            // Debug: Verify aiOrderManager was created with callback
+            fileLog("🔍 AFTER AIOrderManager creation: aiOrderManager=" + (aiOrderManager != null ? "NOT NULL" : "NULL"));
             aiOrderManager.breakEvenEnabled = true;
             aiOrderManager.breakEvenTicks = 3;
             aiOrderManager.maxPositions = maxPosition;
@@ -2565,12 +2580,10 @@ public class OrderFlowStrategyEnhanced implements
     private void setupAIToolsProvider() {
         if (aiToolsProvider == null) return;
 
-        // Price supplier - convert tick price to actual price
+        // Price supplier - return tick units for staleness check (signal.price is in ticks)
         aiToolsProvider.setPriceSupplier(() -> {
-            double actualPrice = lastKnownPrice * pips;
-            log(String.format("🔍 PRICE SUPPLIER: lastKnownPrice=%.0f pips=%.4f actualPrice=%.2f",
-                lastKnownPrice, pips, actualPrice));
-            return actualPrice;
+            // lastKnownPrice is already in tick units - return for staleness comparison
+            return lastKnownPrice;  // Return as double (tick units)
         });
 
         // CVD supplier
@@ -3241,16 +3254,30 @@ public class OrderFlowStrategyEnhanced implements
                             aiStrategist.evaluateSetup(signalData, sessionContext, devMode, new AIInvestmentStrategist.AIStrategistCallback() {
                             @Override
                             public void onDecision(AIInvestmentStrategist.AIDecision decision) {
+                                // UNCONDITIONAL LOG - always log callback entry for debugging
+                                log("🔔 ========== CALLBACK ENTERED ==========");
+                                log("🔔 devMode=%s, decision=%s".formatted(devMode, decision != null ? "NOT NULL" : "NULL"));
+                                debug("CALLBACK ENTERED: onDecision() called");
+                                debug("decision object: %s".formatted(decision != null ? "NOT NULL" : "NULL"));
+
                                 // Handle threshold adjustments from AI
                                 if (decision.thresholdAdjustment != null && decision.thresholdAdjustment.hasAdjustments()) {
                                     applyThresholdAdjustment(decision.thresholdAdjustment);
                                 }
 
                                 // Execute AI decision
-                                log("🔍 AI DECISION DEBUG: shouldTake=%s, plan=%s, confidence=%.0f%%".formatted(
+                                debug("AI DECISION: shouldTake=%s, plan=%s, confidence=%.0f%%".formatted(
                                     decision.shouldTake, decision.plan != null ? "PRESENT" : "NULL", decision.confidence * 100));
 
-                                if (decision.shouldTake && decision.plan != null) {
+                                // CRITICAL CHECK: shouldTake && plan != null
+                                boolean willExecute = decision.shouldTake && decision.plan != null;
+                                // UNCONDITIONAL LOG for debugging
+                                log("🔔 EXECUTION CHECK: shouldTake=%s && plan=%s → willExecute=%s".formatted(
+                                    decision.shouldTake, decision.plan != null, willExecute));
+                                debug("EXECUTION CHECK: shouldTake=%s && plan=%s → willExecute=%s".formatted(
+                                    decision.shouldTake, decision.plan != null, willExecute));
+
+                                if (willExecute) {
                                     log(String.format("✅ AI TAKE: %s (confidence: %.0f%%) - %s",
                                         decision.plan.orderType, decision.confidence * 100, decision.reasoning));
 
@@ -3258,6 +3285,20 @@ public class OrderFlowStrategyEnhanced implements
                                     int stopLossPrice = decision.plan.stopLossPrice;
                                     int takeProfitPrice = decision.plan.takeProfitPrice;
                                     boolean isLong = decision.plan.orderType.contains("BUY");
+
+                                    // DETECT if AI returned actual prices instead of tick units
+                                    // If SL/TP is much smaller than signal price (e.g., 6819 vs 27253),
+                                    // AI probably returned actual prices - convert to tick units
+                                    if (stopLossPrice > 0 && stopLossPrice < signalData.price * 0.5) {
+                                        int originalSl = stopLossPrice;
+                                        stopLossPrice = (int)(stopLossPrice / pips);
+                                        log("⚠️ SL converted from actual price " + originalSl + " to ticks " + stopLossPrice + " (pips=" + pips + ")");
+                                    }
+                                    if (takeProfitPrice > 0 && takeProfitPrice < signalData.price * 0.5) {
+                                        int originalTp = takeProfitPrice;
+                                        takeProfitPrice = (int)(takeProfitPrice / pips);
+                                        log("⚠️ TP converted from actual price " + originalTp + " to ticks " + takeProfitPrice + " (pips=" + pips + ")");
+                                    }
 
                                     // Fallback to signal-based calculation if plan prices are 0
                                     if (stopLossPrice == 0) {
@@ -3317,11 +3358,16 @@ public class OrderFlowStrategyEnhanced implements
                                             );
                                         } else {
                                             // FULL_AUTO - execute immediately
+                                            log("🔔 FULL_AUTO mode - calling executeEntry now!");
                                             // Track entry in session context
                                             if (sessionContext != null) {
                                                 sessionContext.recordEntryAttempt();
                                             }
+                                            log("🔔 aiOrderManager=%s, signalData=%s".formatted(
+                                                aiOrderManager != null ? "NOT NULL" : "NULL",
+                                                signalData != null ? "NOT NULL" : "NULL"));
                                             aiOrderManager.executeEntry(aiDecision, signalData);
+                                            log("🔔 executeEntry() returned");
                                         }
                                     } else {
                                         log(String.format("⏭️ AI SKIP: %s (confidence: %.0f%%)",
@@ -3420,6 +3466,9 @@ public class OrderFlowStrategyEnhanced implements
         signal.price = price;
         signal.pips = pips;
         signal.timestamp = System.currentTimeMillis();
+
+        // Debug: Log signal creation with price info
+        fileLog("📊 createSignalData: price=" + price + " ticks, pips=" + pips + ", lastKnownPrice=" + lastKnownPrice + " ticks");
 
         // Debug: Check if pips is 0
         if (pips == 0) {
@@ -3929,8 +3978,20 @@ public class OrderFlowStrategyEnhanced implements
 
     @Override
     public void onTrade(double price, int size, TradeInfo tradeInfo) {
-        // Update last known price for chat context
-        lastKnownPrice = price;
+        // Update last known price
+        // DEBUGGING: onTrade appears to provide price in TICK UNITS already (not actual price)
+        // Based on logs showing price=27558 which matches MBO order prices in ticks
+        double previousLastKnownPrice = lastKnownPrice;
+
+        // For now, assume onTrade provides tick units directly (don't divide by pips)
+        lastKnownPrice = price;  // Already in tick units
+
+        // Debug: Log price updates periodically (every 1000ms)
+        long now = System.currentTimeMillis();
+        if (now - lastPriceDebugLog > 1000) {
+            fileLog("📊 onTrade: price=" + price + " (assumed ticks), pips=" + pips + ", lastKnownPrice=" + lastKnownPrice + " ticks, actualPrice=" + (price * pips));
+            lastPriceDebugLog = now;
+        }
 
         // ========== UPDATE ALL INDICATORS ==========
 
@@ -4000,19 +4061,31 @@ public class OrderFlowStrategyEnhanced implements
 
     @Override
     public void onBbo(int priceBid, int priceAsk, int sizeBid, int sizeAsk) {
-        // Use mid price for most accurate current price
-        int midPrice = (priceBid + priceAsk) / 2;
+        // DEBUGGING: The BBO parameters appear to be in a different order than expected!
+        // Based on log analysis:
+        //   - param1 (priceBid) = 27567 ✓ valid price
+        //   - param2 (priceAsk) = 2 ✗ looks like SIZE
+        //   - param3 (sizeBid) = 27568 ✗ looks like PRICE
+        //   - param4 (sizeAsk) = 33 ✓ valid size
+        // Actual order seems to be: priceBid, sizeAtBid, priceAsk, sizeAtAsk
+        // So: realPriceAsk = sizeBid, realSizeBid = priceAsk
 
-        // Debug: Log BBO prices to understand units (log every 30 seconds)
+        int realPriceBid = priceBid;
+        int realPriceAsk = sizeBid;  // This is actually the ask price!
+        int realSizeBid = priceAsk;  // This is actually the bid size!
+        int realSizeAsk = sizeAsk;
+
+        int midPrice = (realPriceBid + realPriceAsk) / 2;
+
+        // Debug: Log BBO with corrected interpretation
         long now = System.currentTimeMillis();
-        if (now % 30000 < 500) {
-            log(String.format("📊 BBO DEBUG: bid=%d ask=%d mid=%d pips=%.4f calculated=%.2f",
-                priceBid, priceAsk, midPrice, pips, midPrice * pips));
-            log(String.format("📊 BBO UNITS CHECK: if mid=%d is ticks, actual=%.2f; if mid is actual, this is correct",
-                midPrice, midPrice * pips));
+        if (now - lastPriceDebugLog > 1000) {
+            fileLog("📊 onBbo CORRECTED: bid=" + realPriceBid + " ask=" + realPriceAsk + " mid=" + midPrice + " ticks (bidSize=" + realSizeBid + " askSize=" + realSizeAsk + ")");
+            lastPriceDebugLog = now;
         }
 
-        lastKnownPrice = midPrice;  // Update for AI tools/chat
+        // Update lastKnownPrice with corrected BBO data
+        lastKnownPrice = midPrice;
 
         // Monitor positions on BBO update
         if (aiOrderManager != null) {
@@ -4050,6 +4123,143 @@ public class OrderFlowStrategyEnhanced implements
             logWriter.println(logMsg);
             logWriter.flush();
         }
+    }
+
+    /**
+     * File log for debugging - writes to ~/ai-execution.log
+     */
+    private void fileLog(String message) {
+        try (java.io.PrintWriter fw = new java.io.PrintWriter(
+                new java.io.FileWriter(System.getProperty("user.home") + "/ai-execution.log", true))) {
+            fw.println(new java.util.Date() + " " + message);
+            fw.flush();
+        } catch (Exception e) {
+            // Ignore
+        }
+    }
+
+    /**
+     * Debug log - only logs when devMode is enabled
+     */
+    private void debug(String message) {
+        if (devMode) {
+            log("🔧 " + message);
+        }
+    }
+
+    /**
+     * Debug log with format - only logs when devMode is enabled
+     */
+    private void debug(String format, Object... args) {
+        if (devMode) {
+            log("🔧 " + String.format(format, args));
+        }
+    }
+
+    // ========== TEST SL/TP LINES METHOD ==========
+    /**
+     * Test SL/TP line drawing independently of AI/signals
+     * This helps diagnose line drawing issues
+     */
+    private void testSlTpLines() {
+        // DIRECT FILE LOG - bypass Bookmap log capture issues
+        String testLogFile = System.getProperty("user.home") + "/sltp-test.log";
+        try (java.io.PrintWriter fw = new java.io.PrintWriter(new java.io.FileWriter(testLogFile, true))) {
+            fw.println("=== TEST SL/TP LINES CLICKED at " + new java.util.Date() + " ===");
+            fw.println("lastKnownPrice = " + lastKnownPrice);
+            fw.println("pips = " + pips);
+            fw.flush();
+        } catch (Exception e) {
+            System.err.println("Failed to write test log: " + e.getMessage());
+        }
+
+        log("🧪 ========== TEST SL/TP LINES ==========");
+
+        // Get current price (in tick units) - lastKnownPrice is a primitive double
+        int currentPrice = (int) lastKnownPrice;
+
+        if (currentPrice == 0) {
+            log("❌ TEST FAILED: No current price available. Wait for data.");
+            return;
+        }
+
+        log("🧪 Current price (ticks): " + currentPrice);
+        log("🧪 pips value: " + pips);
+
+        // DIRECT FILE LOG (continued - use testLogFile from above)
+        try (java.io.PrintWriter fw = new java.io.PrintWriter(new java.io.FileWriter(testLogFile, true))) {
+            // Calculate test SL/TP levels (in tick units)
+            int testSl = currentPrice - 30;  // 30 ticks below
+            int testTp = currentPrice + 50;  // 50 ticks above
+
+            fw.println("testSl = " + testSl);
+            fw.println("testTp = " + testTp);
+            fw.println("aiStopLossLine = " + (aiStopLossLine != null ? "NOT NULL" : "NULL"));
+            fw.println("aiTakeProfitLine = " + (aiTakeProfitLine != null ? "NOT NULL" : "NULL"));
+
+            if (aiStopLossLine == null || aiTakeProfitLine == null) {
+                fw.println("FAIL: Line indicators not initialized!");
+                fw.flush();
+                return;
+            }
+
+            // Set active levels (in tick units for internal tracking)
+            activeStopLossPrice = testSl;
+            activeTakeProfitPrice = testTp;
+            fw.println("Set activeStopLossPrice = " + activeStopLossPrice);
+            fw.println("Set activeTakeProfitPrice = " + activeTakeProfitPrice);
+
+            // addPoint expects tick values (same units as onBbo), NOT actual prices
+            fw.println("Calling aiStopLossLine.addPoint(" + testSl + ") x10...");
+            for (int i = 0; i < 10; i++) {
+                aiStopLossLine.addPoint(testSl);
+            }
+            fw.println("SL addPoint succeeded x10");
+
+            fw.println("Calling aiTakeProfitLine.addPoint(" + testTp + ") x10...");
+            for (int i = 0; i < 10; i++) {
+                aiTakeProfitLine.addPoint(testTp);
+            }
+            fw.println("TP addPoint succeeded x10");
+
+            // ALSO try using addIcon on a marker indicator to verify coordinates work
+            fw.println("Trying addIcon on aiLongEntryMarker at SL price...");
+            if (aiLongEntryMarker != null) {
+                aiLongEntryMarker.addIcon(testSl, AIMarkerIcons.createLongEntryIcon(), 3, 3);
+                fw.println("addIcon at SL succeeded");
+            }
+            if (aiShortEntryMarker != null) {
+                aiShortEntryMarker.addIcon(testTp, AIMarkerIcons.createShortEntryIcon(), 3, 3);
+                fw.println("addIcon at TP succeeded");
+            }
+
+            fw.println("=== TEST COMPLETE ===");
+            fw.println("You should see ORANGE line at tick " + testSl + " (SL)");
+            fw.println("You should see GREEN line at tick " + testTp + " (TP)");
+            fw.println("You should see CYAN marker at tick " + testSl + " (SL marker)");
+            fw.println("You should see PINK marker at tick " + testTp + " (TP marker)");
+            fw.flush();
+        } catch (Exception e) {
+            try (java.io.PrintWriter fw = new java.io.PrintWriter(new java.io.FileWriter(testLogFile, true))) {
+                fw.println("EXCEPTION: " + e.getMessage());
+                e.printStackTrace(fw);
+            } catch (Exception ignored) {}
+        }
+
+        // Log results to Bookmap console as well
+        log("🧪 TEST COMPLETE - Check /tmp/bm-test-sl-tp.log for details");
+        log("🧪 You should see ORANGE line at tick " + (currentPrice - 30) + " (SL)");
+        log("🧪 You should see GREEN line at tick " + (currentPrice + 50) + " (TP)");
+    }
+
+    /**
+     * Clear the test SL/TP lines
+     */
+    private void clearSlTpLines() {
+        log("🧪 Clearing SL/TP lines...");
+        activeStopLossPrice = null;
+        activeTakeProfitPrice = null;
+        log("🧪 SL/TP levels cleared");
     }
 
     // ========== INNER CLASSES ==========
@@ -4355,15 +4565,22 @@ public class OrderFlowStrategyEnhanced implements
 
     @Override
     public void onEntryMarker(boolean isLong, int price, int score, String reasoning, int stopLossPrice, int takeProfitPrice) {
+        // File log for debugging
+        fileLog("📍 onEntryMarker CALLED: isLong=" + isLong + ", price=" + price + ", SL=" + stopLossPrice + ", TP=" + takeProfitPrice);
+
         try {
             log("📍 AI ENTRY MARKER CALLBACK INVOKED:");
-            log(String.format("   isLong=%s, price=%d, score=%d", isLong, price, score));
-            log(String.format("   stopLossPrice=%d, takeProfitPrice=%d", stopLossPrice, takeProfitPrice));
+            log(String.format("   isLong=%s, price=%d (ticks), score=%d", isLong, price, score));
+            log(String.format("   stopLossPrice=%d (ticks), takeProfitPrice=%d (ticks)", stopLossPrice, takeProfitPrice));
 
             // Validate SL/TP values
             if (stopLossPrice == 0 || takeProfitPrice == 0) {
                 log("⚠️ WARNING: SL or TP is 0! This might indicate a missing plan in AI decision");
+                fileLog("⚠️ WARNING: SL or TP is 0!");
             }
+
+            // addIcon expects tick values (same units as onBbo), NOT actual prices
+            log(String.format("   Price: %d ticks (pips=%.4f, actual=%.2f)", price, pips, price * pips));
 
             // Create icon based on direction
             BufferedImage icon = isLong ?
@@ -4372,11 +4589,13 @@ public class OrderFlowStrategyEnhanced implements
 
             // Select appropriate indicator
             Indicator markerIndicator = isLong ? aiLongEntryMarker : aiShortEntryMarker;
+            fileLog("   markerIndicator: " + (markerIndicator != null ? "OK" : "NULL"));
 
-            // Add marker to chart
+            // Add marker to chart using tick values
             markerIndicator.addIcon(price, icon, 3, 3);
+            fileLog("✅ addIcon called with price=" + price + " (ticks)");
 
-            // Track active SL/TP levels for line drawing
+            // Track active SL/TP levels for line drawing (keep in tick units, drawAITradingLevels will convert)
             activeStopLossPrice = stopLossPrice;
             activeTakeProfitPrice = takeProfitPrice;
 
@@ -4386,6 +4605,7 @@ public class OrderFlowStrategyEnhanced implements
                 aiTakeProfitLine != null ? "OK" : "NULL"));
         } catch (Exception e) {
             log("❌ Failed to place entry marker: " + e.getMessage());
+            fileLog("❌ Failed to place entry marker: " + e.getMessage());
             e.printStackTrace();
         }
     }
@@ -4393,13 +4613,15 @@ public class OrderFlowStrategyEnhanced implements
     @Override
     public void onSkipMarker(int price, int score, String reasoning) {
         try {
+            // addIcon expects tick values (same units as onBbo), NOT actual prices
+
             // Create skip icon (WHITE circle)
             BufferedImage icon = AIMarkerIcons.createSkipIcon();
 
-            // Add marker to chart
+            // Add marker to chart using tick values
             aiSkipMarker.addIcon(price, icon, 3, 3);
 
-            log("⚪ AI SKIP MARKER @ " + price + " (Score: " + score +
+            log("⚪ AI SKIP MARKER @ tick " + price + " (actual: " + (price * pips) + ", Score: " + score +
                 ", Reason: " + reasoning + ")");
         } catch (Exception e) {
             log("❌ Failed to place skip marker: " + e.getMessage());
@@ -4409,6 +4631,8 @@ public class OrderFlowStrategyEnhanced implements
     @Override
     public void onExitMarker(int price, String reason, double pnl, boolean isWin) {
         try {
+            // addIcon expects tick values (same units as onBbo), NOT actual prices
+
             // Create icon based on exit reason
             BufferedImage icon;
             if (reason.contains("Stop Loss")) {
@@ -4419,7 +4643,7 @@ public class OrderFlowStrategyEnhanced implements
                 icon = AIMarkerIcons.createStopLossIcon();  // Default to ORANGE X
             }
 
-            // Add marker to chart
+            // Add marker to chart using tick values
             aiExitMarker.addIcon(price, icon, 3, 3);
 
             // Clear SL/TP lines when position closes
@@ -4427,7 +4651,7 @@ public class OrderFlowStrategyEnhanced implements
             activeTakeProfitPrice = null;
 
             String emoji = isWin ? "💎" : "🛑";
-            log(emoji + " AI EXIT MARKER @ " + price + " (P&L: $" +
+            log(emoji + " AI EXIT MARKER @ tick " + price + " (actual: " + (price * pips) + ", P&L: $" +
                 String.format("%.2f", pnl) + ", Reason: " + reason + ") - SL/TP lines cleared");
         } catch (Exception e) {
             log("❌ Failed to place exit marker: " + e.getMessage());
@@ -4437,17 +4661,19 @@ public class OrderFlowStrategyEnhanced implements
     @Override
     public void onBreakEvenMarker(int newStopPrice, int triggerPrice) {
         try {
+            // addIcon expects tick values (same units as onBbo), NOT actual prices
+
             // Create break-even icon (YELLOW square)
             BufferedImage icon = AIMarkerIcons.createBreakEvenIcon();
 
-            // Add marker to chart
+            // Add marker to chart using tick values
             aiExitMarker.addIcon(newStopPrice, icon, 3, 3);
 
-            // Update SL line to new break-even price
+            // Update SL line to new break-even price (keep in ticks)
             activeStopLossPrice = newStopPrice;
 
-            log("🟡 AI BREAK-EVEN MARKER @ " + newStopPrice +
-                " (Stop moved from " + triggerPrice + ") - SL line updated");
+            log("🟡 AI BREAK-EVEN MARKER @ tick " + newStopPrice +
+                " (actual: " + (newStopPrice * pips) + ", Stop moved from " + triggerPrice + ") - SL line updated");
         } catch (Exception e) {
             log("❌ Failed to place break-even marker: " + e.getMessage());
         }
