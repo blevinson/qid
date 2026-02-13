@@ -1063,13 +1063,13 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(periodicIntervalSpinner, gbc);
 
         // Apply button
-        gbc.gridx = 0; gbc.gridy = 32; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 33; gbc.gridwidth = 2;
         JButton applyButton = new JButton("Apply Settings");
         applyButton.addActionListener(e -> applySettings());
         settingsPanel.add(applyButton, gbc);
 
         // Version label (bottom right)
-        gbc.gridx = 1; gbc.gridy = 33; gbc.gridwidth = 1;
+        gbc.gridx = 1; gbc.gridy = 34; gbc.gridwidth = 1;
         gbc.anchor = GridBagConstraints.EAST;
         gbc.weightx = 1.0;
         JLabel versionLabel = new JLabel("Qid v2.1 - AI Trading with Memory");
