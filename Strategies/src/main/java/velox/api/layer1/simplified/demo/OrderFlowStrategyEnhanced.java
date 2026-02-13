@@ -3241,8 +3241,11 @@ public class OrderFlowStrategyEnhanced implements
                             aiStrategist.evaluateSetup(signalData, sessionContext, devMode, new AIInvestmentStrategist.AIStrategistCallback() {
                             @Override
                             public void onDecision(AIInvestmentStrategist.AIDecision decision) {
-                                log("📞 CALLBACK ENTERED: onDecision() called");
-                                log("📞 decision object: %s".formatted(decision != null ? "NOT NULL" : "NULL"));
+                                // Debug logs only in dev mode
+                                if (devMode) {
+                                    log("🔧 CALLBACK ENTERED: onDecision() called");
+                                    log("🔧 decision object: %s".formatted(decision != null ? "NOT NULL" : "NULL"));
+                                }
 
                                 // Handle threshold adjustments from AI
                                 if (decision.thresholdAdjustment != null && decision.thresholdAdjustment.hasAdjustments()) {
@@ -3250,13 +3253,17 @@ public class OrderFlowStrategyEnhanced implements
                                 }
 
                                 // Execute AI decision
-                                log("🔍 AI DECISION DEBUG: shouldTake=%s, plan=%s, confidence=%.0f%%".formatted(
-                                    decision.shouldTake, decision.plan != null ? "PRESENT" : "NULL", decision.confidence * 100));
+                                if (devMode) {
+                                    log("🔧 AI DECISION DEBUG: shouldTake=%s, plan=%s, confidence=%.0f%%".formatted(
+                                        decision.shouldTake, decision.plan != null ? "PRESENT" : "NULL", decision.confidence * 100));
+                                }
 
                                 // CRITICAL CHECK: shouldTake && plan != null
                                 boolean willExecute = decision.shouldTake && decision.plan != null;
-                                log("🚦 EXECUTION CHECK: shouldTake=%s && plan=%s → willExecute=%s".formatted(
-                                    decision.shouldTake, decision.plan != null, willExecute));
+                                if (devMode) {
+                                    log("🔧 EXECUTION CHECK: shouldTake=%s && plan=%s → willExecute=%s".formatted(
+                                        decision.shouldTake, decision.plan != null, willExecute));
+                                }
 
                                 if (willExecute) {
                                     log(String.format("✅ AI TAKE: %s (confidence: %.0f%%) - %s",

@@ -38,6 +38,9 @@ public class AIInvestmentStrategist {
     private static final String API_URL = "https://api.z.ai/api/anthropic/v1/messages";
     private static final String MODEL = "glm-5";
 
+    // Dev mode - enables verbose debug logging
+    private boolean devMode = false;
+
     // File logging
     private static final String LOG_FILE = System.getProperty("user.home") + "/ai-strategist.log";
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
@@ -79,6 +82,15 @@ public class AIInvestmentStrategist {
     }
 
     /**
+     * Debug log - only logs when devMode is enabled
+     */
+    private void debugLog(String message) {
+        if (devMode) {
+            log("🔧 " + message);
+        }
+    }
+
+    /**
      * Evaluate a trading setup using AI + Memory
      *
      * This method:
@@ -89,10 +101,13 @@ public class AIInvestmentStrategist {
      *
      * @param signal SignalData with market context
      * @param sessionContext Session state (can be null)
-     * @param devMode If true, AI is more permissive for testing
+     * @param devMode If true, AI is more permissive for testing and debug logs enabled
      * @param callback AIStrategistCallback for async decision
      */
     public void evaluateSetup(SignalData signal, SessionContext sessionContext, boolean devMode, AIStrategistCallback callback) {
+        // Set dev mode for debug logging
+        this.devMode = devMode;
+
         // Validate input
         if (signal == null || callback == null) {
             if (callback != null) {
@@ -372,10 +387,10 @@ public class AIInvestmentStrategist {
         CompletableFuture.supplyAsync(() -> {
             return callClaudeAPIWithRetry(prompt, signal, 3);  // 3 retries
         }).thenAccept(decision -> {
-            log("✅ Processing AI decision...");
+            debugLog("Processing AI decision...");
             try {
                 callback.onDecision(decision);
-                log("✅ callback.onDecision() COMPLETED successfully");
+                debugLog("callback.onDecision() COMPLETED successfully");
             } catch (Exception e) {
                 log("❌ EXCEPTION in callback.onDecision(): " + e.getClass().getName() + " - " + e.getMessage());
                 e.printStackTrace();
@@ -501,7 +516,7 @@ public class AIInvestmentStrategist {
             .get(0).getAsJsonObject()
             .get("text").getAsString();
 
-        log("📝 RAW AI RESPONSE (first 500 chars): " + content.substring(0, Math.min(500, content.length())));
+        debugLog("RAW AI RESPONSE (first 500 chars): " + content.substring(0, Math.min(500, content.length())));
 
         return parseDecision(content, signal);
     }
@@ -525,14 +540,14 @@ public class AIInvestmentStrategist {
                 jsonStr = response.substring(start, end).trim();
             }
 
-            log("📋 EXTRACTED JSON: " + jsonStr.substring(0, Math.min(300, jsonStr.length())));
+            debugLog("EXTRACTED JSON: " + jsonStr.substring(0, Math.min(300, jsonStr.length())));
 
             JsonObject json = gson.fromJson(jsonStr, JsonObject.class);
 
             // Parse action
             String action = json.has("action") ? json.get("action").getAsString() : "SKIP";
             decision.shouldTake = "TAKE".equalsIgnoreCase(action);
-            log("🎯 PARSED ACTION: '%s' → shouldTake=%s".formatted(action, decision.shouldTake));
+            debugLog("PARSED ACTION: '%s' → shouldTake=%s".formatted(action, decision.shouldTake));
 
             // Parse confidence
             if (json.has("confidence")) {
@@ -546,7 +561,7 @@ public class AIInvestmentStrategist {
                 json.get("reasoning").getAsString() : "No reasoning provided";
 
             // Parse trade plan
-            log("📦 PARSING PLAN: hasPlan=%s, isNull=%s, shouldTake=%s".formatted(
+            debugLog("PARSING PLAN: hasPlan=%s, isNull=%s, shouldTake=%s".formatted(
                 json.has("plan"), json.has("plan") && json.get("plan").isJsonNull(), decision.shouldTake));
 
             if (json.has("plan") && !json.get("plan").isJsonNull() && decision.shouldTake) {
@@ -565,13 +580,13 @@ public class AIInvestmentStrategist {
                     planJson.get("contracts").getAsInt() : 1;
 
                 decision.plan = plan;
-                log("✅ PLAN CREATED: orderType=%s, SL=%d, TP=%d".formatted(plan.orderType, plan.stopLossPrice, plan.takeProfitPrice));
+                debugLog("PLAN CREATED: orderType=%s, SL=%d, TP=%d".formatted(plan.orderType, plan.stopLossPrice, plan.takeProfitPrice));
             } else if (decision.shouldTake) {
                 // Create default plan if taking but no plan provided
                 decision.plan = createDefaultPlan(signal);
-                log("✅ DEFAULT PLAN CREATED: SL=%d, TP=%d".formatted(decision.plan.stopLossPrice, decision.plan.takeProfitPrice));
+                debugLog("DEFAULT PLAN CREATED: SL=%d, TP=%d".formatted(decision.plan.stopLossPrice, decision.plan.takeProfitPrice));
             } else {
-                log("⚠️ NO PLAN: shouldTake=%s, so no plan needed or created".formatted(decision.shouldTake));
+                debugLog("NO PLAN: shouldTake=%s, so no plan needed or created".formatted(decision.shouldTake));
             }
 
             // Parse threshold adjustment (optional)
