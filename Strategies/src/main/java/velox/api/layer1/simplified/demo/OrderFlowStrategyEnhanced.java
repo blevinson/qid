@@ -3241,11 +3241,8 @@ public class OrderFlowStrategyEnhanced implements
                             aiStrategist.evaluateSetup(signalData, sessionContext, devMode, new AIInvestmentStrategist.AIStrategistCallback() {
                             @Override
                             public void onDecision(AIInvestmentStrategist.AIDecision decision) {
-                                // Debug logs only in dev mode
-                                if (devMode) {
-                                    log("🔧 CALLBACK ENTERED: onDecision() called");
-                                    log("🔧 decision object: %s".formatted(decision != null ? "NOT NULL" : "NULL"));
-                                }
+                                debug("CALLBACK ENTERED: onDecision() called");
+                                debug("decision object: %s".formatted(decision != null ? "NOT NULL" : "NULL"));
 
                                 // Handle threshold adjustments from AI
                                 if (decision.thresholdAdjustment != null && decision.thresholdAdjustment.hasAdjustments()) {
@@ -3253,17 +3250,13 @@ public class OrderFlowStrategyEnhanced implements
                                 }
 
                                 // Execute AI decision
-                                if (devMode) {
-                                    log("🔧 AI DECISION DEBUG: shouldTake=%s, plan=%s, confidence=%.0f%%".formatted(
-                                        decision.shouldTake, decision.plan != null ? "PRESENT" : "NULL", decision.confidence * 100));
-                                }
+                                debug("AI DECISION: shouldTake=%s, plan=%s, confidence=%.0f%%".formatted(
+                                    decision.shouldTake, decision.plan != null ? "PRESENT" : "NULL", decision.confidence * 100));
 
                                 // CRITICAL CHECK: shouldTake && plan != null
                                 boolean willExecute = decision.shouldTake && decision.plan != null;
-                                if (devMode) {
-                                    log("🔧 EXECUTION CHECK: shouldTake=%s && plan=%s → willExecute=%s".formatted(
-                                        decision.shouldTake, decision.plan != null, willExecute));
-                                }
+                                debug("EXECUTION CHECK: shouldTake=%s && plan=%s → willExecute=%s".formatted(
+                                    decision.shouldTake, decision.plan != null, willExecute));
 
                                 if (willExecute) {
                                     log(String.format("✅ AI TAKE: %s (confidence: %.0f%%) - %s",
@@ -4064,6 +4057,24 @@ public class OrderFlowStrategyEnhanced implements
         if (logWriter != null) {
             logWriter.println(logMsg);
             logWriter.flush();
+        }
+    }
+
+    /**
+     * Debug log - only logs when devMode is enabled
+     */
+    private void debug(String message) {
+        if (devMode) {
+            log("🔧 " + message);
+        }
+    }
+
+    /**
+     * Debug log with format - only logs when devMode is enabled
+     */
+    private void debug(String format, Object... args) {
+        if (devMode) {
+            log("🔧 " + String.format(format, args));
         }
     }
 
