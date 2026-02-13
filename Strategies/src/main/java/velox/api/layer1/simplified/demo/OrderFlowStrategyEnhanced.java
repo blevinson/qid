@@ -4673,6 +4673,13 @@ public class OrderFlowStrategyEnhanced implements
             aiExitMarker.addIcon(price, icon, 3, 3);
 
             // Clear SL/TP lines when position closes
+            // Add a point at 0 to "break" the line and make it disappear
+            if (aiStopLossLine != null) {
+                aiStopLossLine.addPoint(0);
+            }
+            if (aiTakeProfitLine != null) {
+                aiTakeProfitLine.addPoint(0);
+            }
             activeStopLossPrice = null;
             activeTakeProfitPrice = null;
 
