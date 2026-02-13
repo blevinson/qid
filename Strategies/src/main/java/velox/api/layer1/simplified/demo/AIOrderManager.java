@@ -141,6 +141,13 @@ public class AIOrderManager {
             if (stalenessReason != null) {
                 log("🚫 STALE SIGNAL REJECTED: %s", stalenessReason);
                 fileLog("🚫 STALE SIGNAL REJECTED: " + stalenessReason);
+
+                // Place slippage rejection marker on chart
+                if (markerCallback != null && currentPriceSupplier != null) {
+                    int currentPrice = currentPriceSupplier.get();
+                    int slippage = Math.abs(signal.price - currentPrice);
+                    markerCallback.onSlippageRejectedMarker(signal.price, currentPrice, slippage);
+                }
                 return null;
             }
             log("✅ Staleness check PASSED");
@@ -704,5 +711,13 @@ public class AIOrderManager {
          * Called when break-even is triggered
          */
         void onBreakEvenMarker(int newStopPrice, int triggerPrice);
+
+        /**
+         * Called when signal is rejected due to slippage
+         * @param signalPrice original signal price
+         * @param currentPrice current market price
+         * @param slippageTicks how many ticks price moved
+         */
+        void onSlippageRejectedMarker(int signalPrice, int currentPrice, int slippageTicks);
     }
 }

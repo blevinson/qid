@@ -4712,6 +4712,22 @@ public class OrderFlowStrategyEnhanced implements
         }
     }
 
+    @Override
+    public void onSlippageRejectedMarker(int signalPrice, int currentPrice, int slippageTicks) {
+        try {
+            // Create magenta X icon for slippage rejection
+            BufferedImage icon = AIMarkerIcons.createSlippageRejectedIcon();
+
+            // Add marker at the signal price
+            aiSkipMarker.addIcon(signalPrice, icon, 3, 3);
+
+            log("🟣 SLIPPAGE REJECTED MARKER @ tick " + signalPrice +
+                " (actual: " + (signalPrice * pips) + ", slippage: " + slippageTicks + " ticks, current: " + currentPrice + ")");
+        } catch (Exception e) {
+            log("❌ Failed to place slippage rejected marker: " + e.getMessage());
+        }
+    }
+
     // ========== OrdersListener Implementation ==========
 
     @Override
