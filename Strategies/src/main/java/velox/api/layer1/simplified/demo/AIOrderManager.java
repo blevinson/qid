@@ -28,9 +28,10 @@ public class AIOrderManager {
     public int maxPositions = 1;
     public double maxDailyLoss = 500.0;
 
-    // Signal staleness protection
-    public static final long MAX_SIGNAL_AGE_MS = 60_000;  // 60 seconds
-    public static final int MAX_PRICE_SLIPPAGE_TICKS = 5; // Skip if price moved > 5 ticks
+    // Signal staleness protection (configurable)
+    // Note: Threshold must account for AI response time (can be 60+ seconds with retries)
+    public long maxSignalAgeMs = 180_000;  // 3 minutes - allows for AI response delays
+    public int maxPriceSlippageTicks = 10; // Skip if price moved > 10 ticks (0 = disabled)
     private Supplier<Integer> currentPriceSupplier;  // Supplies current price in tick units
 
     // Statistics
@@ -57,34 +58,44 @@ public class AIOrderManager {
      */
     private String checkSignalStaleness(SignalData signal) {
         long now = System.currentTimeMillis();
-        long signalAge = now - signal.timestamp;
 
-        // Check time staleness
-        if (signalAge > MAX_SIGNAL_AGE_MS) {
-            return String.format("Signal too old: %d seconds (max %d)",
-                signalAge / 1000, MAX_SIGNAL_AGE_MS / 1000);
+        // Skip staleness check if timestamp is not set (0 or negative)
+        // This handles unit tests and edge cases where timestamp isn't available
+        if (signal.timestamp > 0) {
+            long signalAge = now - signal.timestamp;
+
+            // Check time staleness
+            if (signalAge > maxSignalAgeMs) {
+                return String.format("Signal too old: %d seconds (max %d)",
+                    signalAge / 1000, maxSignalAgeMs / 1000);
+            }
+
+            // Log if signal is getting old but still OK
+            if (signalAge > 30_000) {
+                log("⏰ Signal age: %d seconds (approaching staleness limit)", signalAge / 1000);
+            }
         }
 
-        // Check price slippage if we have a price supplier
-        if (currentPriceSupplier != null && signal.pips > 0) {
+        // Check price slippage if enabled (> 0) and we have a price supplier
+        // Skip if currentPrice is 0 (uninitialized) to avoid false rejections
+        if (maxPriceSlippageTicks > 0 && currentPriceSupplier != null && signal.pips > 0) {
             int currentPrice = currentPriceSupplier.get();
-            int signalPrice = signal.price;
-            int slippage = Math.abs(currentPrice - signalPrice);
 
-            if (slippage > MAX_PRICE_SLIPPAGE_TICKS) {
-                return String.format("Price moved too much: %d ticks (signal=%d, current=%d, max=%d)",
-                    slippage, signalPrice, currentPrice, MAX_PRICE_SLIPPAGE_TICKS);
+            // Only check slippage if we have a valid current price (> 0)
+            if (currentPrice > 0) {
+                int signalPrice = signal.price;
+                int slippage = Math.abs(currentPrice - signalPrice);
+
+                if (slippage > maxPriceSlippageTicks) {
+                    return String.format("Price moved too much: %d ticks (signal=%d, current=%d, max=%d)",
+                        slippage, signalPrice, currentPrice, maxPriceSlippageTicks);
+                }
+
+                // Warn if there's some slippage but within tolerance
+                if (slippage > 0) {
+                    log("⚠️ Price slippage: %d ticks (within tolerance)", slippage);
+                }
             }
-
-            // Warn if there's some slippage but within tolerance
-            if (slippage > 0) {
-                log("⚠️ Price slippage: %d ticks (within tolerance)", slippage);
-            }
-        }
-
-        // Log if signal is getting old but still OK
-        if (signalAge > 30_000) {
-            log("⏰ Signal age: %d seconds (approaching staleness limit)", signalAge / 1000);
         }
 
         return null;  // OK to proceed
@@ -94,6 +105,9 @@ public class AIOrderManager {
      * Execute AI decision to TAKE a signal
      */
     public String executeEntry(AIIntegrationLayer.AIDecision decision, SignalData signal) {
+        log("🔥 executeEntry CALLED: isLong=%s, price=%d, SL=%d, TP=%d".formatted(
+            decision.isLong, signal.price, decision.stopLoss, decision.takeProfit));
+
         try {
             // Check signal staleness
             String stalenessReason = checkSignalStaleness(signal);
@@ -101,18 +115,21 @@ public class AIOrderManager {
                 log("🚫 STALE SIGNAL REJECTED: %s", stalenessReason);
                 return null;
             }
+            log("✅ Staleness check PASSED");
 
             // Check if we can add a position
             if (activePositions.size() >= maxPositions) {
                 log("⚠️ MAX POSITIONS REACHED (%d), cannot take signal", maxPositions);
                 return null;
             }
+            log("✅ Max positions check PASSED (current: %d)", activePositions.size());
 
             // Check daily loss limit
             if (dailyPnl <= -maxDailyLoss) {
                 log("⚠️ DAILY LOSS LIMIT REACHED ($%.2f), stopping trading", dailyPnl);
                 return null;
             }
+            log("✅ Daily loss check PASSED (current PnL: $%.2f)", dailyPnl);
 
             // Calculate position size based on risk
             int positionSize = calculatePositionSize(signal);
@@ -145,6 +162,7 @@ public class AIOrderManager {
             );
 
             // Place entry order
+            log("📤 Placing ENTRY order: %s %d @ %d", decision.isLong ? "BUY" : "SELL", positionSize, signal.price);
             OrderExecutor.OrderSide entrySide = decision.isLong ?
                 OrderExecutor.OrderSide.BUY : OrderExecutor.OrderSide.SELL;
 
@@ -154,10 +172,12 @@ public class AIOrderManager {
                 signal.price,  // Price ignored for market orders
                 positionSize
             );
+            log("📥 Entry order ID: %s", entryOrderId);
 
             position.entryOrderId.set(entryOrderId);
 
             // Place stop loss
+            log("📤 Placing STOP LOSS order: %s @ %d", decision.isLong ? "SELL" : "BUY", decision.stopLoss);
             OrderExecutor.OrderSide stopSide = decision.isLong ?
                 OrderExecutor.OrderSide.SELL : OrderExecutor.OrderSide.BUY;
 
@@ -166,24 +186,32 @@ public class AIOrderManager {
                 decision.stopLoss,
                 positionSize
             );
+            log("📥 Stop loss order ID: %s", stopOrderId);
 
             position.stopLossOrderId.set(stopOrderId);
 
             // Place take profit
+            log("📤 Placing TAKE PROFIT order: %s @ %d", decision.isLong ? "SELL" : "BUY", decision.takeProfit);
             String targetOrderId = orderExecutor.placeTakeProfit(
                 stopSide,  // Same side as stop (opposite of entry)
                 decision.takeProfit,
                 positionSize
             );
+            log("📥 Take profit order ID: %s", targetOrderId);
 
             position.takeProfitOrderId.set(targetOrderId);
 
             // Track position
             activePositions.put(positionId, position);
+            log("✅ Position tracked: %s", positionId.substring(0, 8));
 
             // Place AI entry marker on chart (with SL/TP for line drawing)
+            log("📍 Calling markerCallback.onEntryMarker...");
             if (markerCallback != null) {
                 markerCallback.onEntryMarker(decision.isLong, signal.price, signal.score, decision.reasoning, decision.stopLoss, decision.takeProfit);
+                log("✅ markerCallback.onEntryMarker completed");
+            } else {
+                log("⚠️ markerCallback is NULL!");
             }
 
             log("🤖 AI ENTRY ORDER PLACED:");

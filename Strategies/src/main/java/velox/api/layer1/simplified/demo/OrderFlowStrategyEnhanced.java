@@ -83,6 +83,9 @@ public class OrderFlowStrategyEnhanced implements
     private Map<String, Long> recentSignalsSent = new ConcurrentHashMap<>();
     private static final long SIGNAL_DEDUP_MS = 60 * 1000;  // 60 seconds dedup window
 
+    // AI Evaluation Guard - prevent overlapping AI calls (thread-safe)
+    private final java.util.concurrent.atomic.AtomicBoolean aiEvaluationInProgress = new java.util.concurrent.atomic.AtomicBoolean(false);
+
     // Pre-filter constants
     private static final int CVD_STRONG_THRESHOLD = 8000;  // Skip counter-trend only if EXTREMELY strong
     private static final int SCORE_FLOOR_OFFSET = 20;      // Score must be >= threshold - this
@@ -3195,22 +3198,30 @@ public class OrderFlowStrategyEnhanced implements
                         enableAITrading, aiOrderManager != null ? "ready" : "null", aiStrategist != null ? "ready" : "null"));
 
                     if (enableAITrading && aiOrderManager != null) {
-                        // Pre-filters already passed above - proceed to AI evaluation
+                        // Guard against overlapping AI evaluations (atomic check-and-set)
+                        if (!aiEvaluationInProgress.compareAndSet(false, true)) {
+                            log("⏳ AI evaluation already in progress - skipping this signal");
+                            return;
+                        }
+                        log("🔒 AI evaluation lock acquired");
 
-                        // Create SignalData for AI evaluation
-                        SignalData signalData = createSignalData(isBid, price, totalSize);
+                        try {
+                            // Pre-filters already passed above - proceed to AI evaluation
 
-                        // Log timestamp info for debugging replay mode
-                        java.time.ZoneId etZone = java.time.ZoneId.of("America/New_York");
-                        java.time.ZonedDateTime dataTime = java.time.Instant.ofEpochMilli(currentDataTimestampMs).atZone(etZone);
-                        log(String.format("⏰ TIMESTAMP DEBUG: dataTs=%d | ET time=%s | phase=%s | replayMin=%d",
-                            currentDataTimestampMs, dataTime.format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss")),
-                            sessionContext != null ? sessionContext.getCurrentPhase() : "null",
-                            sessionContext != null ? sessionContext.getMinutesIntoSession() : -1));
+                            // Create SignalData for AI evaluation
+                            SignalData signalData = createSignalData(isBid, price, totalSize);
 
-                        // Use AI Investment Strategist (memory-aware) if available
-                        if (aiStrategist != null) {
-                            log("🧠 Using AI Investment Strategist (memory-aware evaluation)");
+                            // Log timestamp info for debugging replay mode
+                            java.time.ZoneId etZone = java.time.ZoneId.of("America/New_York");
+                            java.time.ZonedDateTime dataTime = java.time.Instant.ofEpochMilli(currentDataTimestampMs).atZone(etZone);
+                            log(String.format("⏰ TIMESTAMP DEBUG: dataTs=%d | ET time=%s | phase=%s | replayMin=%d",
+                                currentDataTimestampMs, dataTime.format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss")),
+                                sessionContext != null ? sessionContext.getCurrentPhase() : "null",
+                                sessionContext != null ? sessionContext.getMinutesIntoSession() : -1));
+
+                            // Use AI Investment Strategist (memory-aware) if available
+                            if (aiStrategist != null) {
+                                log("🧠 Using AI Investment Strategist (memory-aware evaluation)");
                             aiStrategist.evaluateSetup(signalData, sessionContext, new AIInvestmentStrategist.AIStrategistCallback() {
                             @Override
                             public void onDecision(AIInvestmentStrategist.AIDecision decision) {
@@ -3305,11 +3316,17 @@ public class OrderFlowStrategyEnhanced implements
                                         aiDecision.reasoning = decision.reasoning;
                                         aiOrderManager.executeSkip(aiDecision, signalData);
                                     }
+                                    // Release the AI evaluation lock
+                                    aiEvaluationInProgress.set(false);
+                                    log("🔓 AI evaluation lock released");
                                 }
 
                                 @Override
                                 public void onError(String error) {
                                     log("❌ AI API ERROR: " + error);
+                                    // Release the AI evaluation lock on error
+                                    aiEvaluationInProgress.set(false);
+                                    log("🔓 AI evaluation lock released (error)");
                                 }
                             });
                         } else if (aiIntegration != null) {
@@ -3348,11 +3365,23 @@ public class OrderFlowStrategyEnhanced implements
                                     } else {
                                         aiOrderManager.executeSkip(decision, signalData);
                                     }
+                                    // Release the AI evaluation lock
+                                    aiEvaluationInProgress.set(false);
+                                    log("🔓 AI evaluation lock released");
                                 })
                                 .exceptionally(ex -> {
                                     log("❌ AI evaluation failed: " + ex.getMessage());
+                                    // Release the AI evaluation lock on error
+                                    aiEvaluationInProgress.set(false);
+                                    log("🔓 AI evaluation lock released (error)");
                                     return null;
                                 });
+                        }
+                        } catch (Exception e) {
+                            // Release lock if exception occurs before async call starts
+                            aiEvaluationInProgress.set(false);
+                            log("❌ AI evaluation setup failed: " + e.getMessage());
+                            log("🔓 AI evaluation lock released (exception)");
                         }
                     }  // end if (enableAITrading)
                     // ============================================
