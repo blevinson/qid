@@ -437,7 +437,7 @@ public class AIOrderManagerTest {
         private final AtomicInteger currentPosition = new AtomicInteger(0);
 
         @Override
-        public String placeEntry(OrderType type, OrderSide side, int price, int quantity) {
+        public String placeEntry(OrderType type, OrderSide side, double price, int quantity) {
             lastQuantity = quantity;
             String orderId = "ENTRY-" + System.currentTimeMillis();
             entryOrders.add(orderId);
@@ -453,27 +453,27 @@ public class AIOrderManagerTest {
         }
 
         @Override
-        public String placeStopLoss(OrderSide side, int stopPrice, int quantity) {
+        public String placeStopLoss(OrderSide side, double stopPrice, int quantity) {
             String orderId = "STOP-" + System.currentTimeMillis();
             stopLossOrders.add(orderId);
             return orderId;
         }
 
         @Override
-        public String placeTakeProfit(OrderSide side, int targetPrice, int quantity) {
+        public String placeTakeProfit(OrderSide side, double targetPrice, int quantity) {
             String orderId = "TP-" + System.currentTimeMillis();
             takeProfitOrders.add(orderId);
             return orderId;
         }
 
         @Override
-        public String modifyStopLoss(String orderId, int newStopPrice, int quantity) {
+        public String modifyStopLoss(String orderId, double newStopPrice, int quantity) {
             modifyStopLossCalls++;
             return "MODIFIED-" + System.currentTimeMillis();
         }
 
         @Override
-        public String modifyTakeProfit(String orderId, int newTargetPrice, int quantity) {
+        public String modifyTakeProfit(String orderId, double newTargetPrice, int quantity) {
             return "MODIFIED-TP-" + System.currentTimeMillis();
         }
 

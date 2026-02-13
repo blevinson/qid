@@ -28,7 +28,20 @@ public interface OrderExecutor {
      * @param quantity Number of contracts
      * @return Order ID
      */
-    String placeEntry(OrderType type, OrderSide side, int price, int quantity);
+    String placeEntry(OrderType type, OrderSide side, double price, int quantity);
+
+    /**
+     * Place a bracket order with native SL/TP (Bookmap managed)
+     * @param type Order type (MARKET or LIMIT)
+     * @param side Order side (BUY, SELL)
+     * @param price Entry price (NaN for market)
+     * @param quantity Number of contracts
+     * @param stopLossOffset SL offset from entry price (positive value, in price units)
+     * @param takeProfitOffset TP offset from entry price (positive value, in price units)
+     * @return Order ID
+     */
+    String placeBracketOrder(OrderType type, OrderSide side, double price, int quantity,
+                            double stopLossOffset, double takeProfitOffset);
 
     /**
      * Place a stop loss order
@@ -37,7 +50,7 @@ public interface OrderExecutor {
      * @param quantity Quantity to close
      * @return Order ID
      */
-    String placeStopLoss(OrderSide side, int stopPrice, int quantity);
+    String placeStopLoss(OrderSide side, double stopPrice, int quantity);
 
     /**
      * Place a take profit order
@@ -46,7 +59,7 @@ public interface OrderExecutor {
      * @param quantity Quantity to close
      * @return Order ID
      */
-    String placeTakeProfit(OrderSide side, int targetPrice, int quantity);
+    String placeTakeProfit(OrderSide side, double targetPrice, int quantity);
 
     /**
      * Modify an existing stop loss order
@@ -55,7 +68,7 @@ public interface OrderExecutor {
      * @param quantity Quantity (can be partial)
      * @return New order ID (if order had to be replaced)
      */
-    String modifyStopLoss(String orderId, int newStopPrice, int quantity);
+    String modifyStopLoss(String orderId, double newStopPrice, int quantity);
 
     /**
      * Modify an existing take profit order
@@ -64,7 +77,7 @@ public interface OrderExecutor {
      * @param quantity Quantity (can be partial)
      * @return New order ID (if order had to be replaced)
      */
-    String modifyTakeProfit(String orderId, int newTargetPrice, int quantity);
+    String modifyTakeProfit(String orderId, double newTargetPrice, int quantity);
 
     /**
      * Close position at market
