@@ -80,23 +80,29 @@ public class ActivePosition {
 
     /**
      * Check if price has hit stop loss
+     * Uses 1-tick tolerance to account for price not hitting exactly
      */
     public boolean isStopLossHit(int currentPrice) {
         if (isLong) {
-            return currentPrice <= stopLossPrice.get();
+            // For LONG, SL is below entry - trigger if price <= SL + 1 tick
+            return currentPrice <= stopLossPrice.get() + 1;
         } else {
-            return currentPrice >= stopLossPrice.get();
+            // For SHORT, SL is above entry - trigger if price >= SL - 1 tick
+            return currentPrice >= stopLossPrice.get() - 1;
         }
     }
 
     /**
      * Check if price has hit take profit
+     * Uses 1-tick tolerance to account for price not hitting exactly
      */
     public boolean isTakeProfitHit(int currentPrice) {
         if (isLong) {
-            return currentPrice >= takeProfitPrice.get();
+            // For LONG, TP is above entry - trigger if price >= TP - 1 tick
+            return currentPrice >= takeProfitPrice.get() - 1;
         } else {
-            return currentPrice <= takeProfitPrice.get();
+            // For SHORT, TP is below entry - trigger if price <= TP + 1 tick
+            return currentPrice <= takeProfitPrice.get() + 1;
         }
     }
 

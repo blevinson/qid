@@ -284,6 +284,7 @@ public class AIOrderManager {
      * Monitor positions and make adjustments
      * Called on each price update
      */
+    private long lastTpSlLogTime = 0;
     public void onPriceUpdate(int currentPrice, long timestamp) {
         for (ActivePosition position : activePositions.values()) {
             if (position.isClosed.get()) continue;
@@ -291,14 +292,28 @@ public class AIOrderManager {
             // Update performance metrics
             position.updatePerformanceMetrics(currentPrice);
 
+            // Debug: Log when close to TP/SL (throttled)
+            long now = System.currentTimeMillis();
+            if (now - lastTpSlLogTime > 5000) {
+                int slDist = Math.abs(currentPrice - position.stopLossPrice.get());
+                int tpDist = Math.abs(currentPrice - position.takeProfitPrice.get());
+                if (slDist <= 5 || tpDist <= 5) {
+                    fileLog("📍 TP/SL Proximity: price=" + currentPrice + " SL=" + position.stopLossPrice.get() +
+                        " TP=" + position.takeProfitPrice.get() + " (SL dist=" + slDist + ", TP dist=" + tpDist + ")");
+                    lastTpSlLogTime = now;
+                }
+            }
+
             // Check if stop loss was hit
             if (position.isStopLossHit(currentPrice)) {
+                fileLog("🛑 SL HIT DETECTED: price=" + currentPrice + " SL=" + position.stopLossPrice.get());
                 closePosition(position.id, currentPrice, "Stop Loss Hit", null);
                 continue;
             }
 
             // Check if take profit was hit
             if (position.isTakeProfitHit(currentPrice)) {
+                fileLog("💎 TP HIT DETECTED: price=" + currentPrice + " TP=" + position.takeProfitPrice.get());
                 closePosition(position.id, currentPrice, "Take Profit Hit", null);
                 continue;
             }
