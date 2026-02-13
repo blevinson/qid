@@ -652,6 +652,15 @@ public class OrderFlowStrategyEnhanced implements
                 System.err.println("Error in threshold reassessment: " + e.getMessage());
             }
         }, 5, 5, TimeUnit.MINUTES);  // Start after 5 minutes, then every 5 minutes
+
+        // Draw SL/TP lines every 100ms (creates horizontal line effect)
+        updateExecutor.scheduleAtFixedRate(() -> {
+            try {
+                drawAITradingLevels();
+            } catch (Exception e) {
+                System.err.println("Error drawing AI levels: " + e.getMessage());
+            }
+        }, 0, 100, TimeUnit.MILLISECONDS);
     }
 
     // Track last reassessed phase to detect changes
@@ -2256,6 +2265,9 @@ public class OrderFlowStrategyEnhanced implements
             aiOrderManager.maxPositions = maxPosition;
             aiOrderManager.maxDailyLoss = dailyLossLimit;
 
+            // Set up price supplier for staleness checks
+            aiOrderManager.setCurrentPriceSupplier(() -> (int) lastKnownPrice);
+
             log("✅ AI Trading System initialized");
             log("   Mode: " + aiMode);
             log("   Confluence Threshold: " + confluenceThreshold);
@@ -3187,6 +3199,14 @@ public class OrderFlowStrategyEnhanced implements
 
                         // Create SignalData for AI evaluation
                         SignalData signalData = createSignalData(isBid, price, totalSize);
+
+                        // Log timestamp info for debugging replay mode
+                        java.time.ZoneId etZone = java.time.ZoneId.of("America/New_York");
+                        java.time.ZonedDateTime dataTime = java.time.Instant.ofEpochMilli(currentDataTimestampMs).atZone(etZone);
+                        log(String.format("⏰ TIMESTAMP DEBUG: dataTs=%d | ET time=%s | phase=%s | replayMin=%d",
+                            currentDataTimestampMs, dataTime.format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss")),
+                            sessionContext != null ? sessionContext.getCurrentPhase() : "null",
+                            sessionContext != null ? sessionContext.getMinutesIntoSession() : -1));
 
                         // Use AI Investment Strategist (memory-aware) if available
                         if (aiStrategist != null) {

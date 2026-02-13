@@ -55,7 +55,7 @@ public class AIInvestmentStrategist {
         this.transcriptWriter = transcriptWriter;
         this.gson = new Gson();
         this.httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(30))
+            .connectTimeout(Duration.ofSeconds(60))
             .build();
 
         log("========== AI Investment Strategist Initialized ==========");
@@ -349,23 +349,55 @@ public class AIInvestmentStrategist {
     private void callClaudeAPI(String prompt, AIStrategistCallback callback, SignalData signal) {
         log("🌐 Calling Claude API...");
         CompletableFuture.supplyAsync(() -> {
-            try {
-                log("📤 API request sent, waiting for response...");
-                AIDecision decision = callClaudeAPISync(prompt, signal);
-                log("📥 API response received");
-                return decision;
-            } catch (Exception e) {
-                log("❌ API call exception: " + e.getClass().getSimpleName() + " - " + e.getMessage());
-                throw new RuntimeException("API call failed: " + e.getMessage(), e);
-            }
+            return callClaudeAPIWithRetry(prompt, signal, 3);  // 3 retries
         }).thenAccept(decision -> {
             log("✅ Processing AI decision...");
             callback.onDecision(decision);
         }).exceptionally(e -> {
-            log("❌ API call failed: " + e.getMessage());
+            log("❌ API call failed after retries: " + e.getMessage());
             callback.onError(e.getMessage());
             return null;
         });
+    }
+
+    /**
+     * Call Claude API with retry logic
+     */
+    private AIDecision callClaudeAPIWithRetry(String prompt, SignalData signal, int maxRetries) {
+        Exception lastException = null;
+
+        for (int attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                log("📤 API request attempt %d/%d...".formatted(attempt, maxRetries));
+                AIDecision decision = callClaudeAPISync(prompt, signal);
+                log("📥 API response received");
+                return decision;
+            } catch (java.net.http.HttpTimeoutException e) {
+                log("⏱️ API timeout on attempt %d/%d".formatted(attempt, maxRetries));
+                lastException = e;
+            } catch (java.net.ConnectException e) {
+                log("🔌 Connection failed on attempt %d/%d: %s".formatted(attempt, maxRetries, e.getMessage()));
+                lastException = e;
+            } catch (Exception e) {
+                log("❌ API call exception on attempt %d/%d: %s".formatted(attempt, maxRetries, e.getMessage()));
+                lastException = e;
+            }
+
+            // Wait before retry (exponential backoff)
+            if (attempt < maxRetries) {
+                try {
+                    long backoffMs = (long) (1000 * Math.pow(2, attempt - 1));  // 1s, 2s, 4s...
+                    log("⏳ Waiting %dms before retry...".formatted(backoffMs));
+                    Thread.sleep(backoffMs);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+
+        throw new RuntimeException("API call failed after " + maxRetries + " attempts: " +
+            (lastException != null ? lastException.getMessage() : "unknown error"), lastException);
     }
 
     /**
@@ -427,7 +459,7 @@ public class AIInvestmentStrategist {
             .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(requestBody.toString()))
-            .timeout(Duration.ofSeconds(30))
+            .timeout(Duration.ofSeconds(60))
             .build();
 
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
