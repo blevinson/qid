@@ -402,9 +402,17 @@ public class AIThresholdService {
                 userMessage.addProperty("content", userPrompt);
                 conversation.add(userMessage);
 
-                // Tool call loop (max 5 iterations to prevent infinite loops)
-                for (int iteration = 0; iteration < 5; iteration++) {
+                // Tool call loop (max 10 iterations to prevent infinite loops)
+                for (int iteration = 0; iteration < 10; iteration++) {
                     JsonObject response = callClaudeWithTools(conversation);
+
+                    // First, check if there's a text response (prioritize text over more tool calls)
+                    String textResponse = extractTextResponse(response);
+                    if (textResponse != null && !textResponse.isEmpty() &&
+                        !textResponse.equals("No text response from AI") &&
+                        !textResponse.startsWith("Error:")) {
+                        return textResponse;  // Return text if available
+                    }
 
                     // Check if AI wants to use tools
                     if (response.has("tool_use") || hasToolUse(response)) {
@@ -417,11 +425,11 @@ public class AIThresholdService {
                         }
                     }
 
-                    // Extract text response
-                    return extractTextResponse(response);
+                    // No text and no tools - return whatever we have
+                    return textResponse;
                 }
 
-                return "Error: Too many tool call iterations";
+                return "Error: Too many tool call iterations (max 10). Please try a simpler question.";
 
             } catch (Exception e) {
                 throw new RuntimeException("Failed to get AI response: " + e.getMessage(), e);
