@@ -373,7 +373,13 @@ public class AIInvestmentStrategist {
             return callClaudeAPIWithRetry(prompt, signal, 3);  // 3 retries
         }).thenAccept(decision -> {
             log("✅ Processing AI decision...");
-            callback.onDecision(decision);
+            try {
+                callback.onDecision(decision);
+                log("✅ callback.onDecision() COMPLETED successfully");
+            } catch (Exception e) {
+                log("❌ EXCEPTION in callback.onDecision(): " + e.getClass().getName() + " - " + e.getMessage());
+                e.printStackTrace();
+            }
         }).exceptionally(e -> {
             log("❌ API call failed after retries: " + e.getMessage());
             callback.onError(e.getMessage());

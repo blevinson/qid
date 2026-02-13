@@ -3241,6 +3241,9 @@ public class OrderFlowStrategyEnhanced implements
                             aiStrategist.evaluateSetup(signalData, sessionContext, devMode, new AIInvestmentStrategist.AIStrategistCallback() {
                             @Override
                             public void onDecision(AIInvestmentStrategist.AIDecision decision) {
+                                log("📞 CALLBACK ENTERED: onDecision() called");
+                                log("📞 decision object: %s".formatted(decision != null ? "NOT NULL" : "NULL"));
+
                                 // Handle threshold adjustments from AI
                                 if (decision.thresholdAdjustment != null && decision.thresholdAdjustment.hasAdjustments()) {
                                     applyThresholdAdjustment(decision.thresholdAdjustment);
