@@ -89,9 +89,10 @@ public class AIInvestmentStrategist {
      *
      * @param signal SignalData with market context
      * @param sessionContext Session state (can be null)
+     * @param devMode If true, AI is more permissive for testing
      * @param callback AIStrategistCallback for async decision
      */
-    public void evaluateSetup(SignalData signal, SessionContext sessionContext, AIStrategistCallback callback) {
+    public void evaluateSetup(SignalData signal, SessionContext sessionContext, boolean devMode, AIStrategistCallback callback) {
         // Validate input
         if (signal == null || callback == null) {
             if (callback != null) {
@@ -101,6 +102,9 @@ public class AIInvestmentStrategist {
         }
 
         log("========== AI STRATEGIST EVALUATION ==========");
+        if (devMode) {
+            log("🔧 DEV MODE ENABLED - AI will be permissive for testing");
+        }
         double actualPrice = signal.price * signal.pips;  // Convert ticks to actual price
         log("SIGNAL: " + signal.direction + " @ " + String.format("%.2f", actualPrice) + " | Score: " + signal.score + "/" + signal.threshold);
         log("CVD: " + signal.market.cvd + " (" + signal.market.cvdTrend + ") | Trend: " + signal.market.trend);
@@ -142,7 +146,7 @@ public class AIInvestmentStrategist {
         }
 
         // Step 3: Ask AI to make decision
-        String prompt = buildAIPrompt(signal, context, sessionContext);
+        String prompt = buildAIPrompt(signal, context, sessionContext, devMode);
 
         // Call Claude API
         callClaudeAPI(prompt, callback, signal);
@@ -191,9 +195,10 @@ public class AIInvestmentStrategist {
      * @param signal SignalData with market context
      * @param memoryContext Formatted memory search results
      * @param sessionContext Session state (can be null)
+     * @param devMode If true, AI should be permissive for testing
      * @return AI prompt string
      */
-    private String buildAIPrompt(SignalData signal, String memoryContext, SessionContext sessionContext) {
+    private String buildAIPrompt(SignalData signal, String memoryContext, SessionContext sessionContext, boolean devMode) {
         double pips = signal.pips;  // For converting tick prices to actual prices
         double actualPrice = signal.price * pips;
 
@@ -265,10 +270,25 @@ public class AIInvestmentStrategist {
             thresholdContextStr = signal.thresholds.toAIString();
         }
 
+        // Build dev mode context
+        String devModeContext = "";
+        if (devMode) {
+            devModeContext = """
+                🔧 DEVELOPMENT MODE ACTIVE 🔧
+                You are in DEVELOPMENT MODE for testing purposes.
+                - DO NOT adjust thresholds - use current manual settings
+                - Be PERMISSIVE: Take signals even with lower confluence scores
+                - Goal is to test the execution flow, not optimize for profit
+                - If the signal has any merit, TAKE it to verify the system works
+                - Skip ONLY if there's a critical issue (no price data, etc.)
+
+                """;
+        }
+
         return String.format("""
             You are an AI Investment Strategist analyzing a trading setup.
 
-            %s
+            %s%s
 
             SIGNAL:
             - Type: %s %s
@@ -325,6 +345,7 @@ public class AIInvestmentStrategist {
               }
             }
             """,
+            devModeContext,
             sessionContextStr,
             signal.direction,
             signal.detection.type,

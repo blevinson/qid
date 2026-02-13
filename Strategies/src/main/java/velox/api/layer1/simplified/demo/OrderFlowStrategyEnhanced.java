@@ -158,6 +158,9 @@ public class OrderFlowStrategyEnhanced implements
     @Parameter(name = "AI Mode")
     private String aiMode = "MANUAL";  // MANUAL, SEMI_AUTO, FULL_AUTO
 
+    @Parameter(name = "Dev Mode")
+    private Boolean devMode = false;  // When true, AI is more permissive for testing
+
     @Parameter(name = "Confluence Threshold")
     private Integer confluenceThreshold = 50;
 
@@ -949,7 +952,20 @@ public class OrderFlowStrategyEnhanced implements
         });
         settingsPanel.add(aiModeComboBox, gbc);
 
+        // Dev Mode checkbox - for testing with permissive AI
         gbc.gridx = 0; gbc.gridy = 20;
+        settingsPanel.add(new JLabel("Dev Mode:"), gbc);
+        gbc.gridx = 1;
+        JCheckBox devModeCheckBox = new JCheckBox();
+        devModeCheckBox.setSelected(devMode);
+        devModeCheckBox.setToolTipText("In Dev Mode, AI is more permissive for testing execution flow");
+        devModeCheckBox.addActionListener(e -> {
+            devMode = devModeCheckBox.isSelected();
+            log("🔧 Dev Mode: " + (devMode ? "ENABLED (permissive AI)" : "DISABLED (normal AI)"));
+        });
+        settingsPanel.add(devModeCheckBox, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 21;
         settingsPanel.add(new JLabel("Confluence Threshold:"), gbc);
         gbc.gridx = 1;
         JSpinner confThresholdSpinner = new JSpinner(new SpinnerNumberModel(confluenceThreshold.intValue(), 0, 135, 5));
@@ -957,10 +973,10 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(confThresholdSpinner, gbc);
 
         // Safety Controls section
-        gbc.gridx = 0; gbc.gridy = 21; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 22; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Safety Controls", gbc);
 
-        gbc.gridy = 22; gbc.gridwidth = 1;
+        gbc.gridy = 23; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Simulation Mode Only:"), gbc);
         gbc.gridx = 1;
         simModeCheckBox = new JCheckBox();
@@ -968,7 +984,7 @@ public class OrderFlowStrategyEnhanced implements
         simModeCheckBox.addActionListener(e -> updateSimMode());
         settingsPanel.add(simModeCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 23;
+        gbc.gridx = 0; gbc.gridy = 24;
         settingsPanel.add(new JLabel("Enable Auto-Execution:"), gbc);
         gbc.gridx = 1;
         autoExecCheckBox = new JCheckBox();
@@ -977,17 +993,17 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(autoExecCheckBox, gbc);
 
         // Risk Management section
-        gbc.gridx = 0; gbc.gridy = 24; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 25; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Risk Management", gbc);
 
-        gbc.gridy = 25; gbc.gridwidth = 1;
+        gbc.gridy = 26; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Max Position:"), gbc);
         gbc.gridx = 1;
         JSpinner maxPosSpinner = new JSpinner(new SpinnerNumberModel(maxPosition.intValue(), 1, 10, 1));
         maxPosSpinner.addChangeListener(e -> maxPosition = (Integer) maxPosSpinner.getValue());
         settingsPanel.add(maxPosSpinner, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 26;
+        gbc.gridx = 0; gbc.gridy = 27;
         settingsPanel.add(new JLabel("Daily Loss Limit ($):"), gbc);
         gbc.gridx = 1;
         JSpinner lossLimitSpinner = new JSpinner(new SpinnerNumberModel(dailyLossLimit.doubleValue(), 100.0, 5000.0, 100.0));
@@ -995,10 +1011,10 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(lossLimitSpinner, gbc);
 
         // Notifications section
-        gbc.gridx = 0; gbc.gridy = 27; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 28; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Notifications", gbc);
 
-        gbc.gridy = 28; gbc.gridwidth = 1;
+        gbc.gridy = 29; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Event Notifications:"), gbc);
         gbc.gridx = 1;
         JCheckBox eventNotifCheckBox = new JCheckBox();
@@ -1007,7 +1023,7 @@ public class OrderFlowStrategyEnhanced implements
         eventNotifCheckBox.addActionListener(e -> enableEventNotifications = eventNotifCheckBox.isSelected());
         settingsPanel.add(eventNotifCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 29;
+        gbc.gridx = 0; gbc.gridy = 30;
         settingsPanel.add(new JLabel("AI Notifications:"), gbc);
         gbc.gridx = 1;
         JCheckBox aiNotifCheckBox = new JCheckBox();
@@ -1016,7 +1032,7 @@ public class OrderFlowStrategyEnhanced implements
         aiNotifCheckBox.addActionListener(e -> enableAINotifications = aiNotifCheckBox.isSelected());
         settingsPanel.add(aiNotifCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 30;
+        gbc.gridx = 0; gbc.gridy = 31;
         settingsPanel.add(new JLabel("Periodic Updates:"), gbc);
         gbc.gridx = 1;
         JCheckBox periodicNotifCheckBox = new JCheckBox();
@@ -1032,7 +1048,7 @@ public class OrderFlowStrategyEnhanced implements
         });
         settingsPanel.add(periodicNotifCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 31;
+        gbc.gridx = 0; gbc.gridy = 32;
         settingsPanel.add(new JLabel("Update Interval (min):"), gbc);
         gbc.gridx = 1;
         JSpinner periodicIntervalSpinner = new JSpinner(new SpinnerNumberModel(periodicUpdateIntervalMinutes.intValue(), 5, 60, 5));
@@ -3222,7 +3238,7 @@ public class OrderFlowStrategyEnhanced implements
                             // Use AI Investment Strategist (memory-aware) if available
                             if (aiStrategist != null) {
                                 log("🧠 Using AI Investment Strategist (memory-aware evaluation)");
-                            aiStrategist.evaluateSetup(signalData, sessionContext, new AIInvestmentStrategist.AIStrategistCallback() {
+                            aiStrategist.evaluateSetup(signalData, sessionContext, devMode, new AIInvestmentStrategist.AIStrategistCallback() {
                             @Override
                             public void onDecision(AIInvestmentStrategist.AIDecision decision) {
                                 // Handle threshold adjustments from AI
