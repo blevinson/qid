@@ -3250,7 +3250,12 @@ public class OrderFlowStrategyEnhanced implements
                                 log("🔍 AI DECISION DEBUG: shouldTake=%s, plan=%s, confidence=%.0f%%".formatted(
                                     decision.shouldTake, decision.plan != null ? "PRESENT" : "NULL", decision.confidence * 100));
 
-                                if (decision.shouldTake && decision.plan != null) {
+                                // CRITICAL CHECK: shouldTake && plan != null
+                                boolean willExecute = decision.shouldTake && decision.plan != null;
+                                log("🚦 EXECUTION CHECK: shouldTake=%s && plan=%s → willExecute=%s".formatted(
+                                    decision.shouldTake, decision.plan != null, willExecute));
+
+                                if (willExecute) {
                                     log(String.format("✅ AI TAKE: %s (confidence: %.0f%%) - %s",
                                         decision.plan.orderType, decision.confidence * 100, decision.reasoning));
 

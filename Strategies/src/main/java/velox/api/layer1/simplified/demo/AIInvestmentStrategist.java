@@ -495,6 +495,8 @@ public class AIInvestmentStrategist {
             .get(0).getAsJsonObject()
             .get("text").getAsString();
 
+        log("📝 RAW AI RESPONSE (first 500 chars): " + content.substring(0, Math.min(500, content.length())));
+
         return parseDecision(content, signal);
     }
 
@@ -517,11 +519,14 @@ public class AIInvestmentStrategist {
                 jsonStr = response.substring(start, end).trim();
             }
 
+            log("📋 EXTRACTED JSON: " + jsonStr.substring(0, Math.min(300, jsonStr.length())));
+
             JsonObject json = gson.fromJson(jsonStr, JsonObject.class);
 
             // Parse action
             String action = json.has("action") ? json.get("action").getAsString() : "SKIP";
             decision.shouldTake = "TAKE".equalsIgnoreCase(action);
+            log("🎯 PARSED ACTION: '%s' → shouldTake=%s".formatted(action, decision.shouldTake));
 
             // Parse confidence
             if (json.has("confidence")) {
@@ -535,6 +540,9 @@ public class AIInvestmentStrategist {
                 json.get("reasoning").getAsString() : "No reasoning provided";
 
             // Parse trade plan
+            log("📦 PARSING PLAN: hasPlan=%s, isNull=%s, shouldTake=%s".formatted(
+                json.has("plan"), json.has("plan") && json.get("plan").isJsonNull(), decision.shouldTake));
+
             if (json.has("plan") && !json.get("plan").isJsonNull() && decision.shouldTake) {
                 JsonObject planJson = json.getAsJsonObject("plan");
                 TradePlan plan = new TradePlan();
@@ -551,9 +559,13 @@ public class AIInvestmentStrategist {
                     planJson.get("contracts").getAsInt() : 1;
 
                 decision.plan = plan;
+                log("✅ PLAN CREATED: orderType=%s, SL=%d, TP=%d".formatted(plan.orderType, plan.stopLossPrice, plan.takeProfitPrice));
             } else if (decision.shouldTake) {
                 // Create default plan if taking but no plan provided
                 decision.plan = createDefaultPlan(signal);
+                log("✅ DEFAULT PLAN CREATED: SL=%d, TP=%d".formatted(decision.plan.stopLossPrice, decision.plan.takeProfitPrice));
+            } else {
+                log("⚠️ NO PLAN: shouldTake=%s, so no plan needed or created".formatted(decision.shouldTake));
             }
 
             // Parse threshold adjustment (optional)
