@@ -453,6 +453,26 @@ public class AIOrderManagerTest {
         }
 
         @Override
+        public String placeBracketOrder(OrderType type, OrderSide side, double price, int quantity,
+                                        double stopLossOffset, double takeProfitOffset) {
+            lastQuantity = quantity;
+            String orderId = "BRACKET-" + System.currentTimeMillis();
+            entryOrders.add(orderId);
+            // For bracket orders, we use placeholder IDs for SL/TP tracking
+            stopLossOrders.add(orderId + "-SL");
+            takeProfitOrders.add(orderId + "-TP");
+
+            // Simulate fill
+            if (side == OrderSide.BUY) {
+                currentPosition.addAndGet(quantity);
+            } else {
+                currentPosition.addAndGet(-quantity);
+            }
+
+            return orderId;
+        }
+
+        @Override
         public String placeStopLoss(OrderSide side, double stopPrice, int quantity) {
             String orderId = "STOP-" + System.currentTimeMillis();
             stopLossOrders.add(orderId);
