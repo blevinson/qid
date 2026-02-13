@@ -293,6 +293,14 @@ public class SessionContext {
     }
 
     /**
+     * Record an entry attempt (before outcome is known)
+     * Call this when AI decides to TAKE a signal
+     */
+    public void recordEntryAttempt() {
+        tradesThisSession++;
+    }
+
+    /**
      * Mark first signal as processed (indicators now have data)
      */
     public void markFirstSignalProcessed() {

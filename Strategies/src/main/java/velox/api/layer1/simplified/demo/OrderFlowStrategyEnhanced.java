@@ -3220,6 +3220,9 @@ public class OrderFlowStrategyEnhanced implements
                                 }
 
                                 // Execute AI decision
+                                log("🔍 AI DECISION DEBUG: shouldTake=%s, plan=%s, confidence=%.0f%%".formatted(
+                                    decision.shouldTake, decision.plan != null ? "PRESENT" : "NULL", decision.confidence * 100));
+
                                 if (decision.shouldTake && decision.plan != null) {
                                     log(String.format("✅ AI TAKE: %s (confidence: %.0f%%) - %s",
                                         decision.plan.orderType, decision.confidence * 100, decision.reasoning));
@@ -3270,6 +3273,10 @@ public class OrderFlowStrategyEnhanced implements
                                                     // Approved - execute the trade
                                                     SwingUtilities.invokeLater(() -> {
                                                         log("✅ User APPROVED - executing trade");
+                                                        // Track entry in session context
+                                                        if (sessionContext != null) {
+                                                            sessionContext.recordEntryAttempt();
+                                                        }
                                                         aiOrderManager.executeEntry(aiDecision, signalData);
                                                     });
                                                 },
@@ -3283,6 +3290,10 @@ public class OrderFlowStrategyEnhanced implements
                                             );
                                         } else {
                                             // FULL_AUTO - execute immediately
+                                            // Track entry in session context
+                                            if (sessionContext != null) {
+                                                sessionContext.recordEntryAttempt();
+                                            }
                                             aiOrderManager.executeEntry(aiDecision, signalData);
                                         }
                                     } else {
