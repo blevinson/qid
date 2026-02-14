@@ -96,4 +96,17 @@ public class AIMarkerIcons {
         g.dispose();
         return icon;
     }
+
+    /**
+     * Slippage Rejected: MAGENTA X (distinct from ORANGE X for stop loss)
+     */
+    public static BufferedImage createSlippageRejectedIcon() {
+        BufferedImage icon = new BufferedImage(ICON_SIZE, ICON_SIZE, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = icon.createGraphics();
+        g.setColor(Color.MAGENTA);
+        g.drawLine(0, 0, ICON_SIZE - 1, ICON_SIZE - 1);
+        g.drawLine(ICON_SIZE - 1, 0, 0, ICON_SIZE - 1);
+        g.dispose();
+        return icon;
+    }
 }

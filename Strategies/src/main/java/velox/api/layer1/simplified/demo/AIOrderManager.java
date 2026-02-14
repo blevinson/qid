@@ -141,6 +141,13 @@ public class AIOrderManager {
             if (stalenessReason != null) {
                 log("🚫 STALE SIGNAL REJECTED: %s", stalenessReason);
                 fileLog("🚫 STALE SIGNAL REJECTED: " + stalenessReason);
+
+                // Place slippage rejection marker on chart
+                if (markerCallback != null && currentPriceSupplier != null) {
+                    int currentPrice = currentPriceSupplier.get();
+                    int slippage = Math.abs(signal.price - currentPrice);
+                    markerCallback.onSlippageRejectedMarker(signal.price, currentPrice, slippage);
+                }
                 return null;
             }
             log("✅ Staleness check PASSED");
@@ -194,73 +201,50 @@ public class AIOrderManager {
                 decision
             );
 
-            // Place entry order
-            // Convert tick prices to actual prices for Bookmap API
-            this.pips = signal.pips;  // Store for later use in modify/stop methods
-            double entryPriceActual = signal.price * pips;
-            double stopLossPriceActual = decision.stopLoss * pips;
-            double takeProfitPriceActual = decision.takeProfit * pips;
+            // Place bracket order with native SL/TP (Bookmap managed)
+            // Offsets are in TICKS (distance from entry price)
+            this.pips = signal.pips;  // Store for later use
 
-            log("📊 Price conversion: pips=%.4f", pips);
-            log("📊 Entry: %d ticks → %.2f actual", signal.price, entryPriceActual);
-            log("📊 SL: %d ticks → %.2f actual", decision.stopLoss, stopLossPriceActual);
-            log("📊 TP: %d ticks → %.2f actual", decision.takeProfit, takeProfitPriceActual);
+            // Calculate offsets in ticks
+            int slOffsetTicks = Math.abs(signal.price - decision.stopLoss);
+            int tpOffsetTicks = Math.abs(decision.takeProfit - signal.price);
 
-            log("📤 Placing ENTRY order: %s %d @ %.2f", decision.isLong ? "BUY" : "SELL", positionSize, entryPriceActual);
+            log("📊 Bracket order offsets (ticks): SL=%d, TP=%d", slOffsetTicks, tpOffsetTicks);
+            log("📊 Entry: %d ticks, SL: %d ticks, TP: %d ticks", signal.price, decision.stopLoss, decision.takeProfit);
+            fileLog("📝 NATIVE BRACKET: entry=" + signal.price + " SL=" + decision.stopLoss + " TP=" + decision.takeProfit + " (offsets: SL=" + slOffsetTicks + " TP=" + tpOffsetTicks + ")");
+
             OrderExecutor.OrderSide entrySide = decision.isLong ?
                 OrderExecutor.OrderSide.BUY : OrderExecutor.OrderSide.SELL;
 
-            String entryOrderId = orderExecutor.placeEntry(
-                OrderExecutor.OrderType.MARKET,  // Use market orders for immediate execution
+            // Use bracket order - single order with native SL/TP managed by Bookmap
+            String entryOrderId = orderExecutor.placeBracketOrder(
+                OrderExecutor.OrderType.MARKET,
                 entrySide,
-                entryPriceActual,  // Actual price (ticks * pips)
-                positionSize
+                Double.NaN,  // Market order - no price needed
+                positionSize,
+                slOffsetTicks,   // Stop loss offset in ticks
+                tpOffsetTicks    // Take profit offset in ticks
             );
-            log("📥 Entry order ID: %s", entryOrderId);
 
-            position.entryOrderId.set(entryOrderId);
-
-            // Place stop loss
-            log("📤 Placing STOP LOSS order: %s @ %.2f", decision.isLong ? "SELL" : "BUY", stopLossPriceActual);
-            OrderExecutor.OrderSide stopSide = decision.isLong ?
-                OrderExecutor.OrderSide.SELL : OrderExecutor.OrderSide.BUY;
-
-            String stopOrderId = orderExecutor.placeStopLoss(
-                stopSide,
-                stopLossPriceActual,  // Actual price
-                positionSize
-            );
-            log("📥 Stop loss order ID: %s", stopOrderId);
-
-            position.stopLossOrderId.set(stopOrderId);
-
-            // Place take profit
-            log("📤 Placing TAKE PROFIT order: %s @ %.2f", decision.isLong ? "SELL" : "BUY", takeProfitPriceActual);
-            String targetOrderId = orderExecutor.placeTakeProfit(
-                stopSide,  // Same side as stop (opposite of entry)
-                takeProfitPriceActual,  // Actual price
-                positionSize
-            );
-            log("📥 Take profit order ID: %s", targetOrderId);
-
-            position.takeProfitOrderId.set(targetOrderId);
-
-            // Validate all orders were placed
-            if (entryOrderId == null || stopOrderId == null || targetOrderId == null) {
-                log("❌ ORDER PLACEMENT FAILED - one or more orders returned null!");
-                log("   Entry: %s, SL: %s, TP: %s", entryOrderId, stopOrderId, targetOrderId);
-                log("   Marker will NOT be placed, position NOT tracked");
-                fileLog("❌ ORDER PLACEMENT FAILED - Entry: " + entryOrderId + ", SL: " + stopOrderId + ", TP: " + targetOrderId);
+            if (entryOrderId == null) {
+                log("❌ BRACKET ORDER FAILED!");
+                fileLog("❌ BRACKET ORDER FAILED!");
                 return null;
             }
 
-            fileLog("✅ ALL ORDERS PLACED - Entry: " + entryOrderId + ", SL: " + stopOrderId + ", TP: " + targetOrderId);
+            log("📥 Bracket order ID: %s (Bookmap manages SL/TP)", entryOrderId);
+            fileLog("✅ BRACKET ORDER PLACED: " + entryOrderId);
+
+            position.entryOrderId.set(entryOrderId);
+            // SL/TP order IDs are managed by Bookmap, not tracked separately
+            position.stopLossOrderId.set(entryOrderId + "-SL");  // Placeholder for tracking
+            position.takeProfitOrderId.set(entryOrderId + "-TP");
 
             // Track position
             activePositions.put(positionId, position);
             log("✅ Position tracked: %s", positionId.substring(0, 8));
 
-            // Place AI entry marker on chart (with SL/TP for line drawing)
+            // Place AI entry marker on chart
             log("📍 Calling markerCallback.onEntryMarker...");
             fileLog("📍 markerCallback is: " + (markerCallback != null ? "NOT NULL" : "NULL"));
             if (markerCallback != null) {
@@ -307,6 +291,7 @@ public class AIOrderManager {
      * Monitor positions and make adjustments
      * Called on each price update
      */
+    private long lastTpSlLogTime = 0;
     public void onPriceUpdate(int currentPrice, long timestamp) {
         for (ActivePosition position : activePositions.values()) {
             if (position.isClosed.get()) continue;
@@ -314,21 +299,45 @@ public class AIOrderManager {
             // Update performance metrics
             position.updatePerformanceMetrics(currentPrice);
 
+            // Debug: Log when close to TP/SL (throttled)
+            long now = System.currentTimeMillis();
+            if (now - lastTpSlLogTime > 5000) {
+                int slDist = Math.abs(currentPrice - position.stopLossPrice.get());
+                int tpDist = Math.abs(currentPrice - position.takeProfitPrice.get());
+                if (slDist <= 5 || tpDist <= 5) {
+                    fileLog("📍 TP/SL Proximity: price=" + currentPrice + " SL=" + position.stopLossPrice.get() +
+                        " TP=" + position.takeProfitPrice.get() + " (SL dist=" + slDist + ", TP dist=" + tpDist + ")");
+                    lastTpSlLogTime = now;
+                }
+            }
+
             // Check if stop loss was hit
             if (position.isStopLossHit(currentPrice)) {
+                fileLog("🛑 SL HIT DETECTED: price=" + currentPrice + " SL=" + position.stopLossPrice.get());
                 closePosition(position.id, currentPrice, "Stop Loss Hit", null);
                 continue;
             }
 
             // Check if take profit was hit
             if (position.isTakeProfitHit(currentPrice)) {
+                fileLog("💎 TP HIT DETECTED: price=" + currentPrice + " TP=" + position.takeProfitPrice.get());
                 closePosition(position.id, currentPrice, "Take Profit Hit", null);
                 continue;
             }
 
             // Check break-even trigger
+            // Note: For bracket orders, skip internal break-even since Bookmap manages SL/TP
             if (breakEvenEnabled && position.shouldTriggerBreakEven(currentPrice)) {
-                moveStopToBreakEven(position);
+                String stopOrderId = position.stopLossOrderId.get();
+                boolean isBracketOrder = stopOrderId != null && stopOrderId.endsWith("-SL");
+                if (isBracketOrder) {
+                    // Skip break-even for bracket orders - Bookmap manages the order
+                    // Just mark it as moved so we don't keep checking
+                    position.breakEvenMoved.set(true);
+                    fileLog("🟡 Break-even skipped for bracket order (Bookmap manages SL/TP)");
+                } else {
+                    moveStopToBreakEven(position);
+                }
             }
 
             // Check trailing stop
@@ -351,12 +360,36 @@ public class AIOrderManager {
                 return;
             }
 
+            // Check if this is a bracket order (placeholder ID ends with -SL)
+            // Bracket orders have SL/TP managed by Bookmap - we can't modify them directly
+            boolean isBracketOrder = stopOrderId.endsWith("-SL");
+            if (isBracketOrder) {
+                log("⚠️ Break-even for bracket order: visual update only (Bookmap manages SL/TP)");
+                fileLog("🟡 moveStopToBreakEven: BRACKET ORDER detected, skipping order modification");
+
+                // Still update internal tracking and visual line
+                int newStopPriceTicks = position.breakEvenStopPrice;
+                position.stopLossPrice.set(newStopPriceTicks);
+                position.breakEvenMoved.set(true);
+
+                // Place break-even marker on chart (updates visual line)
+                if (markerCallback != null) {
+                    markerCallback.onBreakEvenMarker(newStopPriceTicks, position.breakEvenTriggerPrice);
+                }
+
+                log("🟡 BREAK-EVEN TRIGGERED (visual only):");
+                log("   Position: %s", position.id.substring(0, 8));
+                log("   Stop moved: %d → %d ticks (Bookmap manages actual order)",
+                    position.breakEvenTriggerPrice, newStopPriceTicks);
+                return;
+            }
+
             int newStopPriceTicks = position.breakEvenStopPrice;
             double newStopPriceActual = newStopPriceTicks * pips;  // Convert to actual price
 
             fileLog("🟡 moveStopToBreakEven: orderId=" + stopOrderId + ", newStopPrice=" + newStopPriceActual);
 
-            // Modify stop loss order
+            // Modify stop loss order (for non-bracket orders)
             String newStopOrderId = orderExecutor.modifyStopLoss(
                 stopOrderId,
                 newStopPriceActual,  // Actual price
@@ -389,6 +422,27 @@ public class AIOrderManager {
      */
     private void trailStop(ActivePosition position, int currentPrice) {
         try {
+            String stopOrderId = position.stopLossOrderId.get();
+
+            // Check if this is a bracket order (placeholder ID ends with -SL)
+            boolean isBracketOrder = stopOrderId != null && stopOrderId.endsWith("-SL");
+            if (isBracketOrder) {
+                // For bracket orders, just update internal tracking (Bookmap manages the order)
+                int newStopPriceTicks = position.calculateTrailStop(currentPrice);
+                int oldStop = position.stopLossPrice.get();
+                position.stopLossPrice.set(newStopPriceTicks);
+
+                double lockedProfit = position.isLong ?
+                    (currentPrice - newStopPriceTicks) * 12.5 :
+                    (newStopPriceTicks - currentPrice) * 12.5;
+
+                log("📍 TRAILING STOP (visual only for bracket order):");
+                log("   Position: %s", position.id.substring(0, 8));
+                log("   Stop trailed: %d → %d ticks (Bookmap manages actual order)", oldStop, newStopPriceTicks);
+                log("   Locked in profit: $%.2f", lockedProfit);
+                return;
+            }
+
             int newStopPriceTicks = position.calculateTrailStop(currentPrice);
             double newStopPriceActual = newStopPriceTicks * pips;  // Convert to actual price
 
@@ -657,5 +711,13 @@ public class AIOrderManager {
          * Called when break-even is triggered
          */
         void onBreakEvenMarker(int newStopPrice, int triggerPrice);
+
+        /**
+         * Called when signal is rejected due to slippage
+         * @param signalPrice original signal price
+         * @param currentPrice current market price
+         * @param slippageTicks how many ticks price moved
+         */
+        void onSlippageRejectedMarker(int signalPrice, int currentPrice, int slippageTicks);
     }
 }

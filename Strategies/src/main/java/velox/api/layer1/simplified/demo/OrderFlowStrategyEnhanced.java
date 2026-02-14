@@ -137,6 +137,9 @@ public class OrderFlowStrategyEnhanced implements
     @Parameter(name = "Daily Loss Limit ($)")
     private Double dailyLossLimit = 500.0;
 
+    @Parameter(name = "Max Slippage (ticks)")
+    private Integer maxSlippageTicks = 20;  // Skip if price moved > 20 ticks
+
     // ========== SAFETY PARAMETERS ==========
     @Parameter(name = "Simulation Mode Only")
     private Boolean simModeOnly = true;
@@ -754,11 +757,37 @@ public class OrderFlowStrategyEnhanced implements
 
     /**
      * Draw horizontal lines at active SL/TP levels
-     * DISABLED - Using Bookmap's native SL/TP instead
+     * Uses addPoint() to draw horizontal lines on the chart
      */
     private long lastLevelLogTime = 0;
     private void drawAITradingLevels() {
-        // DISABLED - was causing issues, use Bookmap native SL/TP instead
+        try {
+            // Only draw if we have active SL/TP levels and valid indicators
+            if (activeStopLossPrice == null || activeTakeProfitPrice == null) {
+                return;
+            }
+            if (aiStopLossLine == null || aiTakeProfitLine == null) {
+                return;
+            }
+
+            // Add points to draw horizontal lines at SL/TP levels
+            // addPoint() expects tick values, which we already have
+            aiStopLossLine.addPoint(activeStopLossPrice);
+            aiTakeProfitLine.addPoint(activeTakeProfitPrice);
+
+            // Throttled logging (every 10 seconds)
+            long now = System.currentTimeMillis();
+            if (now - lastLevelLogTime > 10000) {
+                fileLog("📐 drawAITradingLevels: SL=" + activeStopLossPrice + " TP=" + activeTakeProfitPrice + " ticks");
+                lastLevelLogTime = now;
+            }
+        } catch (Exception e) {
+            // Don't spam logs for drawing errors
+            if (System.currentTimeMillis() - lastLevelLogTime > 60000) {
+                fileLog("❌ drawAITradingLevels error: " + e.getMessage());
+                lastLevelLogTime = System.currentTimeMillis();
+            }
+        }
     }
 
     // ========== CUSTOM PANELS ==========
@@ -957,11 +986,27 @@ public class OrderFlowStrategyEnhanced implements
         confThresholdSpinner.addChangeListener(e -> confluenceThreshold = (Integer) confThresholdSpinner.getValue());
         settingsPanel.add(confThresholdSpinner, gbc);
 
+        gbc.gridx = 0; gbc.gridy = 22;
+        JLabel slippageLabel = new JLabel("Max Slippage (ticks):");
+        slippageLabel.setToolTipText("Reject signal if price moved more than this many ticks");
+        settingsPanel.add(slippageLabel, gbc);
+        gbc.gridx = 1;
+        JSpinner slippageSpinner = new JSpinner(new SpinnerNumberModel(maxSlippageTicks.intValue(), 5, 100, 5));
+        slippageSpinner.setToolTipText("Higher = allow more price movement (default: 20)");
+        slippageSpinner.addChangeListener(e -> {
+            maxSlippageTicks = (Integer) slippageSpinner.getValue();
+            if (aiOrderManager != null) {
+                aiOrderManager.maxPriceSlippageTicks = maxSlippageTicks;
+            }
+            log("📏 Max Slippage: " + maxSlippageTicks + " ticks");
+        });
+        settingsPanel.add(slippageSpinner, gbc);
+
         // Safety Controls section
-        gbc.gridx = 0; gbc.gridy = 22; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 24; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Safety Controls", gbc);
 
-        gbc.gridy = 23; gbc.gridwidth = 1;
+        gbc.gridy = 25; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Simulation Mode Only:"), gbc);
         gbc.gridx = 1;
         simModeCheckBox = new JCheckBox();
@@ -969,7 +1014,7 @@ public class OrderFlowStrategyEnhanced implements
         simModeCheckBox.addActionListener(e -> updateSimMode());
         settingsPanel.add(simModeCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 24;
+        gbc.gridx = 0; gbc.gridy = 26;
         settingsPanel.add(new JLabel("Enable Auto-Execution:"), gbc);
         gbc.gridx = 1;
         autoExecCheckBox = new JCheckBox();
@@ -978,17 +1023,17 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(autoExecCheckBox, gbc);
 
         // Risk Management section
-        gbc.gridx = 0; gbc.gridy = 25; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 27; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Risk Management", gbc);
 
-        gbc.gridy = 26; gbc.gridwidth = 1;
+        gbc.gridy = 28; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Max Position:"), gbc);
         gbc.gridx = 1;
         JSpinner maxPosSpinner = new JSpinner(new SpinnerNumberModel(maxPosition.intValue(), 1, 10, 1));
         maxPosSpinner.addChangeListener(e -> maxPosition = (Integer) maxPosSpinner.getValue());
         settingsPanel.add(maxPosSpinner, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 27;
+        gbc.gridx = 0; gbc.gridy = 29;
         settingsPanel.add(new JLabel("Daily Loss Limit ($):"), gbc);
         gbc.gridx = 1;
         JSpinner lossLimitSpinner = new JSpinner(new SpinnerNumberModel(dailyLossLimit.doubleValue(), 100.0, 5000.0, 100.0));
@@ -996,10 +1041,10 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(lossLimitSpinner, gbc);
 
         // Notifications section
-        gbc.gridx = 0; gbc.gridy = 28; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 30; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Notifications", gbc);
 
-        gbc.gridy = 29; gbc.gridwidth = 1;
+        gbc.gridy = 31; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Event Notifications:"), gbc);
         gbc.gridx = 1;
         JCheckBox eventNotifCheckBox = new JCheckBox();
@@ -2298,6 +2343,7 @@ public class OrderFlowStrategyEnhanced implements
             aiOrderManager.breakEvenTicks = 3;
             aiOrderManager.maxPositions = maxPosition;
             aiOrderManager.maxDailyLoss = dailyLossLimit;
+            aiOrderManager.maxPriceSlippageTicks = maxSlippageTicks;
 
             // Set up price supplier for staleness checks
             aiOrderManager.setCurrentPriceSupplier(() -> (int) lastKnownPrice);
@@ -4647,6 +4693,13 @@ public class OrderFlowStrategyEnhanced implements
             aiExitMarker.addIcon(price, icon, 3, 3);
 
             // Clear SL/TP lines when position closes
+            // Add a point at 0 to "break" the line and make it disappear
+            if (aiStopLossLine != null) {
+                aiStopLossLine.addPoint(0);
+            }
+            if (aiTakeProfitLine != null) {
+                aiTakeProfitLine.addPoint(0);
+            }
             activeStopLossPrice = null;
             activeTakeProfitPrice = null;
 
@@ -4676,6 +4729,22 @@ public class OrderFlowStrategyEnhanced implements
                 " (actual: " + (newStopPrice * pips) + ", Stop moved from " + triggerPrice + ") - SL line updated");
         } catch (Exception e) {
             log("❌ Failed to place break-even marker: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public void onSlippageRejectedMarker(int signalPrice, int currentPrice, int slippageTicks) {
+        try {
+            // Create magenta X icon for slippage rejection
+            BufferedImage icon = AIMarkerIcons.createSlippageRejectedIcon();
+
+            // Add marker at the signal price
+            aiSkipMarker.addIcon(signalPrice, icon, 3, 3);
+
+            log("🟣 SLIPPAGE REJECTED MARKER @ tick " + signalPrice +
+                " (actual: " + (signalPrice * pips) + ", slippage: " + slippageTicks + " ticks, current: " + currentPrice + ")");
+        } catch (Exception e) {
+            log("❌ Failed to place slippage rejected marker: " + e.getMessage());
         }
     }
 
