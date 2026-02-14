@@ -3524,6 +3524,16 @@ public class OrderFlowStrategyEnhanced implements
                         }
                     }
 
+                    // 4. Max concurrent positions filter
+                    if (sendToAI && aiOrderManager != null) {
+                        int activePositions = aiOrderManager.getActivePositionCount();
+                        if (activePositions >= maxPosition) {
+                            sendToAI = false;
+                            skipReason = String.format("Max positions reached (%d >= %d)",
+                                activePositions, maxPosition);
+                        }
+                    }
+
                     // If filtered out, log and exit - NO marker, NO tracking
                     if (!sendToAI) {
                         log("⏭️ PRE-FILTER SKIP: " + skipReason);
