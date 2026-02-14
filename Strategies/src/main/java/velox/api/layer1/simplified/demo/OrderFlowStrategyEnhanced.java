@@ -167,7 +167,10 @@ public class OrderFlowStrategyEnhanced implements
     @Parameter(name = "Confluence Threshold")
     private Integer confluenceThreshold = 50;
 
-    // Adjustable confluence weights (AI can modify within safety bounds)
+    @Parameter(name = "AI Managed Weights")
+    private Boolean aiManagedWeights = true;  // When true, AI can adjust confluence weights
+
+    // Adjustable confluence weights (AI can modify within safety bounds when enabled)
     private ConfluenceWeights confluenceWeights = new ConfluenceWeights();
 
     @Parameter(name = "AI Auth Token")
@@ -989,7 +992,98 @@ public class OrderFlowStrategyEnhanced implements
         confThresholdSpinner.addChangeListener(e -> confluenceThreshold = (Integer) confThresholdSpinner.getValue());
         settingsPanel.add(confThresholdSpinner, gbc);
 
+        // AI Managed Weights toggle
         gbc.gridx = 0; gbc.gridy = 22;
+        JLabel aiManagedLabel = new JLabel("AI Managed Weights:");
+        aiManagedLabel.setToolTipText("When enabled, AI can adjust confluence weights automatically");
+        settingsPanel.add(aiManagedLabel, gbc);
+        gbc.gridx = 1;
+        JCheckBox aiManagedWeightsCheckBox = new JCheckBox();
+        aiManagedWeightsCheckBox.setSelected(aiManagedWeights);
+        aiManagedWeightsCheckBox.setToolTipText("Enable to let AI fine-tune scoring weights based on market conditions");
+        aiManagedWeightsCheckBox.addActionListener(e -> {
+            aiManagedWeights = aiManagedWeightsCheckBox.isSelected();
+            log("⚖️ AI Managed Weights: " + (aiManagedWeights ? "ENABLED" : "DISABLED"));
+        });
+        settingsPanel.add(aiManagedWeightsCheckBox, gbc);
+
+        // Confluence Weights section (collapsible-style)
+        gbc.gridx = 0; gbc.gridy = 23; gbc.gridwidth = 2;
+        addSeparator(settingsPanel, "Confluence Weights (Advanced)", gbc);
+
+        // Weight controls - key weights only to save space
+        gbc.gridy = 24; gbc.gridwidth = 1;
+        settingsPanel.add(new JLabel("Iceberg Max (20-60):"), gbc);
+        gbc.gridx = 1;
+        JSpinner icebergMaxSpinner = new JSpinner(new SpinnerNumberModel(
+            confluenceWeights.get(ConfluenceWeights.ICEBERG_MAX), 20, 60, 5));
+        icebergMaxSpinner.addChangeListener(e -> {
+            confluenceWeights.set(ConfluenceWeights.ICEBERG_MAX, (Integer) icebergMaxSpinner.getValue());
+            log("Weight: icebergMax = " + confluenceWeights.get(ConfluenceWeights.ICEBERG_MAX));
+        });
+        settingsPanel.add(icebergMaxSpinner, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 25;
+        settingsPanel.add(new JLabel("CVD Align Max (10-40):"), gbc);
+        gbc.gridx = 1;
+        JSpinner cvdAlignSpinner = new JSpinner(new SpinnerNumberModel(
+            confluenceWeights.get(ConfluenceWeights.CVD_ALIGN_MAX), 10, 40, 5));
+        cvdAlignSpinner.addChangeListener(e -> {
+            confluenceWeights.set(ConfluenceWeights.CVD_ALIGN_MAX, (Integer) cvdAlignSpinner.getValue());
+            log("Weight: cvdAlignMax = " + confluenceWeights.get(ConfluenceWeights.CVD_ALIGN_MAX));
+        });
+        settingsPanel.add(cvdAlignSpinner, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 26;
+        settingsPanel.add(new JLabel("CVD Diverge Penalty (15-50):"), gbc);
+        gbc.gridx = 1;
+        JSpinner cvdDivergeSpinner = new JSpinner(new SpinnerNumberModel(
+            confluenceWeights.get(ConfluenceWeights.CVD_DIVERGE_PENALTY), 15, 50, 5));
+        cvdDivergeSpinner.addChangeListener(e -> {
+            confluenceWeights.set(ConfluenceWeights.CVD_DIVERGE_PENALTY, (Integer) cvdDivergeSpinner.getValue());
+            log("Weight: cvdDivergePenalty = " + confluenceWeights.get(ConfluenceWeights.CVD_DIVERGE_PENALTY));
+        });
+        settingsPanel.add(cvdDivergeSpinner, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 27;
+        settingsPanel.add(new JLabel("EMA Align Max (10-30):"), gbc);
+        gbc.gridx = 1;
+        JSpinner emaAlignSpinner = new JSpinner(new SpinnerNumberModel(
+            confluenceWeights.get(ConfluenceWeights.EMA_ALIGN_MAX), 10, 30, 5));
+        emaAlignSpinner.addChangeListener(e -> {
+            confluenceWeights.set(ConfluenceWeights.EMA_ALIGN_MAX, (Integer) emaAlignSpinner.getValue());
+            log("Weight: emaAlignMax = " + confluenceWeights.get(ConfluenceWeights.EMA_ALIGN_MAX));
+        });
+        settingsPanel.add(emaAlignSpinner, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 28;
+        settingsPanel.add(new JLabel("VWAP Align (5-15):"), gbc);
+        gbc.gridx = 1;
+        JSpinner vwapAlignSpinner = new JSpinner(new SpinnerNumberModel(
+            confluenceWeights.get(ConfluenceWeights.VWAP_ALIGN), 5, 15, 1));
+        vwapAlignSpinner.addChangeListener(e -> {
+            confluenceWeights.set(ConfluenceWeights.VWAP_ALIGN, (Integer) vwapAlignSpinner.getValue());
+            log("Weight: vwapAlign = " + confluenceWeights.get(ConfluenceWeights.VWAP_ALIGN));
+        });
+        settingsPanel.add(vwapAlignSpinner, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 29;
+        JButton resetWeightsBtn = new JButton("Reset Weights");
+        resetWeightsBtn.setToolTipText("Reset all weights to default values");
+        resetWeightsBtn.addActionListener(e -> {
+            confluenceWeights.resetToDefaults();
+            // Update spinners to reflect defaults
+            icebergMaxSpinner.setValue(confluenceWeights.get(ConfluenceWeights.ICEBERG_MAX));
+            cvdAlignSpinner.setValue(confluenceWeights.get(ConfluenceWeights.CVD_ALIGN_MAX));
+            cvdDivergeSpinner.setValue(confluenceWeights.get(ConfluenceWeights.CVD_DIVERGE_PENALTY));
+            emaAlignSpinner.setValue(confluenceWeights.get(ConfluenceWeights.EMA_ALIGN_MAX));
+            vwapAlignSpinner.setValue(confluenceWeights.get(ConfluenceWeights.VWAP_ALIGN));
+            log("⚖️ Weights reset to defaults");
+        });
+        settingsPanel.add(resetWeightsBtn, gbc);
+
+        // Continue with slippage setting - increment all row numbers by 8
+        gbc.gridx = 0; gbc.gridy = 31;
         JLabel slippageLabel = new JLabel("Max Slippage (ticks):");
         slippageLabel.setToolTipText("Reject signal if price moved more than this many ticks");
         settingsPanel.add(slippageLabel, gbc);
@@ -1006,10 +1100,10 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(slippageSpinner, gbc);
 
         // Safety Controls section
-        gbc.gridx = 0; gbc.gridy = 24; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 33; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Safety Controls", gbc);
 
-        gbc.gridy = 25; gbc.gridwidth = 1;
+        gbc.gridy = 34; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Simulation Mode Only:"), gbc);
         gbc.gridx = 1;
         simModeCheckBox = new JCheckBox();
@@ -1017,7 +1111,7 @@ public class OrderFlowStrategyEnhanced implements
         simModeCheckBox.addActionListener(e -> updateSimMode());
         settingsPanel.add(simModeCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 26;
+        gbc.gridx = 0; gbc.gridy = 35;
         settingsPanel.add(new JLabel("Enable Auto-Execution:"), gbc);
         gbc.gridx = 1;
         autoExecCheckBox = new JCheckBox();
@@ -1026,17 +1120,17 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(autoExecCheckBox, gbc);
 
         // Risk Management section
-        gbc.gridx = 0; gbc.gridy = 27; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 36; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Risk Management", gbc);
 
-        gbc.gridy = 28; gbc.gridwidth = 1;
+        gbc.gridy = 37; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Max Position:"), gbc);
         gbc.gridx = 1;
         JSpinner maxPosSpinner = new JSpinner(new SpinnerNumberModel(maxPosition.intValue(), 1, 10, 1));
         maxPosSpinner.addChangeListener(e -> maxPosition = (Integer) maxPosSpinner.getValue());
         settingsPanel.add(maxPosSpinner, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 29;
+        gbc.gridx = 0; gbc.gridy = 38;
         settingsPanel.add(new JLabel("Daily Loss Limit ($):"), gbc);
         gbc.gridx = 1;
         JSpinner lossLimitSpinner = new JSpinner(new SpinnerNumberModel(dailyLossLimit.doubleValue(), 100.0, 5000.0, 100.0));
@@ -1044,10 +1138,10 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(lossLimitSpinner, gbc);
 
         // Notifications section
-        gbc.gridx = 0; gbc.gridy = 30; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 39; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Notifications", gbc);
 
-        gbc.gridy = 31; gbc.gridwidth = 1;
+        gbc.gridy = 40; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Event Notifications:"), gbc);
         gbc.gridx = 1;
         JCheckBox eventNotifCheckBox = new JCheckBox();
@@ -1056,7 +1150,7 @@ public class OrderFlowStrategyEnhanced implements
         eventNotifCheckBox.addActionListener(e -> enableEventNotifications = eventNotifCheckBox.isSelected());
         settingsPanel.add(eventNotifCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 30;
+        gbc.gridx = 0; gbc.gridy = 41;
         settingsPanel.add(new JLabel("AI Notifications:"), gbc);
         gbc.gridx = 1;
         JCheckBox aiNotifCheckBox = new JCheckBox();
@@ -1065,7 +1159,7 @@ public class OrderFlowStrategyEnhanced implements
         aiNotifCheckBox.addActionListener(e -> enableAINotifications = aiNotifCheckBox.isSelected());
         settingsPanel.add(aiNotifCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 31;
+        gbc.gridx = 0; gbc.gridy = 42;
         settingsPanel.add(new JLabel("Periodic Updates:"), gbc);
         gbc.gridx = 1;
         JCheckBox periodicNotifCheckBox = new JCheckBox();
@@ -2870,15 +2964,19 @@ public class OrderFlowStrategyEnhanced implements
             log("   No changes needed (all values same as current)");
         }
 
-        // Apply weight adjustments if any
+        // Apply weight adjustments if any (only if AI managed weights is enabled)
         if (adj.weightAdjustment != null && adj.weightAdjustment.hasAdjustments()) {
-            log("⚖️ AI WEIGHT ADJUSTMENT:");
-            confluenceWeights.applyAdjustments(adj.weightAdjustment);
-            log("   " + confluenceWeights.toAIString().replace("\n", " "));
-            if (adj.weightAdjustment.reasoning != null) {
-                log("   Reasoning: " + adj.weightAdjustment.reasoning);
+            if (aiManagedWeights) {
+                log("⚖️ AI WEIGHT ADJUSTMENT:");
+                confluenceWeights.applyAdjustments(adj.weightAdjustment);
+                log("   " + confluenceWeights.toAIString().replace("\n", " "));
+                if (adj.weightAdjustment.reasoning != null) {
+                    log("   Reasoning: " + adj.weightAdjustment.reasoning);
+                }
+                log("✅ Confluence weights updated by AI");
+            } else {
+                log("⚖️ AI weight adjustment SKIPPED (AI Managed Weights is disabled)");
             }
-            log("✅ Confluence weights updated by AI");
         }
     }
 
