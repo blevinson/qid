@@ -345,6 +345,9 @@ public class OrderFlowStrategyEnhanced implements
     private JLabel aiVwapDivergeLabel;
 
     // AI Threshold Labels (for Signal Thresholds section)
+    private JLabel aiMinConfluenceLabel;
+    private JLabel aiConfluenceThresholdLabel;
+    private JLabel aiThresholdMultLabel;
     private JLabel aiIcebergMinOrdersLabel;
     private JLabel aiSpoofMinSizeLabel;
     private JLabel aiAbsorptionMinSizeLabel;
@@ -865,7 +868,7 @@ public class OrderFlowStrategyEnhanced implements
         minConfluenceSpinner.addChangeListener(e -> updateMinConfluence());
         settingsPanel.add(minConfluenceSpinner, gbc);
         gbc.gridx = 2;
-        JLabel aiMinConfluenceLabel = new JLabel(String.valueOf(minConfluenceScore));
+        aiMinConfluenceLabel = new JLabel(String.valueOf(minConfluenceScore));
         aiMinConfluenceLabel.setForeground(new java.awt.Color(100, 100, 255));
         settingsPanel.add(aiMinConfluenceLabel, gbc);
 
@@ -876,7 +879,7 @@ public class OrderFlowStrategyEnhanced implements
         thresholdMultSpinner.addChangeListener(e -> updateThresholdMultiplier());
         settingsPanel.add(thresholdMultSpinner, gbc);
         gbc.gridx = 2;
-        JLabel aiThresholdMultLabel = new JLabel(String.format("%.1f", thresholdMultiplier));
+        aiThresholdMultLabel = new JLabel(String.format("%.1f", thresholdMultiplier));
         aiThresholdMultLabel.setForeground(new java.awt.Color(100, 100, 255));
         settingsPanel.add(aiThresholdMultLabel, gbc);
 
@@ -1047,12 +1050,16 @@ public class OrderFlowStrategyEnhanced implements
         gbc.gridx = 0; gbc.gridy = 22;
         settingsPanel.add(new JLabel("Confluence Threshold:"), gbc);
         gbc.gridx = 1;
-        JSpinner confThresholdSpinner = new JSpinner(new SpinnerNumberModel(confluenceThreshold.intValue(), 0, 135, 5));
+        confThresholdSpinner = new JSpinner(new SpinnerNumberModel(confluenceThreshold.intValue(), 0, 135, 5));
         confThresholdSpinner.addChangeListener(e -> confluenceThreshold = (Integer) confThresholdSpinner.getValue());
         settingsPanel.add(confThresholdSpinner, gbc);
+        gbc.gridx = 2;
+        aiConfluenceThresholdLabel = new JLabel(String.valueOf(confluenceThreshold));
+        aiConfluenceThresholdLabel.setForeground(new java.awt.Color(100, 100, 255));
+        settingsPanel.add(aiConfluenceThresholdLabel, gbc);
 
         // AI Managed Weights toggle
-        gbc.gridx = 0; gbc.gridy = 23;
+        gbc.gridx = 0; gbc.gridy = 23; gbc.gridwidth = 1;
         JLabel aiManagedLabel = new JLabel("AI Managed Weights:");
         aiManagedLabel.setToolTipText("When enabled, AI can adjust confluence weights automatically");
         settingsPanel.add(aiManagedLabel, gbc);
@@ -2639,6 +2646,15 @@ public class OrderFlowStrategyEnhanced implements
                 aiVwapDivergeLabel.setText(String.valueOf(confluenceWeights.get(ConfluenceWeights.VWAP_DIVERGE)));
             }
             // Signal thresholds
+            if (aiMinConfluenceLabel != null) {
+                aiMinConfluenceLabel.setText(String.valueOf(minConfluenceScore));
+            }
+            if (aiConfluenceThresholdLabel != null) {
+                aiConfluenceThresholdLabel.setText(String.valueOf(confluenceThreshold));
+            }
+            if (aiThresholdMultLabel != null) {
+                aiThresholdMultLabel.setText(String.format("%.1f", thresholdMultiplier));
+            }
             if (aiIcebergMinOrdersLabel != null) {
                 aiIcebergMinOrdersLabel.setText(String.valueOf(icebergMinOrders));
             }
