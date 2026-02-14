@@ -27,6 +27,56 @@ This document specifies UI-configurable fields for position management in the Qi
 
 ## Proposed Settings
 
+### 0. Account & Contract Settings (NEW - Priority: Critical)
+
+These settings define the financial parameters for position sizing and risk calculation.
+
+```
+@Parameter(name = "Account Balance ($)")
+private Double accountBalance = 10000.0;
+
+@Parameter(name = "Tick Value ($)")
+private Double tickValue = 12.50;
+
+@Parameter(name = "Day Margin Per Contract ($)")
+private Double dayMarginPerContract = 6845.0;
+
+@Parameter(name = "Overnight Margin Per Contract ($)")
+private Double overnightMarginPerContract = 12000.0;
+```
+
+**Purpose:** Configure account and contract-specific financial parameters.
+
+**Margin Explained:**
+- **Day Margin** - Collateral needed for intraday positions (released when closed)
+- **Overnight Margin** - Higher collateral if holding past market close
+- **You don't "pay" margin** - it's held as collateral, returned when position closes
+- **Your actual loss** = Stop distance in ticks × tick value × contracts
+
+**Example (ES Futures):**
+```
+Account: $10,000
+Day Margin: $6,845 per contract
+Tick Value: $12.50
+
+Position: 1 contract, 30-tick stop
+├─ Margin Required: $6,845 (you need this available)
+├─ Max Risk: 30 × $12.50 = $375 (what you lose if stop hits)
+└─ Buying Power Used: 68.5%
+```
+
+**Common Instrument Values:**
+
+| Instrument | Tick Value | Day Margin | Overnight Margin |
+|------------|------------|------------|------------------|
+| ES (S&P 500) | $12.50 | $500-$6,845 | ~$12,000 |
+| NQ (Nasdaq) | $5.00 | $500-$1,500 | ~$15,000 |
+| YM (Dow) | $5.00 | $500-$2,500 | ~$10,000 |
+| CL (Crude Oil) | $10.00 | $500-$2,000 | ~$6,000 |
+| GC (Gold) | $10.00 | $500-$1,000 | ~$5,000 |
+
+**UI Location:** Settings panel - Account section (top)
+
 ### 1. Risk/Reward Defaults
 
 ```
@@ -157,14 +207,30 @@ private Boolean allowOpposingPositions = false;
 │ Settings Panel                                          │
 ├─────────────────────────────────────────────────────────┤
 │                                                         │
+│ ┌─ ACCOUNT & CONTRACT ────────────────────────────────┐ │
+│ │ Account Balance ($):          [ 10,000 ] ▲▼        │ │
+│ │ Tick Value ($):               [ 12.50  ] ▲▼        │ │
+│ │ Day Margin/Contract ($):      [ 6,845  ] ▲▼        │ │
+│ │ Overnight Margin/Contract ($):[ 12,000 ] ▲▼        │ │
+│ │                                                       │ │
+│ │ ── CALCULATED (read-only) ──                        │ │
+│ │ Available for Trading:        $10,000               │ │
+│ │ Max Contracts (Day):          1                     │ │
+│ └───────────────────────────────────────────────────────┘ │
+│                                                         │
 │ ┌─ RISK MANAGEMENT ───────────────────────────────────┐ │
 │ │ Default Stop Loss (ticks):    [  30  ] ▲▼          │ │
 │ │ Default Take Profit (ticks):  [  70  ] ▲▼          │ │
 │ │ R:R Ratio:                    1:2.3  (auto)        │ │
 │ │                                                       │ │
+│ │ ── RISK CALCULATOR ──                               │ │
+│ │ Risk Per Contract:            $375.00               │ │
+│ │ Target Per Contract:          $875.00               │ │
+│ │                                                       │ │
 │ │ Position Sizing:              [FIXED ▼]             │ │
 │ │ Fixed Contracts:              [  1   ] ▲▼          │ │
 │ │ Risk Per Trade (%):           [ 1.0  ] ▲▼          │ │
+│ │   → Dollar Risk:              $100.00               │ │
 │ │ Max Contracts:                [ 10   ] ▲▼          │ │
 │ │                                                       │ │
 │ │ Daily Loss Limit ($):         [ 500  ] ▲▼          │ │
@@ -194,7 +260,99 @@ private Boolean allowOpposingPositions = false;
 └─────────────────────────────────────────────────────────┘
 ```
 
+## Trade Preview Dialog (Before Entry)
+
+When AI decides to TAKE a signal, show a preview with calculated values:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ ⚠️ TRADE PREVIEW                                        │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│ SIGNAL: BULLISH ICEBERG                                 │
+│ Direction: LONG                                         │
+│ Score: 72/135                                           │
+│                                                         │
+│ ── ORDER DETAILS ──────────────────────────────────────│
+│ Entry Price:     43250.00                               │
+│ Stop Loss:       43220.00 (30 ticks below)             │
+│ Take Profit:     43320.00 (70 ticks above)             │
+│                                                         │
+│ ── FINANCIAL IMPACT ───────────────────────────────────│
+│ Contracts:       1                                      │
+│ Margin Required: $6,845  (68.5% of account)            │
+│ Max Risk:        $375    (if stop hits)                │
+│ Max Profit:      $875    (if target hits)              │
+│ R:R Ratio:       1:2.3                                 │
+│                                                         │
+│ ── ACCOUNT AFTER TRADE ────────────────────────────────│
+│ If Stop Hits:    $9,625  (-$375)                       │
+│ If Target Hits:  $10,875 (+$875)                       │
+│                                                         │
+│ ── VALIDATION ─────────────────────────────────────────│
+│ ✅ Sufficient margin ($6,845 < $10,000)                │
+│ ✅ Within daily loss limit ($375 < $500 remaining)     │
+│ ✅ Max positions not reached (0/1)                     │
+│                                                         │
+│         [CONFIRM ENTRY]    [SKIP THIS SIGNAL]          │
+└─────────────────────────────────────────────────────────┘
+```
+
+## Active Position Display
+
+Real-time display of open position:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ 📊 ACTIVE POSITION                                      │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│ LONG 1 ES @ 43250.00                                    │
+│ Duration: 5m 32s                                        │
+│                                                         │
+│ ┌─────────────┬─────────────┬─────────────┐           │
+│ │   CURRENT   │   STOP      │   TARGET    │           │
+│ │  43265.00   │  43220.00   │  43320.00   │           │
+│ │   +15 ticks │  -30 ticks  │  +70 ticks  │           │
+│ └─────────────┴─────────────┴─────────────┘           │
+│                                                         │
+│ ┌─────────────────────────────────────────────────────┐ │
+│ │ Unrealized P&L:  +$187.50  (+15 ticks)             │ │
+│ │ Max Favorable:   +$250.00  (+20 ticks MFE)         │ │
+│ │ Max Adverse:     -$62.50   (-5 ticks MAE)          │ │
+│ │ Margin Used:     $6,845                          │ │
+│ └─────────────────────────────────────────────────────┘ │
+│                                                         │
+│ Break-even at: 43253.00 (3 ticks profit)              │
+│ Status: Waiting for break-even trigger                 │
+│                                                         │
+│              [MOVE TO BE] [CLOSE POSITION]             │
+└─────────────────────────────────────────────────────────┘
+```
+
 ## Implementation Plan
+
+### Phase 0: Account & Contract Settings (Priority: Critical)
+1. Add `accountBalance`, `tickValue`, `dayMarginPerContract`, `overnightMarginPerContract`
+2. Add calculated fields: available for trading, max contracts
+3. Add risk calculator display (risk per contract in dollars)
+4. Validate margin before entry
+
+**Files to modify:**
+- `OrderFlowStrategyEnhanced.java` - Add @Parameter fields and UI
+- `AIOrderManager.java` - Add margin validation in `executeEntry()`
+- `SignalData.java` - Add account data from settings
+
+**Validation Rules:**
+```java
+// Before entry, validate:
+if (marginRequired > accountBalance) {
+    reject("Insufficient margin: need $" + marginRequired + ", have $" + accountBalance);
+}
+if (riskDollars > dailyLossRemaining) {
+    reject("Risk exceeds daily limit: $" + riskDollars + " > $" + dailyLossRemaining);
+}
+```
 
 ### Phase 1: Expose Existing Fields (Priority: High)
 1. Add `breakEvenEnabled` to UI
@@ -289,8 +447,45 @@ private void syncPositionManagementSettings() {
 
 ## Questions to Resolve
 
-1. **Break-even offset:** Should stop move to exact entry or entry + 1 tick?
-2. **Trailing trigger:** Start immediately or after X ticks profit?
-3. **Time limits:** Soft warning or hard close?
-4. **Position sizing:** Use account balance from where?
-5. **Hedge mode:** How to handle conflicting signals?
+1. **Account balance source:** Manual entry vs. fetch from broker API?
+2. **Margin values:** Hardcoded defaults vs. fetch from broker?
+3. **Break-even offset:** Should stop move to exact entry or entry + 1 tick?
+4. **Trailing trigger:** Start immediately or after X ticks profit?
+5. **Time limits:** Soft warning or hard close?
+6. **Position sizing:** Use account balance from where?
+7. **Hedge mode:** How to handle conflicting signals?
+8. **Trade preview:** Require confirmation or auto-execute?
+9. **Multiple instruments:** Different tick values per symbol?
+
+## Risk Calculation Reference
+
+**Formulas:**
+
+```java
+// Risk per contract
+double riskPerContract = stopLossTicks * tickValue;
+
+// Risk for position
+double positionRisk = riskPerContract * contracts;
+
+// Margin required
+double marginRequired = dayMarginPerContract * contracts;
+
+// Buying power used
+double buyingPowerPercent = (marginRequired / accountBalance) * 100;
+
+// Contracts from risk percentage
+int contractsFromRisk = (int) ((accountBalance * riskPercent / 100) / riskPerContract);
+
+// R:R ratio
+double rrRatio = (double) takeProfitTicks / stopLossTicks;
+```
+
+**Example (ES, 1 contract, 30-tick stop, 70-tick target):**
+```
+riskPerContract = 30 × $12.50 = $375
+positionRisk = $375 × 1 = $375
+marginRequired = $6,845 × 1 = $6,845
+buyingPowerPercent = ($6,845 / $10,000) × 100 = 68.5%
+rrRatio = 70 / 30 = 2.33 (1:2.3)
+```
