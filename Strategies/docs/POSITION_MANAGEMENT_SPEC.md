@@ -332,7 +332,22 @@ Real-time display of open position:
 
 ## Implementation Plan
 
-### Phase 0: Account & Contract Settings (Priority: Critical)
+### Phase 0: Trade History & Persistence (Priority: Critical)
+1. Create `TradeLogger.java` - Log trades to CSV on every close
+2. Create `SessionStateManager.java` - Save/restore daily stats
+3. Modify `AIOrderManager.closePosition()` - Call TradeLogger
+4. Modify `OrderFlowStrategyEnhanced.java` - Initialize on startup, save on shutdown
+5. Verify `sessions/` directory gets populated
+
+**Files to create:**
+- `src/main/java/velox/api/layer1/simplified/demo/storage/TradeLogger.java`
+- `src/main/java/velox/api/layer1/simplified/demo/storage/SessionStateManager.java`
+
+**Files to modify:**
+- `OrderFlowStrategyEnhanced.java` - Initialize logging
+- `AIOrderManager.java` - Call tradeLogger.logTrade() in closePosition()
+
+### Phase 1: Account & Contract Settings (Priority: Critical)
 1. Add `accountBalance`, `tickValue`, `dayMarginPerContract`, `overnightMarginPerContract`
 2. Add calculated fields: available for trading, max contracts
 3. Add risk calculator display (risk per contract in dollars)
@@ -456,6 +471,242 @@ private void syncPositionManagementSettings() {
 7. **Hedge mode:** How to handle conflicting signals?
 8. **Trade preview:** Require confirmation or auto-execute?
 9. **Multiple instruments:** Different tick values per symbol?
+
+---
+
+## Trade History & Performance Persistence (NEW - Priority: Critical)
+
+### Problem
+
+Currently, trade history and performance metrics are **in-memory only**:
+- `AIOrderManager.totalTrades`, `winningTrades`, `dailyPnl` reset on every restart
+- `sessions/` directory is empty - `TranscriptWriter` not being initialized
+- No way to review historical performance
+
+### Solution: Persistent Trade Log
+
+#### Trade Log File Format (CSV)
+
+Location: `trading-memory/trade-history.csv`
+
+```csv
+timestamp,trade_id,symbol,direction,entry_price,exit_price,quantity,
+stop_loss,take_profit,pnl_ticks,pnl_dollars,outcome,duration_seconds,
+entry_signal_score,entry_reasoning,exit_reason,
+sl_ticks,tp_ticks,rr_ratio,mfe_ticks,mae_ticks
+```
+
+#### Trade Log File Format (JSONL - Alternative)
+
+Location: `sessions/YYYY-MM-DD.jsonl`
+
+```json
+{
+  "event": "TRADE_CLOSED",
+  "timestamp": "2026-02-14T14:04:27",
+  "tradeId": "abc12345",
+  "symbol": "ES",
+  "direction": "LONG",
+  "entryPrice": 27422,
+  "exitPrice": 27375,
+  "quantity": 1,
+  "stopLoss": 27372,
+  "takeProfit": 27460,
+  "pnlTicks": -47,
+  "pnlDollars": -587.50,
+  "outcome": "LOSS",
+  "durationSeconds": 185,
+  "exitReason": "Stop Loss Hit",
+  "entryContext": {
+    "signalScore": 72,
+    "aiConfidence": 0.85,
+    "aiReasoning": "Strong bullish iceberg setup..."
+  },
+  "riskMetrics": {
+    "slTicks": 50,
+    "tpTicks": 38,
+    "rrRatio": 0.76,
+    "mfeTicks": 12,
+    "maeTicks": -47
+  }
+}
+```
+
+### Implementation
+
+#### 1. TradeLogger Service
+
+```java
+public class TradeLogger {
+    private final Path logPath;
+    private PrintWriter writer;
+
+    public TradeLogger(Path tradingMemoryDir) {
+        this.logPath = tradingMemoryDir.resolve("trade-history.csv");
+        initialize();
+    }
+
+    private void initialize() {
+        boolean exists = logPath.toFile().exists();
+        try {
+            writer = new PrintWriter(new FileWriter(logPath.toFile(), true));
+            if (!exists) {
+                // Write header
+                writer.println("timestamp,trade_id,symbol,direction,entry_price,exit_price," +
+                    "quantity,stop_loss,take_profit,pnl_ticks,pnl_dollars,outcome," +
+                    "duration_seconds,signal_score,exit_reason,sl_ticks,tp_ticks,rr_ratio," +
+                    "mfe_ticks,mae_ticks");
+            }
+            writer.flush();
+        } catch (IOException e) {
+            System.err.println("Failed to initialize trade logger: " + e.getMessage());
+        }
+    }
+
+    public void logTrade(ActivePosition position, int exitPrice, String exitReason) {
+        if (writer == null) return;
+
+        int pnlTicks = position.isLong ?
+            (exitPrice - position.entryPrice) :
+            (position.entryPrice - exitPrice);
+
+        double pnlDollars = pnlTicks * 12.50 * position.quantity;  // Use tickValue
+
+        String outcome = pnlDollars >= 0 ? "WIN" : "LOSS";
+
+        int slTicks = Math.abs(position.stopLossPrice.get() - position.entryPrice);
+        int tpTicks = Math.abs(position.takeProfitPrice.get() - position.entryPrice);
+        double rrRatio = slTicks > 0 ? (double) tpTicks / slTicks : 0;
+
+        int mfeTicks = position.maxUnrealizedPnl.get() / 12.50;  // Simplified
+        int maeTicks = position.maxAdverseExcursion.get() / 12.50;
+
+        String line = String.format("%s,%s,%s,%s,%d,%d,%d,%d,%d,%d,%.2f,%s,%d,%d,%s,%d,%d,%.2f,%d,%d",
+            Instant.now().toString(),
+            position.id,
+            position.symbol,
+            position.isLong ? "LONG" : "SHORT",
+            position.entryPrice,
+            exitPrice,
+            position.quantity,
+            position.stopLossPrice.get(),
+            position.takeProfitPrice.get(),
+            pnlTicks,
+            pnlDollars,
+            outcome,
+            position.getTimeInPosition() / 1000,
+            position.originalSignal != null ? position.originalSignal.score : 0,
+            exitReason.replace(",", ";"),
+            slTicks,
+            tpTicks,
+            rrRatio,
+            mfeTicks,
+            maeTicks
+        );
+
+        writer.println(line);
+        writer.flush();
+    }
+
+    public void close() {
+        if (writer != null) {
+            writer.close();
+        }
+    }
+}
+```
+
+#### 2. Session State Persistence
+
+Save/restore daily statistics across restarts:
+
+```java
+// File: trading-memory/session-state.json
+{
+  "date": "2026-02-14",
+  "dailyPnl": -1112.50,
+  "totalTrades": 15,
+  "winningTrades": 11,
+  "losingTrades": 4,
+  "maxDrawdown": -1525.00,
+  "peakPnl": 412.50,
+  "lastUpdated": "2026-02-14T14:04:27"
+}
+```
+
+```java
+public class SessionStateManager {
+    private final Path statePath;
+
+    public SessionState loadSessionState() {
+        // Load from session-state.json
+        // If date != today, reset to zeros
+    }
+
+    public void saveSessionState(double dailyPnl, int totalTrades, int winningTrades) {
+        // Save to session-state.json
+    }
+}
+```
+
+#### 3. Performance Summary Report
+
+Generate daily/weekly summary:
+
+```java
+public class PerformanceReport {
+    public void generateDailyReport(LocalDate date) {
+        // Read trade-history.csv
+        // Calculate: total trades, win rate, P&L, avg win/loss, max drawdown
+        // Write to: trading-memory/reports/YYYY-MM-DD.md
+    }
+}
+```
+
+**Example Report:**
+```markdown
+# Trading Performance Report - 2026-02-14
+
+## Summary
+- Total Trades: 15
+- Win Rate: 73.3% (11W / 4L)
+- Net P&L: -$1,112.50
+- Max Drawdown: -$1,525.00
+- Peak P&L: +$412.50
+
+## Trade Log
+| Time | Dir | Entry | Exit | P&L | Outcome |
+|------|-----|-------|------|-----|---------|
+| 11:20 | LONG | 27700 | 27829 | +$161.25 | WIN (TP) |
+| 12:22 | LONG | 27600 | 27745 | +$181.25 | WIN (TP) |
+| ... | ... | ... | ... | ... | ... |
+
+## Lessons
+- 9 TP hits vs 4 SL hits = 69% win rate on exits
+- Average win: +$125 | Average loss: -$287
+- Risk/reward ratio needs adjustment
+```
+
+### Files to Create/Modify
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `TradeLogger.java` | CREATE | Log trades to CSV |
+| `SessionStateManager.java` | CREATE | Persist daily stats |
+| `PerformanceReport.java` | CREATE | Generate summary reports |
+| `AIOrderManager.java` | MODIFY | Call TradeLogger on position close |
+| `OrderFlowStrategyEnhanced.java` | MODIFY | Initialize logging, load session state |
+
+### Testing Checklist
+
+- [ ] Trade logged to CSV on every close
+- [ ] Session state saved on shutdown
+- [ ] Session state restored on startup
+- [ ] Daily reset works (new date = fresh stats)
+- [ ] CSV format parses correctly
+- [ ] Performance report generates accurately
+
+---
 
 ## Risk Calculation Reference
 
