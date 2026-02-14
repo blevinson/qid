@@ -36,12 +36,16 @@ public class AIToolsProvider {
     private Supplier<List<Map<String, Object>>> signalsSupplier;
     private Supplier<Map<String, Object>> sessionSupplier;
     private Supplier<Map<String, Integer>> thresholdsSupplier;
+    private Supplier<Map<String, Integer>> weightsSupplier;
 
     // Performance analytics supplier
     private Supplier<Map<String, Object>> performanceSupplier;
 
     // Threshold adjustment callback (strategy handles actual adjustment)
     private BiFunction<String, Integer, Boolean> thresholdAdjuster;
+
+    // Weight adjustment callback
+    private BiFunction<String, Integer, Boolean> weightAdjuster;
 
     // Notification callback (strategy handles actual notification)
     private TriConsumer<String, String, String> notificationCallback;
@@ -254,6 +258,42 @@ public class AIToolsProvider {
                 "required": ["message"]
             }
         }
+        """,
+        """
+        {
+            "name": "get_weights",
+            "description": "Get the current confluence weights used for signal scoring. These weights control how much each factor contributes to the overall confluence score. Higher weights = more impact.",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+        """,
+        """
+        {
+            "name": "adjust_weight",
+            "description": "Adjust a confluence weight to fine-tune signal scoring. Use this to optimize which factors matter most. All weights have safety bounds to prevent extreme values.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "weight_name": {
+                        "type": "string",
+                        "enum": ["icebergMax", "icebergMultiplier", "cvdAlignMax", "cvdDivergePenalty", "volumeProfileMax", "volumeImbalanceMax", "emaAlignMax", "emaAlignPartial", "emaDivergePenalty", "emaDivergePartial", "vwapAlign", "vwapDiverge", "timeOfDayMax", "timeOfDaySecondary", "domMax"],
+                        "description": "The weight to adjust"
+                    },
+                    "value": {
+                        "type": "integer",
+                        "description": "The new value for the weight (will be clamped to safety bounds)"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Why this adjustment is being made (for logging)"
+                    }
+                },
+                "required": ["weight_name", "value", "reason"]
+            }
+        }
         """
     };
 
@@ -267,6 +307,8 @@ public class AIToolsProvider {
     public void setSignalsSupplier(Supplier<List<Map<String, Object>>> supplier) { this.signalsSupplier = supplier; }
     public void setSessionSupplier(Supplier<Map<String, Object>> supplier) { this.sessionSupplier = supplier; }
     public void setThresholdsSupplier(Supplier<Map<String, Integer>> supplier) { this.thresholdsSupplier = supplier; }
+    public void setWeightsSupplier(Supplier<Map<String, Integer>> supplier) { this.weightsSupplier = supplier; }
+    public void setWeightAdjuster(BiFunction<String, Integer, Boolean> adjuster) { this.weightAdjuster = adjuster; }
     public void setPerformanceSupplier(Supplier<Map<String, Object>> supplier) { this.performanceSupplier = supplier; }
     public void setThresholdAdjuster(BiFunction<String, Integer, Boolean> adjuster) { this.thresholdAdjuster = adjuster; }
     public void setNotificationCallback(TriConsumer<String, String, String> callback) { this.notificationCallback = callback; }
@@ -296,6 +338,8 @@ public class AIToolsProvider {
                 case "get_recent_adjustments" -> getRecentAdjustments(arguments);
                 case "recommend_improvements" -> recommendImprovements(arguments);
                 case "notify_user" -> notifyUser(arguments);
+                case "get_weights" -> getWeights();
+                case "adjust_weight" -> adjustWeight(arguments);
                 default -> "{\"error\": \"Unknown tool: " + toolName + "\"}";
             };
         } catch (Exception e) {
@@ -716,6 +760,91 @@ public class AIToolsProvider {
             }
         } else {
             return "{\"success\": false, \"error\": \"Notification system not configured\"}";
+        }
+    }
+
+    /**
+     * Get current confluence weights
+     */
+    private String getWeights() {
+        if (weightsSupplier == null) {
+            return "{\"error\": \"Weights data not available\"}";
+        }
+
+        Map<String, Integer> weights = weightsSupplier.get();
+        if (weights == null || weights.isEmpty()) {
+            return "{\"error\": \"No weights data yet\"}";
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\"weights\": {");
+
+        boolean first = true;
+        for (Map.Entry<String, Integer> entry : weights.entrySet()) {
+            if (!first) sb.append(",");
+            sb.append(String.format("\"%s\": %d", entry.getKey(), entry.getValue()));
+            first = false;
+        }
+
+        sb.append("}, \"note\": \"These weights control confluence scoring. Higher values = more impact.\"}");
+        return sb.toString();
+    }
+
+    /**
+     * Adjust a confluence weight
+     */
+    private String adjustWeight(Map<String, Object> arguments) {
+        if (arguments == null) {
+            return "{\"success\": false, \"error\": \"Missing arguments\"}";
+        }
+
+        String weightName = (String) arguments.get("weight_name");
+        if (weightName == null || weightName.trim().isEmpty()) {
+            return "{\"success\": false, \"error\": \"Missing weight_name\"}";
+        }
+
+        Object valueObj = arguments.get("value");
+        if (valueObj == null) {
+            return "{\"success\": false, \"error\": \"Missing value\"}";
+        }
+
+        Integer value;
+        if (valueObj instanceof Number) {
+            value = ((Number) valueObj).intValue();
+        } else {
+            try {
+                value = Integer.parseInt(valueObj.toString());
+            } catch (NumberFormatException e) {
+                return "{\"success\": false, \"error\": \"Invalid value format\"}";
+            }
+        }
+
+        String reason = (String) arguments.getOrDefault("reason", "No reason provided");
+
+        // Call the weight adjuster callback if available
+        if (weightAdjuster != null) {
+            try {
+                boolean success = weightAdjuster.apply(weightName, value);
+                if (success) {
+                    // Log the adjustment
+                    Map<String, Object> adjustment = new HashMap<>();
+                    adjustment.put("type", "weight");
+                    adjustment.put("name", weightName);
+                    adjustment.put("newValue", value);
+                    adjustment.put("reason", reason);
+                    adjustment.put("timestamp", System.currentTimeMillis());
+                    recentAdjustments.add(adjustment);
+
+                    return String.format("{\"success\": true, \"weight\": \"%s\", \"newValue\": %d, \"reason\": \"%s\"}",
+                        weightName, value, reason.replace("\"", "\\\""));
+                } else {
+                    return "{\"success\": false, \"error\": \"Weight adjustment failed (weight may not exist or value out of bounds)\"}";
+                }
+            } catch (Exception e) {
+                return "{\"success\": false, \"error\": \"" + e.getMessage().replace("\"", "\\\"") + "\"}";
+            }
+        } else {
+            return "{\"success\": false, \"error\": \"Weight adjustment not configured\"}";
         }
     }
 

@@ -472,6 +472,9 @@ public class AIThresholdService {
             - get_recent_signals: Get recent trading signals
             - get_session_stats: Get session performance
             - get_thresholds: Get current threshold settings
+            - get_weights: Get current confluence weights (advanced scoring factors)
+            - adjust_threshold: Adjust a detection threshold
+            - adjust_weight: Adjust a confluence weight (fine-tune scoring)
             - get_full_snapshot: Get complete market overview
 
             When asked about current state, call the appropriate tools first, then provide your analysis.

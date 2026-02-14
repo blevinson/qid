@@ -2910,6 +2910,29 @@ public class OrderFlowStrategyEnhanced implements
             log("🔔 AI NOTIFICATION [" + category + "]: " + message);
             notifyAI(message, priority);
         });
+
+        // Weights supplier - provides current confluence weights
+        aiToolsProvider.setWeightsSupplier(() -> confluenceWeights.getAll());
+
+        // Weight adjuster callback - allows AI tools to change weights (respects aiManagedWeights setting)
+        aiToolsProvider.setWeightAdjuster((weightName, value) -> {
+            if (!aiManagedWeights) {
+                log("⚖️ AI TOOL WEIGHT ADJUSTMENT SKIPPED (AI Managed Weights disabled): " + weightName + " → " + value);
+                return false;
+            }
+            log("⚖️ AI TOOL WEIGHT ADJUSTMENT: " + weightName + " → " + value);
+            try {
+                int actualValue = confluenceWeights.set(weightName, value);
+                log("   Applied value: " + actualValue + " (clamped to safety bounds)");
+                return true;
+            } catch (IllegalArgumentException e) {
+                log("⚠️ Unknown weight: " + weightName);
+                return false;
+            } catch (Exception e) {
+                log("❌ Failed to adjust weight: " + e.getMessage());
+                return false;
+            }
+        });
     }
 
     /**
