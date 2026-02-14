@@ -138,7 +138,7 @@ public class OrderFlowStrategyEnhanced implements
     private Double dailyLossLimit = 500.0;
 
     @Parameter(name = "Max Slippage (ticks)")
-    private Integer maxSlippageTicks = 20;  // Skip if price moved > 20 ticks
+    private Integer maxSlippageTicks = 50;  // Skip if price moved > 50 ticks
 
     // ========== SAFETY PARAMETERS ==========
     @Parameter(name = "Simulation Mode Only")
@@ -262,6 +262,10 @@ public class OrderFlowStrategyEnhanced implements
 
     // Unified Session Transcript - shared by AI chat and AI Investment Strategist
     private velox.api.layer1.simplified.demo.storage.TranscriptWriter transcriptWriter;
+
+    // Trade logging and session state persistence
+    private velox.api.layer1.simplified.demo.storage.TradeLogger tradeLogger;
+    private velox.api.layer1.simplified.demo.storage.SessionStateManager sessionStateManager;
 
     // Session Context - tracks trading session state for AI
     private SessionContext sessionContext;
@@ -592,6 +596,14 @@ public class OrderFlowStrategyEnhanced implements
                 memoryService = service;
                 log("✅ Memory Service initialized: " + service.getIndexedFileCount() + " files, " +
                     service.getIndexedChunkCount() + " chunks");
+
+                // Initialize Trade Logger for persistent trade history
+                tradeLogger = new velox.api.layer1.simplified.demo.storage.TradeLogger(memoryDir);
+                log("✅ Trade Logger initialized: " + memoryDir.resolve("trade-history.csv"));
+
+                // Initialize Session State Manager for daily stat persistence
+                sessionStateManager = new velox.api.layer1.simplified.demo.storage.SessionStateManager(memoryDir);
+                log("✅ Session State Manager initialized: " + sessionStateManager.getCurrentState());
 
                 // Initialize Session Context
                 sessionContext = new SessionContext();
@@ -1200,7 +1212,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(slippageLabel, gbc);
         gbc.gridx = 1;
         JSpinner slippageSpinner = new JSpinner(new SpinnerNumberModel(maxSlippageTicks.intValue(), 5, 100, 5));
-        slippageSpinner.setToolTipText("Higher = allow more price movement (default: 20)");
+        slippageSpinner.setToolTipText("Higher = allow more price movement (default: 50)");
         slippageSpinner.addChangeListener(e -> {
             maxSlippageTicks = (Integer) slippageSpinner.getValue();
             if (aiOrderManager != null) {
@@ -2567,6 +2579,14 @@ public class OrderFlowStrategyEnhanced implements
                 () -> spoofMinSize,  // spoofMinSize
                 () -> absorptionMinSize  // absorptionMinSize
             );
+
+            // Set up trade logging and session state persistence
+            if (tradeLogger != null) {
+                aiOrderManager.setTradeLogger(tradeLogger);
+            }
+            if (sessionStateManager != null) {
+                aiOrderManager.setSessionStateManager(sessionStateManager);
+            }
 
             log("✅ AI Trading System initialized");
             log("   Mode: " + aiMode);
