@@ -174,7 +174,10 @@ public class OrderFlowStrategyEnhanced implements
     private ConfluenceWeights confluenceWeights = new ConfluenceWeights();
 
     @Parameter(name = "AI Auth Token")
-    private String aiAuthToken = "8a4f5b950ea142c98746d5a320666414.Yf1MQwtkwfuDbyHw";
+    private String aiAuthToken = "sk-zai-proxy-key";  // Proxy substitutes real key
+
+    @Parameter(name = "AI Prompt Mode")
+    private String aiPromptMode = "COMPACT";  // FULL or COMPACT
 
     // ========== NOTIFICATION SETTINGS ==========
     @Parameter(name = "Enable Event Notifications")
@@ -332,6 +335,19 @@ public class OrderFlowStrategyEnhanced implements
     private JCheckBox enableAITradingCheckBox;
     private JComboBox<String> aiModeComboBox;
     private JSpinner confThresholdSpinner;
+
+    // AI Weight Labels (for two-column layout: Base | AI Current)
+    private JLabel aiIcebergMaxLabel;
+    private JLabel aiCvdAlignLabel;
+    private JLabel aiCvdDivergeLabel;
+    private JLabel aiEmaAlignLabel;
+    private JLabel aiVwapAlignLabel;
+    private JLabel aiVwapDivergeLabel;
+
+    // AI Threshold Labels (for Signal Thresholds section)
+    private JLabel aiIcebergMinOrdersLabel;
+    private JLabel aiSpoofMinSizeLabel;
+    private JLabel aiAbsorptionMinSizeLabel;
 
     // AI Chat Panel Components
     private JFrame chatWindow;
@@ -586,6 +602,7 @@ public class OrderFlowStrategyEnhanced implements
 
                 // Initialize AI Investment Strategist (Phase 3) with transcript
                 aiStrategist = new AIInvestmentStrategist(service, aiAuthToken, transcriptWriter);
+                aiStrategist.setPromptMode(aiPromptMode);
                 log("✅ AI Investment Strategist initialized");
             } else {
                 log("⚠️ Memory Service disabled (no API token)");
@@ -831,25 +848,40 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(title, gbc);
 
         // Signal Thresholds section
-        gbc.gridy = 1; gbc.gridwidth = 1;
+        gbc.gridy = 1; gbc.gridwidth = 3;
         addSeparator(settingsPanel, "Signal Thresholds", gbc);
 
-        gbc.gridy = 2;
+        // Column headers for thresholds
+        gbc.gridy = 2; gbc.gridwidth = 1;
+        gbc.gridx = 1;
+        settingsPanel.add(new JLabel("Base"), gbc);
+        gbc.gridx = 2;
+        settingsPanel.add(new JLabel("AI Current"), gbc);
+
+        gbc.gridx = 0; gbc.gridy = 3;
         settingsPanel.add(new JLabel("Min Confluence Score:"), gbc);
         gbc.gridx = 1;
         minConfluenceSpinner = new JSpinner(new SpinnerNumberModel(minConfluenceScore.intValue(), 0, 150, 5));
         minConfluenceSpinner.addChangeListener(e -> updateMinConfluence());
         settingsPanel.add(minConfluenceSpinner, gbc);
+        gbc.gridx = 2;
+        JLabel aiMinConfluenceLabel = new JLabel(String.valueOf(minConfluenceScore));
+        aiMinConfluenceLabel.setForeground(new java.awt.Color(100, 100, 255));
+        settingsPanel.add(aiMinConfluenceLabel, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 3;
+        gbc.gridx = 0; gbc.gridy = 4;
         settingsPanel.add(new JLabel("Threshold Multiplier:"), gbc);
         gbc.gridx = 1;
         thresholdMultSpinner = new JSpinner(new SpinnerNumberModel(thresholdMultiplier.doubleValue(), 1.5, 5.0, 0.5));
         thresholdMultSpinner.addChangeListener(e -> updateThresholdMultiplier());
         settingsPanel.add(thresholdMultSpinner, gbc);
+        gbc.gridx = 2;
+        JLabel aiThresholdMultLabel = new JLabel(String.format("%.1f", thresholdMultiplier));
+        aiThresholdMultLabel.setForeground(new java.awt.Color(100, 100, 255));
+        settingsPanel.add(aiThresholdMultLabel, gbc);
 
-        // Minimum Detection Thresholds
-        gbc.gridx = 0; gbc.gridy = 4;
+        // Minimum Detection Thresholds with AI Current column
+        gbc.gridx = 0; gbc.gridy = 5;
         JLabel icebergOrdersLabel = new JLabel("Iceberg Min Orders:");
         icebergOrdersLabel.setToolTipText("Minimum orders at one price to trigger iceberg signal");
         settingsPanel.add(icebergOrdersLabel, gbc);
@@ -858,8 +890,12 @@ public class OrderFlowStrategyEnhanced implements
         icebergOrdersSpinner.setToolTipText("Higher = fewer but more reliable signals (default: 20)");
         icebergOrdersSpinner.addChangeListener(e -> icebergMinOrders = (Integer) icebergOrdersSpinner.getValue());
         settingsPanel.add(icebergOrdersSpinner, gbc);
+        gbc.gridx = 2;
+        aiIcebergMinOrdersLabel = new JLabel(String.valueOf(icebergMinOrders));
+        aiIcebergMinOrdersLabel.setForeground(new java.awt.Color(100, 100, 255));
+        settingsPanel.add(aiIcebergMinOrdersLabel, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 5;
+        gbc.gridx = 0; gbc.gridy = 6;
         JLabel spoofSizeLabel = new JLabel("Spoof Min Size:");
         spoofSizeLabel.setToolTipText("Minimum order size to consider as potential spoof");
         settingsPanel.add(spoofSizeLabel, gbc);
@@ -868,8 +904,12 @@ public class OrderFlowStrategyEnhanced implements
         spoofSizeSpinner.setToolTipText("Higher = fewer spoof signals (default: 20)");
         spoofSizeSpinner.addChangeListener(e -> spoofMinSize = (Integer) spoofSizeSpinner.getValue());
         settingsPanel.add(spoofSizeSpinner, gbc);
+        gbc.gridx = 2;
+        aiSpoofMinSizeLabel = new JLabel(String.valueOf(spoofMinSize));
+        aiSpoofMinSizeLabel.setForeground(new java.awt.Color(100, 100, 255));
+        settingsPanel.add(aiSpoofMinSizeLabel, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 6;
+        gbc.gridx = 0; gbc.gridy = 7;
         JLabel absorbSizeLabel = new JLabel("Absorption Min Size:");
         absorbSizeLabel.setToolTipText("Minimum trade size to detect absorption");
         settingsPanel.add(absorbSizeLabel, gbc);
@@ -878,13 +918,17 @@ public class OrderFlowStrategyEnhanced implements
         absorbSizeSpinner.setToolTipText("Higher = fewer absorption signals (default: 50)");
         absorbSizeSpinner.addChangeListener(e -> absorptionMinSize = (Integer) absorbSizeSpinner.getValue());
         settingsPanel.add(absorbSizeSpinner, gbc);
+        gbc.gridx = 2;
+        aiAbsorptionMinSizeLabel = new JLabel(String.valueOf(absorptionMinSize));
+        aiAbsorptionMinSizeLabel.setForeground(new java.awt.Color(100, 100, 255));
+        settingsPanel.add(aiAbsorptionMinSizeLabel, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 7; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 8; gbc.gridwidth = 3;
         addSeparator(settingsPanel, "AI Adaptive Thresholds", gbc);
 
-        gbc.gridy = 8; gbc.gridwidth = 2;
+        gbc.gridy = 9; gbc.gridwidth = 2;
         settingsPanel.add(new JLabel("AI Auth Token:"), gbc);
-        gbc.gridy = 9; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL;
+        gbc.gridy = 10; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL;
         JTextField aiTokenField = new JTextField();
         aiTokenField.setText(aiAuthToken);
         aiTokenField.setToolTipText("Your Claude API token for z.ai (leave empty to disable AI features)");
@@ -904,7 +948,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(aiTokenField, gbc);
         gbc.fill = GridBagConstraints.NONE;  // Reset fill
 
-        gbc.gridx = 0; gbc.gridy = 10; gbc.gridwidth = 1;
+        gbc.gridx = 0; gbc.gridy = 11; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Use AI Adaptive:"), gbc);
         gbc.gridx = 1;
         aiAdaptiveModeCheckBox = new JCheckBox();
@@ -913,9 +957,9 @@ public class OrderFlowStrategyEnhanced implements
         aiAdaptiveModeCheckBox.addActionListener(e -> updateAIAdaptiveMode());
         settingsPanel.add(aiAdaptiveModeCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 11; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 12; gbc.gridwidth = 2;
         settingsPanel.add(new JLabel("AI Status:"), gbc);
-        gbc.gridy = 12;
+        gbc.gridy = 13;
         aiStatusIndicator = new JLabel("🔴 AI Disabled");
         aiStatusIndicator.setForeground(Color.GRAY);
         settingsPanel.add(aiStatusIndicator, gbc);
@@ -927,7 +971,7 @@ public class OrderFlowStrategyEnhanced implements
         aiChatButton.addActionListener(e -> openAIChatWindow());
         settingsPanel.add(aiChatButton, gbc);
 
-        gbc.gridy = 16; gbc.gridwidth = 1;
+        gbc.gridy = 15; gbc.gridwidth = 1;
         aiReevaluateButton = new JButton("🔄 Optimize Thresholds");
         aiReevaluateButton.setToolTipText("Ask AI to optimize trading thresholds based on market conditions");
         aiReevaluateButton.setEnabled(aiAuthToken != null && !aiAuthToken.isEmpty());
@@ -985,7 +1029,22 @@ public class OrderFlowStrategyEnhanced implements
             devMode = settings.devMode;
         }
 
+        // AI Prompt Mode (FULL/COMPACT)
         gbc.gridx = 0; gbc.gridy = 21;
+        settingsPanel.add(new JLabel("Prompt Mode:"), gbc);
+        gbc.gridx = 1;
+        JComboBox<String> promptModeCombo = new JComboBox<>(new String[]{"COMPACT", "FULL"});
+        promptModeCombo.setSelectedItem(aiPromptMode);
+        promptModeCombo.setToolTipText("COMPACT: faster, less tokens. FULL: detailed prompts.");
+        promptModeCombo.addActionListener(e -> {
+            aiPromptMode = (String) promptModeCombo.getSelectedItem();
+            if (aiStrategist != null) {
+                aiStrategist.setPromptMode(aiPromptMode);
+            }
+        });
+        settingsPanel.add(promptModeCombo, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 22;
         settingsPanel.add(new JLabel("Confluence Threshold:"), gbc);
         gbc.gridx = 1;
         JSpinner confThresholdSpinner = new JSpinner(new SpinnerNumberModel(confluenceThreshold.intValue(), 0, 135, 5));
@@ -993,7 +1052,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(confThresholdSpinner, gbc);
 
         // AI Managed Weights toggle
-        gbc.gridx = 0; gbc.gridy = 22;
+        gbc.gridx = 0; gbc.gridy = 23;
         JLabel aiManagedLabel = new JLabel("AI Managed Weights:");
         aiManagedLabel.setToolTipText("When enabled, AI can adjust confluence weights automatically");
         settingsPanel.add(aiManagedLabel, gbc);
@@ -1008,11 +1067,18 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(aiManagedWeightsCheckBox, gbc);
 
         // Confluence Weights section (collapsible-style)
-        gbc.gridx = 0; gbc.gridy = 23; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 24; gbc.gridwidth = 3;
         addSeparator(settingsPanel, "Confluence Weights (Advanced)", gbc);
 
-        // Weight controls - key weights only to save space
-        gbc.gridy = 24; gbc.gridwidth = 1;
+        // Column headers for weights
+        gbc.gridy = 25; gbc.gridwidth = 1;
+        gbc.gridx = 1;
+        settingsPanel.add(new JLabel("Base"), gbc);
+        gbc.gridx = 2;
+        settingsPanel.add(new JLabel("AI Current"), gbc);
+
+        // Weight controls - key weights with AI Current column
+        gbc.gridx = 0; gbc.gridy = 26; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Iceberg Max (20-60):"), gbc);
         gbc.gridx = 1;
         JSpinner icebergMaxSpinner = new JSpinner(new SpinnerNumberModel(
@@ -1022,8 +1088,12 @@ public class OrderFlowStrategyEnhanced implements
             log("Weight: icebergMax = " + confluenceWeights.get(ConfluenceWeights.ICEBERG_MAX));
         });
         settingsPanel.add(icebergMaxSpinner, gbc);
+        gbc.gridx = 2;
+        aiIcebergMaxLabel = new JLabel(String.valueOf(confluenceWeights.get(ConfluenceWeights.ICEBERG_MAX)));
+        aiIcebergMaxLabel.setForeground(new java.awt.Color(100, 100, 255));
+        settingsPanel.add(aiIcebergMaxLabel, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 25;
+        gbc.gridx = 0; gbc.gridy = 27;
         settingsPanel.add(new JLabel("CVD Align Max (10-40):"), gbc);
         gbc.gridx = 1;
         JSpinner cvdAlignSpinner = new JSpinner(new SpinnerNumberModel(
@@ -1033,8 +1103,12 @@ public class OrderFlowStrategyEnhanced implements
             log("Weight: cvdAlignMax = " + confluenceWeights.get(ConfluenceWeights.CVD_ALIGN_MAX));
         });
         settingsPanel.add(cvdAlignSpinner, gbc);
+        gbc.gridx = 2;
+        aiCvdAlignLabel = new JLabel(String.valueOf(confluenceWeights.get(ConfluenceWeights.CVD_ALIGN_MAX)));
+        aiCvdAlignLabel.setForeground(new java.awt.Color(100, 100, 255));
+        settingsPanel.add(aiCvdAlignLabel, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 26;
+        gbc.gridx = 0; gbc.gridy = 28;
         settingsPanel.add(new JLabel("CVD Diverge Penalty (15-50):"), gbc);
         gbc.gridx = 1;
         JSpinner cvdDivergeSpinner = new JSpinner(new SpinnerNumberModel(
@@ -1044,8 +1118,12 @@ public class OrderFlowStrategyEnhanced implements
             log("Weight: cvdDivergePenalty = " + confluenceWeights.get(ConfluenceWeights.CVD_DIVERGE_PENALTY));
         });
         settingsPanel.add(cvdDivergeSpinner, gbc);
+        gbc.gridx = 2;
+        aiCvdDivergeLabel = new JLabel(String.valueOf(confluenceWeights.get(ConfluenceWeights.CVD_DIVERGE_PENALTY)));
+        aiCvdDivergeLabel.setForeground(new java.awt.Color(100, 100, 255));
+        settingsPanel.add(aiCvdDivergeLabel, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 27;
+        gbc.gridx = 0; gbc.gridy = 29;
         settingsPanel.add(new JLabel("EMA Align Max (10-30):"), gbc);
         gbc.gridx = 1;
         JSpinner emaAlignSpinner = new JSpinner(new SpinnerNumberModel(
@@ -1055,8 +1133,12 @@ public class OrderFlowStrategyEnhanced implements
             log("Weight: emaAlignMax = " + confluenceWeights.get(ConfluenceWeights.EMA_ALIGN_MAX));
         });
         settingsPanel.add(emaAlignSpinner, gbc);
+        gbc.gridx = 2;
+        aiEmaAlignLabel = new JLabel(String.valueOf(confluenceWeights.get(ConfluenceWeights.EMA_ALIGN_MAX)));
+        aiEmaAlignLabel.setForeground(new java.awt.Color(100, 100, 255));
+        settingsPanel.add(aiEmaAlignLabel, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 28;
+        gbc.gridx = 0; gbc.gridy = 30;
         settingsPanel.add(new JLabel("VWAP Align (5-15):"), gbc);
         gbc.gridx = 1;
         JSpinner vwapAlignSpinner = new JSpinner(new SpinnerNumberModel(
@@ -1066,8 +1148,27 @@ public class OrderFlowStrategyEnhanced implements
             log("Weight: vwapAlign = " + confluenceWeights.get(ConfluenceWeights.VWAP_ALIGN));
         });
         settingsPanel.add(vwapAlignSpinner, gbc);
+        gbc.gridx = 2;
+        aiVwapAlignLabel = new JLabel(String.valueOf(confluenceWeights.get(ConfluenceWeights.VWAP_ALIGN)));
+        aiVwapAlignLabel.setForeground(new java.awt.Color(100, 100, 255));
+        settingsPanel.add(aiVwapAlignLabel, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 29;
+        gbc.gridx = 0; gbc.gridy = 31;
+        settingsPanel.add(new JLabel("VWAP Diverge (2-10):"), gbc);
+        gbc.gridx = 1;
+        JSpinner vwapDivergeSpinner = new JSpinner(new SpinnerNumberModel(
+            confluenceWeights.get(ConfluenceWeights.VWAP_DIVERGE), 2, 10, 1));
+        vwapDivergeSpinner.addChangeListener(e -> {
+            confluenceWeights.set(ConfluenceWeights.VWAP_DIVERGE, (Integer) vwapDivergeSpinner.getValue());
+            log("Weight: vwapDiverge = " + confluenceWeights.get(ConfluenceWeights.VWAP_DIVERGE));
+        });
+        settingsPanel.add(vwapDivergeSpinner, gbc);
+        gbc.gridx = 2;
+        aiVwapDivergeLabel = new JLabel(String.valueOf(confluenceWeights.get(ConfluenceWeights.VWAP_DIVERGE)));
+        aiVwapDivergeLabel.setForeground(new java.awt.Color(100, 100, 255));
+        settingsPanel.add(aiVwapDivergeLabel, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 32;
         JButton resetWeightsBtn = new JButton("Reset Weights");
         resetWeightsBtn.setToolTipText("Reset all weights to default values");
         resetWeightsBtn.addActionListener(e -> {
@@ -1078,12 +1179,15 @@ public class OrderFlowStrategyEnhanced implements
             cvdDivergeSpinner.setValue(confluenceWeights.get(ConfluenceWeights.CVD_DIVERGE_PENALTY));
             emaAlignSpinner.setValue(confluenceWeights.get(ConfluenceWeights.EMA_ALIGN_MAX));
             vwapAlignSpinner.setValue(confluenceWeights.get(ConfluenceWeights.VWAP_ALIGN));
+            vwapDivergeSpinner.setValue(confluenceWeights.get(ConfluenceWeights.VWAP_DIVERGE));
+            // Update AI labels too
+            updateAIWeightLabels();
             log("⚖️ Weights reset to defaults");
         });
         settingsPanel.add(resetWeightsBtn, gbc);
 
-        // Continue with slippage setting - increment all row numbers by 8
-        gbc.gridx = 0; gbc.gridy = 31;
+        // Max Slippage setting
+        gbc.gridx = 0; gbc.gridy = 33;
         JLabel slippageLabel = new JLabel("Max Slippage (ticks):");
         slippageLabel.setToolTipText("Reject signal if price moved more than this many ticks");
         settingsPanel.add(slippageLabel, gbc);
@@ -1100,10 +1204,10 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(slippageSpinner, gbc);
 
         // Safety Controls section
-        gbc.gridx = 0; gbc.gridy = 33; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 34; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Safety Controls", gbc);
 
-        gbc.gridy = 34; gbc.gridwidth = 1;
+        gbc.gridx = 0; gbc.gridy = 35; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Simulation Mode Only:"), gbc);
         gbc.gridx = 1;
         simModeCheckBox = new JCheckBox();
@@ -1111,7 +1215,7 @@ public class OrderFlowStrategyEnhanced implements
         simModeCheckBox.addActionListener(e -> updateSimMode());
         settingsPanel.add(simModeCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 35;
+        gbc.gridx = 0; gbc.gridy = 36;
         settingsPanel.add(new JLabel("Enable Auto-Execution:"), gbc);
         gbc.gridx = 1;
         autoExecCheckBox = new JCheckBox();
@@ -1120,17 +1224,17 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(autoExecCheckBox, gbc);
 
         // Risk Management section
-        gbc.gridx = 0; gbc.gridy = 36; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 37; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Risk Management", gbc);
 
-        gbc.gridy = 37; gbc.gridwidth = 1;
+        gbc.gridx = 0; gbc.gridy = 38; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Max Position:"), gbc);
         gbc.gridx = 1;
         JSpinner maxPosSpinner = new JSpinner(new SpinnerNumberModel(maxPosition.intValue(), 1, 10, 1));
         maxPosSpinner.addChangeListener(e -> maxPosition = (Integer) maxPosSpinner.getValue());
         settingsPanel.add(maxPosSpinner, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 38;
+        gbc.gridx = 0; gbc.gridy = 39;
         settingsPanel.add(new JLabel("Daily Loss Limit ($):"), gbc);
         gbc.gridx = 1;
         JSpinner lossLimitSpinner = new JSpinner(new SpinnerNumberModel(dailyLossLimit.doubleValue(), 100.0, 5000.0, 100.0));
@@ -1138,10 +1242,10 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(lossLimitSpinner, gbc);
 
         // Notifications section
-        gbc.gridx = 0; gbc.gridy = 39; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 40; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Notifications", gbc);
 
-        gbc.gridy = 40; gbc.gridwidth = 1;
+        gbc.gridx = 0; gbc.gridy = 41; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Event Notifications:"), gbc);
         gbc.gridx = 1;
         JCheckBox eventNotifCheckBox = new JCheckBox();
@@ -1150,7 +1254,7 @@ public class OrderFlowStrategyEnhanced implements
         eventNotifCheckBox.addActionListener(e -> enableEventNotifications = eventNotifCheckBox.isSelected());
         settingsPanel.add(eventNotifCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 41;
+        gbc.gridx = 0; gbc.gridy = 42;
         settingsPanel.add(new JLabel("AI Notifications:"), gbc);
         gbc.gridx = 1;
         JCheckBox aiNotifCheckBox = new JCheckBox();
@@ -1159,7 +1263,7 @@ public class OrderFlowStrategyEnhanced implements
         aiNotifCheckBox.addActionListener(e -> enableAINotifications = aiNotifCheckBox.isSelected());
         settingsPanel.add(aiNotifCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 42;
+        gbc.gridx = 0; gbc.gridy = 43;
         settingsPanel.add(new JLabel("Periodic Updates:"), gbc);
         gbc.gridx = 1;
         JCheckBox periodicNotifCheckBox = new JCheckBox();
@@ -1175,7 +1279,7 @@ public class OrderFlowStrategyEnhanced implements
         });
         settingsPanel.add(periodicNotifCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 32;
+        gbc.gridx = 0; gbc.gridy = 44;
         settingsPanel.add(new JLabel("Update Interval (min):"), gbc);
         gbc.gridx = 1;
         JSpinner periodicIntervalSpinner = new JSpinner(new SpinnerNumberModel(periodicUpdateIntervalMinutes.intValue(), 5, 60, 5));
@@ -1190,13 +1294,13 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(periodicIntervalSpinner, gbc);
 
         // Apply button
-        gbc.gridx = 0; gbc.gridy = 33; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 45; gbc.gridwidth = 2;
         JButton applyButton = new JButton("Apply Settings");
         applyButton.addActionListener(e -> applySettings());
         settingsPanel.add(applyButton, gbc);
 
         // ========== TEST SL/TP LINES BUTTON ==========
-        gbc.gridx = 0; gbc.gridy = 34; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 46; gbc.gridwidth = 2;
         gbc.anchor = GridBagConstraints.CENTER;
         JButton testLinesButton = new JButton("TEST SL/TP LINES");
         testLinesButton.setToolTipText("Click to test SL/TP line drawing independently of AI/signals");
@@ -1209,7 +1313,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(testLinesButton, gbc);
 
         // Clear lines button
-        gbc.gridy = 35;
+        gbc.gridy = 47;
         JButton clearLinesButton = new JButton("Clear Lines");
         clearLinesButton.setToolTipText("Clear the test SL/TP lines");
         clearLinesButton.setOpaque(true);
@@ -1219,7 +1323,7 @@ public class OrderFlowStrategyEnhanced implements
         gbc.anchor = GridBagConstraints.WEST;  // Reset anchor
 
         // Version label (bottom right)
-        gbc.gridx = 1; gbc.gridy = 36; gbc.gridwidth = 1;
+        gbc.gridx = 1; gbc.gridy = 47; gbc.gridwidth = 1;
         gbc.anchor = GridBagConstraints.EAST;
         gbc.weightx = 1.0;
         JLabel versionLabel = new JLabel("Qid v2.1 - AI Trading with Memory");
@@ -2445,6 +2549,18 @@ public class OrderFlowStrategyEnhanced implements
             // Set up price supplier for staleness checks
             aiOrderManager.setCurrentPriceSupplier(() -> (int) lastKnownPrice);
 
+            // Set up context suppliers for historical recording
+            aiOrderManager.setContextSuppliers(
+                () -> alias,  // symbol
+                () -> confluenceWeights,  // weights
+                () -> minConfluenceScore,  // minConfluenceScore
+                () -> confluenceThreshold,  // confluenceThreshold
+                () -> thresholdMultiplier,  // thresholdMultiplier
+                () -> icebergMinOrders,  // icebergMinOrders
+                () -> spoofMinSize,  // spoofMinSize
+                () -> absorptionMinSize  // absorptionMinSize
+            );
+
             log("✅ AI Trading System initialized");
             log("   Mode: " + aiMode);
             log("   Confluence Threshold: " + confluenceThreshold);
@@ -2454,6 +2570,7 @@ public class OrderFlowStrategyEnhanced implements
                 aiStrategist = new AIInvestmentStrategist(
                     (velox.api.layer1.simplified.demo.storage.TradingMemoryService) memoryService,
                     aiAuthToken, transcriptWriter);
+                aiStrategist.setPromptMode(aiPromptMode);
                 log("✅ AI Investment Strategist initialized");
             }
 
@@ -2495,6 +2612,43 @@ public class OrderFlowStrategyEnhanced implements
         }
         autoExecution = selected;
         log("🤖 Auto-Execution: " + (autoExecution ? "ENABLED ⚠️" : "DISABLED"));
+    }
+
+    /**
+     * Update AI weight and threshold labels in settings panel to show current AI-adjusted values
+     */
+    private void updateAIWeightLabels() {
+        SwingUtilities.invokeLater(() -> {
+            // Confluence weights
+            if (aiIcebergMaxLabel != null) {
+                aiIcebergMaxLabel.setText(String.valueOf(confluenceWeights.get(ConfluenceWeights.ICEBERG_MAX)));
+            }
+            if (aiCvdAlignLabel != null) {
+                aiCvdAlignLabel.setText(String.valueOf(confluenceWeights.get(ConfluenceWeights.CVD_ALIGN_MAX)));
+            }
+            if (aiCvdDivergeLabel != null) {
+                aiCvdDivergeLabel.setText(String.valueOf(confluenceWeights.get(ConfluenceWeights.CVD_DIVERGE_PENALTY)));
+            }
+            if (aiEmaAlignLabel != null) {
+                aiEmaAlignLabel.setText(String.valueOf(confluenceWeights.get(ConfluenceWeights.EMA_ALIGN_MAX)));
+            }
+            if (aiVwapAlignLabel != null) {
+                aiVwapAlignLabel.setText(String.valueOf(confluenceWeights.get(ConfluenceWeights.VWAP_ALIGN)));
+            }
+            if (aiVwapDivergeLabel != null) {
+                aiVwapDivergeLabel.setText(String.valueOf(confluenceWeights.get(ConfluenceWeights.VWAP_DIVERGE)));
+            }
+            // Signal thresholds
+            if (aiIcebergMinOrdersLabel != null) {
+                aiIcebergMinOrdersLabel.setText(String.valueOf(icebergMinOrders));
+            }
+            if (aiSpoofMinSizeLabel != null) {
+                aiSpoofMinSizeLabel.setText(String.valueOf(spoofMinSize));
+            }
+            if (aiAbsorptionMinSizeLabel != null) {
+                aiAbsorptionMinSizeLabel.setText(String.valueOf(absorptionMinSize));
+            }
+        });
     }
 
     private void updateAIAdaptiveMode() {
@@ -2983,6 +3137,8 @@ public class OrderFlowStrategyEnhanced implements
             log("   Reasoning: " + (adj.reasoning != null ? adj.reasoning : "N/A"));
             log("✅ Thresholds updated by AI");
             saveSettings();  // Persist the changes
+            // Update the AI Current column labels in settings panel
+            updateAIWeightLabels();
         } else {
             log("   No changes needed (all values same as current)");
         }
@@ -2997,6 +3153,8 @@ public class OrderFlowStrategyEnhanced implements
                     log("   Reasoning: " + adj.weightAdjustment.reasoning);
                 }
                 log("✅ Confluence weights updated by AI");
+                // Update the AI Current column labels in settings panel
+                updateAIWeightLabels();
             } else {
                 log("⚖️ AI weight adjustment SKIPPED (AI Managed Weights is disabled)");
             }
@@ -4828,8 +4986,58 @@ public class OrderFlowStrategyEnhanced implements
             String emoji = isWin ? "💎" : "🛑";
             log(emoji + " AI EXIT MARKER @ tick " + price + " (actual: " + (price * pips) + ", P&L: $" +
                 String.format("%.2f", pnl) + ", Reason: " + reason + ") - SL/TP lines cleared");
+
+            // Update stats panel with the completed trade
+            recordTrade(price, reason, pnl, isWin);
+
         } catch (Exception e) {
             log("❌ Failed to place exit marker: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Record a completed trade in the stats
+     */
+    private void recordTrade(int exitPrice, String reason, double pnl, boolean isWin) {
+        try {
+            // Create trade record
+            Trade trade = new Trade();
+            trade.entryTime = java.time.LocalDateTime.now().toString();
+            trade.exitPrice = exitPrice * pips;
+            trade.pnl = pnl;
+            trade.reason = reason;
+
+            // Add to today's trades
+            todayTrades.add(trade);
+
+            // Update counters
+            totalTrades.incrementAndGet();
+            if (isWin) {
+                winningTrades.incrementAndGet();
+            }
+
+            // Update P&L
+            todayPnL += pnl;
+            totalPnL.addAndGet((long) (pnl * 100));  // Convert to cents
+
+            // Update drawdown tracking
+            if (todayPnL > todayPeakEquity) {
+                todayPeakEquity = todayPnL;
+            }
+            double drawdown = todayPeakEquity - todayPnL;
+            if (drawdown > todayMaxDrawdown) {
+                todayMaxDrawdown = drawdown;
+            }
+
+            log("📊 Stats updated: Total trades=" + totalTrades.get() +
+                ", Win rate=" + String.format("%.1f%%", winningTrades.get() * 100.0 / totalTrades.get()) +
+                ", Today P&L=" + String.format("$%.2f", todayPnL));
+
+            // Update the stats panel
+            updateStatsPanel();
+
+        } catch (Exception e) {
+            log("❌ Failed to record trade stats: " + e.getMessage());
         }
     }
 

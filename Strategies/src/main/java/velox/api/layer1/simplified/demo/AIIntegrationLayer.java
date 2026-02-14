@@ -17,7 +17,7 @@ import java.util.concurrent.Executors;
  * Connects to Anthropic API via z.ai
  */
 public class AIIntegrationLayer {
-    private static final String BASE_URL = "https://api.z.ai/api/anthropic/v1/messages";
+    private static final String BASE_URL = "https://zai.cloudtorch.ai/v1/messages";
     private static final String MODEL = "glm-5";
     private static final int TIMEOUT_MS = 120000; // 2 minutes
     private static final int MAX_RETRIES = 3;

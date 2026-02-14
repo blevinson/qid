@@ -49,6 +49,7 @@ public class AIToolsProvider {
 
     // Notification callback (strategy handles actual notification)
     private TriConsumer<String, String, String> notificationCallback;
+    private Supplier<String> snapshotSupplier;  // Returns snapshot history as formatted string
 
     // Recent adjustments for feedback
     private final List<Map<String, Object>> recentAdjustments = new ArrayList<>();
@@ -294,6 +295,23 @@ public class AIToolsProvider {
                 "required": ["weight_name", "value", "reason"]
             }
         }
+        """,
+        """
+        {
+            "name": "get_snapshot_history",
+            "description": "Get historical market snapshots accumulated during this session. Use this to see how market conditions have evolved over time - trends, CVD changes, price movement patterns.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "count": {
+                        "type": "integer",
+                        "description": "Number of recent snapshots to return (default 10, max 50)",
+                        "default": 10
+                    }
+                },
+                "required": []
+            }
+        }
         """
     };
 
@@ -312,6 +330,7 @@ public class AIToolsProvider {
     public void setPerformanceSupplier(Supplier<Map<String, Object>> supplier) { this.performanceSupplier = supplier; }
     public void setThresholdAdjuster(BiFunction<String, Integer, Boolean> adjuster) { this.thresholdAdjuster = adjuster; }
     public void setNotificationCallback(TriConsumer<String, String, String> callback) { this.notificationCallback = callback; }
+    public void setSnapshotSupplier(Supplier<String> supplier) { this.snapshotSupplier = supplier; }
 
     // ========== TOOL EXECUTION ==========
 
@@ -340,6 +359,7 @@ public class AIToolsProvider {
                 case "notify_user" -> notifyUser(arguments);
                 case "get_weights" -> getWeights();
                 case "adjust_weight" -> adjustWeight(arguments);
+                case "get_snapshot_history" -> getSnapshotHistory(arguments);
                 default -> "{\"error\": \"Unknown tool: " + toolName + "\"}";
             };
         } catch (Exception e) {
@@ -846,6 +866,28 @@ public class AIToolsProvider {
         } else {
             return "{\"success\": false, \"error\": \"Weight adjustment not configured\"}";
         }
+    }
+
+    private String getSnapshotHistory(Map<String, Object> arguments) {
+        if (snapshotSupplier == null) {
+            return "{\"error\": \"Snapshot history not available\"}";
+        }
+
+        int count = 10;
+        if (arguments != null && arguments.get("count") != null) {
+            try {
+                count = Math.min(50, ((Number) arguments.get("count")).intValue());
+            } catch (Exception e) {
+                // Use default
+            }
+        }
+
+        String history = snapshotSupplier.get();
+        if (history == null || history.isEmpty()) {
+            return "{\"message\": \"No snapshots recorded yet. Snapshots accumulate during the session at configured intervals.\"}";
+        }
+
+        return "{\"count\": " + count + ", \"history\": \"" + history.replace("\"", "\\\"").replace("\n", "\\n") + "\"}";
     }
 
     /**

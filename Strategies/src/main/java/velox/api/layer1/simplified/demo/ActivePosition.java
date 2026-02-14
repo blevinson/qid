@@ -18,6 +18,10 @@ public class ActivePosition {
     public final int entryPrice;
     public final int quantity;
     public final long entryTime;
+    public final int entrySlippage;  // Ticks of slippage at entry (signal price vs fill price)
+
+    // Instrument
+    public final String symbol;
 
     // Orders
     public final AtomicReference<String> entryOrderId = new AtomicReference<>();
@@ -42,6 +46,9 @@ public class ActivePosition {
     public final SignalData originalSignal;
     public final AIIntegrationLayer.AIDecision aiDecision;
 
+    // Historical snapshot of thresholds and weights at entry time
+    public final EntryContext entryContext;
+
     // Performance tracking
     public final AtomicInteger maxUnrealizedPnl = new AtomicInteger(0);
     public final AtomicInteger maxAdverseExcursion = new AtomicInteger(0);
@@ -52,16 +59,61 @@ public class ActivePosition {
     public final AtomicInteger exitPrice = new AtomicInteger(0);
     public final AtomicBoolean isClosed = new AtomicBoolean(false);
 
+    /**
+     * Snapshot of thresholds and weights at entry time for historical analysis
+     */
+    public static class EntryContext {
+        // Instrument
+        public String symbol;
+
+        // Signal thresholds
+        public int minConfluenceScore;
+        public int confluenceThreshold;
+        public double thresholdMultiplier;
+
+        // Detection thresholds
+        public int icebergMinOrders;
+        public int spoofMinSize;
+        public int absorptionMinSize;
+
+        // Confluence weights
+        public int icebergMax;
+        public int icebergMultiplier;
+        public int cvdAlignMax;
+        public int cvdDivergePenalty;
+        public int emaAlignMax;
+        public int vwapAlign;
+        public int vwapDiverge;
+
+        /**
+         * Format for logging
+         */
+        public String toLogString() {
+            return String.format(
+                "Symbol: %s | Thresholds: minScore=%d, conf=%d, mult=%.1f, iceberg=%d, spoof=%d, absorb=%d | Weights: iceMax=%d, cvdAlign=%d, cvdDiv=%d, emaAlign=%d, vwapAlign=%d, vwapDiv=%d",
+                symbol,
+                minConfluenceScore, confluenceThreshold, thresholdMultiplier,
+                icebergMinOrders, spoofMinSize, absorptionMinSize,
+                icebergMax, cvdAlignMax, cvdDivergePenalty, emaAlignMax, vwapAlign, vwapDiverge
+            );
+        }
+    }
+
     public ActivePosition(String id, boolean isLong, int entryPrice, int quantity,
                          int stopLoss, int takeProfit, int breakEvenTrigger, int breakEvenStop,
-                         int trailAmount,
-                         SignalData signal, AIIntegrationLayer.AIDecision decision) {
+                         int trailAmount, int entrySlippage,
+                         SignalData signal, AIIntegrationLayer.AIDecision decision,
+                         String symbol, ConfluenceWeights weights,
+                         int minConfluenceScore, int confluenceThreshold, double thresholdMultiplier,
+                         int icebergMinOrders, int spoofMinSize, int absorptionMinSize) {
         this.id = id;
         this.aiDecisionId = decision != null ? id : null;
         this.isLong = isLong;
         this.entryPrice = entryPrice;
         this.quantity = quantity;
         this.entryTime = System.currentTimeMillis();
+        this.entrySlippage = entrySlippage;
+        this.symbol = symbol;
         this.stopLossPrice = new AtomicInteger(stopLoss);
         this.takeProfitPrice = new AtomicInteger(takeProfit);
         this.breakEvenTriggerPrice = breakEvenTrigger;
@@ -69,6 +121,25 @@ public class ActivePosition {
         this.trailAmount = trailAmount;
         this.originalSignal = signal;
         this.aiDecision = decision;
+
+        // Capture entry context for historical analysis
+        this.entryContext = new EntryContext();
+        this.entryContext.symbol = symbol;
+        this.entryContext.minConfluenceScore = minConfluenceScore;
+        this.entryContext.confluenceThreshold = confluenceThreshold;
+        this.entryContext.thresholdMultiplier = thresholdMultiplier;
+        this.entryContext.icebergMinOrders = icebergMinOrders;
+        this.entryContext.spoofMinSize = spoofMinSize;
+        this.entryContext.absorptionMinSize = absorptionMinSize;
+        if (weights != null) {
+            this.entryContext.icebergMax = weights.get(ConfluenceWeights.ICEBERG_MAX);
+            this.entryContext.icebergMultiplier = weights.get(ConfluenceWeights.ICEBERG_MULTIPLIER);
+            this.entryContext.cvdAlignMax = weights.get(ConfluenceWeights.CVD_ALIGN_MAX);
+            this.entryContext.cvdDivergePenalty = weights.get(ConfluenceWeights.CVD_DIVERGE_PENALTY);
+            this.entryContext.emaAlignMax = weights.get(ConfluenceWeights.EMA_ALIGN_MAX);
+            this.entryContext.vwapAlign = weights.get(ConfluenceWeights.VWAP_ALIGN);
+            this.entryContext.vwapDiverge = weights.get(ConfluenceWeights.VWAP_DIVERGE);
+        }
 
         // Initialize tracking prices
         if (isLong) {
@@ -214,11 +285,12 @@ public class ActivePosition {
 
     @Override
     public String toString() {
-        return String.format("ActivePosition[%s] %s %d @ %d (Stop: %d, Target: %d, P&L: $%.2f)",
+        return String.format("ActivePosition[%s] %s %d @ %d (Slip: %d, Stop: %d, Target: %d, P&L: $%.2f)",
             id.substring(0, 8),
             isLong ? "LONG" : "SHORT",
             quantity,
             entryPrice,
+            entrySlippage,
             stopLossPrice.get(),
             takeProfitPrice.get(),
             calculateUnrealizedPnl(isLong ? highestPrice.get() : lowestPrice.get())
