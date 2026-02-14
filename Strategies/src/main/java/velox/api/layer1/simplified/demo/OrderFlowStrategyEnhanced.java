@@ -167,6 +167,9 @@ public class OrderFlowStrategyEnhanced implements
     @Parameter(name = "Confluence Threshold")
     private Integer confluenceThreshold = 50;
 
+    // Adjustable confluence weights (AI can modify within safety bounds)
+    private ConfluenceWeights confluenceWeights = new ConfluenceWeights();
+
     @Parameter(name = "AI Auth Token")
     private String aiAuthToken = "8a4f5b950ea142c98746d5a320666414.Yf1MQwtkwfuDbyHw";
 
@@ -2866,6 +2869,17 @@ public class OrderFlowStrategyEnhanced implements
         } else {
             log("   No changes needed (all values same as current)");
         }
+
+        // Apply weight adjustments if any
+        if (adj.weightAdjustment != null && adj.weightAdjustment.hasAdjustments()) {
+            log("⚖️ AI WEIGHT ADJUSTMENT:");
+            confluenceWeights.applyAdjustments(adj.weightAdjustment);
+            log("   " + confluenceWeights.toAIString().replace("\n", " "));
+            if (adj.weightAdjustment.reasoning != null) {
+                log("   Reasoning: " + adj.weightAdjustment.reasoning);
+            }
+            log("✅ Confluence weights updated by AI");
+        }
     }
 
     // Helper methods for market context
@@ -3875,46 +3889,42 @@ public class OrderFlowStrategyEnhanced implements
     }
 
     /**
-     * Calculate confluence score (Enhanced with alignment penalties per AI_SIGNAL_ALIGNMENT_ANALYSIS.md)
+     * Calculate confluence score using adjustable weights
      *
-     * Phase 1 Improvements:
-     * - CVD divergence penalty (-30 points) - AI skips these 75-92%
-     * - EMA divergence penalty (-15 points) - Price wrong side of all EMAs
-     * - Removed size bonus (redundant with iceberg score)
-     * - Increased CVD alignment bonus (+25 vs +15)
+     * AI can adjust individual weights within safety bounds to optimize
+     * for different market conditions (trending, ranging, volatile, etc.)
      */
     private int calculateConfluenceScore(boolean isBid, int price, int totalSize) {
         int score = 0;
+        ConfluenceWeights w = confluenceWeights;  // Shorthand
 
-        // ========== ICEBERG DETECTION (max 40 points) ==========
-        int icebergScore = Math.min(40, totalSize * 2);
+        // ========== ICEBERG DETECTION ==========
+        int icebergScore = Math.min(w.get(ConfluenceWeights.ICEBERG_MAX),
+                                     totalSize * w.get(ConfluenceWeights.ICEBERG_MULTIPLIER));
         score += icebergScore;
 
-        // ========== CVD ALIGNMENT (aligned: +25, divergent: -30) ==========
-        // Per AI analysis: CVD alignment is THE critical factor
+        // ========== CVD ALIGNMENT ==========
         long cvd = cvdCalculator.getCVD();
-        String cvdTrend = cvdCalculator.getCVDTrend();
         double cvdStrength = cvdCalculator.getCVDStrength();
 
         boolean cvdAligned = (cvd > 0 && isBid) || (cvd < 0 && !isBid);
         boolean cvdDivergent = (cvd > 0 && !isBid) || (cvd < 0 && isBid);
 
         if (cvdAligned) {
-            // CVD confirms signal direction - STRONG bonus
-            int cvdScore = (int)Math.min(25, cvdStrength / 2 + 10);  // Increased from 15 to 25
+            // CVD confirms signal direction
+            int cvdScore = (int)Math.min(w.get(ConfluenceWeights.CVD_ALIGN_MAX), cvdStrength / 2 + 10);
             score += cvdScore;
         } else if (cvdDivergent) {
-            // CVD OPPOSITE to signal direction - MAJOR penalty
-            // AI skips these 75-92% of the time regardless of other factors
-            score -= 30;
+            // CVD OPPOSITE to signal direction - penalty
+            score -= w.get(ConfluenceWeights.CVD_DIVERGE_PENALTY);
         }
 
-        // CVD extreme exhaustion (keep existing)
+        // CVD extreme exhaustion
         if (cvdCalculator.isAtExtreme(5.0) && !cvdAligned) {
             score -= 10;
         }
 
-        // CVD divergence bonus (keep existing - this is different from alignment)
+        // CVD divergence bonus
         CVDCalculator.DivergenceType divergence = cvdCalculator.checkDivergence(price, 20);
         if (divergence == CVDCalculator.DivergenceType.BULLISH && isBid) {
             score += 10;
@@ -3922,30 +3932,27 @@ public class OrderFlowStrategyEnhanced implements
             score += 10;
         }
 
-        // ========== VOLUME PROFILE (max 20 points) ==========
+        // ========== VOLUME PROFILE ==========
         VolumeProfileCalculator.VolumeArea volumeArea = volumeProfile.getVolumeNearPrice(price);
 
         if (volumeArea.volumeRatio > 0.3) {
-            // High volume node (support/resistance)
-            score += 20;
+            score += w.get(ConfluenceWeights.VOLUME_PROFILE_MAX);  // High volume node
         } else if (volumeArea.volumeRatio < 0.05) {
-            // Low volume = easy move
-            score += 5;
+            score += 5;  // Low volume = easy move
         }
 
-        // ========== VOLUME IMBALANCE (max 10 points) ==========
+        // ========== VOLUME IMBALANCE ==========
         VolumeProfileCalculator.VolumeImbalance imbalance = volumeProfile.getImbalance(price);
 
         if ("STRONG_BUYING".equals(imbalance.sentiment) && isBid) {
-            score += 10;
+            score += w.get(ConfluenceWeights.VOLUME_IMBALANCE_MAX);
         } else if ("STRONG_SELLING".equals(imbalance.sentiment) && !isBid) {
-            score += 10;
+            score += w.get(ConfluenceWeights.VOLUME_IMBALANCE_MAX);
         } else if ("BUYING".equals(imbalance.sentiment) || "SELLING".equals(imbalance.sentiment)) {
-            score += 5;
+            score += w.get(ConfluenceWeights.VOLUME_IMBALANCE_MAX) / 2;
         }
 
-        // ========== EMA TREND ALIGNMENT (aligned: +20, divergent: -15) ==========
-        // Per AI analysis: Trend alignment is critical, divergence should be penalized
+        // ========== EMA TREND ALIGNMENT ==========
         int emaAlignmentCount = 0;
         int emaDivergenceCount = 0;
         int emaCount = 0;
@@ -3975,48 +3982,42 @@ public class OrderFlowStrategyEnhanced implements
 
         // Score based on EMA alignment/divergence
         if (emaAlignmentCount == emaCount && emaCount == 3) {
-            score += 20;  // Perfect alignment - increased from 15
+            score += w.get(ConfluenceWeights.EMA_ALIGN_MAX);  // Perfect alignment
         } else if (emaAlignmentCount >= 2) {
-            score += 10;  // Partial alignment
-        } else if (emaAlignmentCount == 1) {
-            score += 0;   // Neutral - no bonus
+            score += w.get(ConfluenceWeights.EMA_ALIGN_PARTIAL);  // Partial alignment
         }
 
-        // PENALTY: Price on wrong side of ALL EMAs
+        // PENALTY: Price on wrong side of EMAs
         if (emaDivergenceCount == emaCount && emaCount == 3) {
-            score -= 15;  // Complete divergence - fighting trend
+            score -= w.get(ConfluenceWeights.EMA_DIVERGE_PENALTY);  // Complete divergence
         } else if (emaDivergenceCount >= 2) {
-            score -= 8;   // Partial divergence
+            score -= w.get(ConfluenceWeights.EMA_DIVERGE_PARTIAL);  // Partial divergence
         }
 
-        // ========== VWAP ALIGNMENT (aligned: +10, divergent: -5) ==========
+        // ========== VWAP ALIGNMENT ==========
         if (vwapCalculator.isInitialized()) {
             String vwapRel = vwapCalculator.getRelationship(price);
             if ((isBid && "ABOVE".equals(vwapRel)) || (!isBid && "BELOW".equals(vwapRel))) {
-                score += 10;  // Aligned with VWAP
+                score += w.get(ConfluenceWeights.VWAP_ALIGN);
             } else if ((isBid && "BELOW".equals(vwapRel)) || (!isBid && "ABOVE".equals(vwapRel))) {
-                score -= 5;   // Against VWAP - mild penalty
+                score -= w.get(ConfluenceWeights.VWAP_DIVERGE);
             }
         }
 
-        // ========== TIME OF DAY (max 10 points) ==========
-        // Reduced importance - alignment matters more than time
+        // ========== TIME OF DAY ==========
         int hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
         if (hour >= 10 && hour <= 15) {
-            score += 5;  // Prime trading hours - reduced from 10
+            score += w.get(ConfluenceWeights.TIME_OF_DAY_MAX);  // Prime trading hours
         } else if ((hour >= 9 && hour < 10) || (hour > 15 && hour <= 16)) {
-            score += 2;  // Secondary hours - reduced from 5
+            score += w.get(ConfluenceWeights.TIME_OF_DAY_SECONDARY);  // Secondary hours
         }
 
-        // ========== SIZE BONUS - REMOVED ==========
-        // This is already captured in icebergScore - redundant
-
-        // ========== DOM (DEPTH OF MARKET) ALIGNMENT (max +/- 10 points) ==========
+        // ========== DOM (DEPTH OF MARKET) ALIGNMENT ==========
         int domAdjustment = domAnalyzer.getConfluenceAdjustment(isBid);
-        score += Math.max(-10, Math.min(10, domAdjustment));
+        int domMax = w.get(ConfluenceWeights.DOM_MAX);
+        score += Math.max(-domMax, Math.min(domMax, domAdjustment));
 
         // ========== FINAL SCORE CLAMP ==========
-        // Ensure score doesn't go too negative (but allow penalties to work)
         score = Math.max(-50, score);
 
         return score;

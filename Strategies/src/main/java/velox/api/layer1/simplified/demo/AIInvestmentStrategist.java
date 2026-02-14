@@ -323,6 +323,16 @@ public class AIInvestmentStrategist {
             - If low volatility: detection thresholds can be lower
             - Only include thresholdAdjustment if you have a specific recommendation
 
+            WEIGHT ADJUSTMENT (Advanced - Optional):
+            For more granular control, you can adjust individual confluence factor weights.
+            This is powerful but use carefully - all weights have safety bounds.
+
+            Common scenarios:
+            - Trending market: Increase cvdAlignMax (20-40), emaAlignMax (15-30)
+            - Ranging market: Increase volumeProfileMax (15-30), vwapAlign (8-15)
+            - High volatility: Increase cvdDivergePenalty (20-50), emaDivergePenalty (10-25)
+            - Iceberg-heavy strategy: Increase icebergMax (30-60), icebergMultiplier (2-4)
+
             Respond with JSON:
             {
               "action": "TAKE" | "SKIP",
@@ -341,7 +351,25 @@ public class AIInvestmentStrategist {
                 "spoofMinSize": optional new value,
                 "absorptionMinSize": optional new value,
                 "thresholdMultiplier": optional new value,
-                "reasoning": "why you're adjusting thresholds"
+                "weightAdjustment": {
+                  "icebergMax": optional (20-60),
+                  "icebergMultiplier": optional (1-4),
+                  "cvdAlignMax": optional (10-40),
+                  "cvdDivergePenalty": optional (15-50),
+                  "volumeProfileMax": optional (10-30),
+                  "volumeImbalanceMax": optional (5-20),
+                  "emaAlignMax": optional (10-30),
+                  "emaAlignPartial": optional (5-15),
+                  "emaDivergePenalty": optional (8-25),
+                  "emaDivergePartial": optional (4-12),
+                  "vwapAlign": optional (5-15),
+                  "vwapDiverge": optional (2-10),
+                  "timeOfDayMax": optional (0-15),
+                  "timeOfDaySecondary": optional (0-8),
+                  "domMax": optional (5-20),
+                  "reasoning": "why adjusting these specific weights"
+                },
+                "reasoning": "why you're adjusting thresholds or weights"
               }
             }
             """,
@@ -583,6 +611,31 @@ public class AIInvestmentStrategist {
                     adj.reasoning = adjJson.get("reasoning").getAsString();
                 }
 
+                // Parse weight adjustments (optional - more granular control)
+                if (adjJson.has("weightAdjustment") && !adjJson.get("weightAdjustment").isJsonNull()) {
+                    JsonObject weightJson = adjJson.getAsJsonObject("weightAdjustment");
+                    ConfluenceWeights.WeightAdjustment weightAdj = new ConfluenceWeights.WeightAdjustment();
+
+                    if (weightJson.has("icebergMax")) weightAdj.icebergMax = weightJson.get("icebergMax").getAsInt();
+                    if (weightJson.has("icebergMultiplier")) weightAdj.icebergMultiplier = weightJson.get("icebergMultiplier").getAsInt();
+                    if (weightJson.has("cvdAlignMax")) weightAdj.cvdAlignMax = weightJson.get("cvdAlignMax").getAsInt();
+                    if (weightJson.has("cvdDivergePenalty")) weightAdj.cvdDivergePenalty = weightJson.get("cvdDivergePenalty").getAsInt();
+                    if (weightJson.has("volumeProfileMax")) weightAdj.volumeProfileMax = weightJson.get("volumeProfileMax").getAsInt();
+                    if (weightJson.has("volumeImbalanceMax")) weightAdj.volumeImbalanceMax = weightJson.get("volumeImbalanceMax").getAsInt();
+                    if (weightJson.has("emaAlignMax")) weightAdj.emaAlignMax = weightJson.get("emaAlignMax").getAsInt();
+                    if (weightJson.has("emaAlignPartial")) weightAdj.emaAlignPartial = weightJson.get("emaAlignPartial").getAsInt();
+                    if (weightJson.has("emaDivergePenalty")) weightAdj.emaDivergePenalty = weightJson.get("emaDivergePenalty").getAsInt();
+                    if (weightJson.has("emaDivergePartial")) weightAdj.emaDivergePartial = weightJson.get("emaDivergePartial").getAsInt();
+                    if (weightJson.has("vwapAlign")) weightAdj.vwapAlign = weightJson.get("vwapAlign").getAsInt();
+                    if (weightJson.has("vwapDiverge")) weightAdj.vwapDiverge = weightJson.get("vwapDiverge").getAsInt();
+                    if (weightJson.has("timeOfDayMax")) weightAdj.timeOfDayMax = weightJson.get("timeOfDayMax").getAsInt();
+                    if (weightJson.has("timeOfDaySecondary")) weightAdj.timeOfDaySecondary = weightJson.get("timeOfDaySecondary").getAsInt();
+                    if (weightJson.has("domMax")) weightAdj.domMax = weightJson.get("domMax").getAsInt();
+                    if (weightJson.has("reasoning")) weightAdj.reasoning = weightJson.get("reasoning").getAsString();
+
+                    adj.weightAdjustment = weightAdj;
+                }
+
                 decision.thresholdAdjustment = adj;
             }
 
@@ -716,6 +769,9 @@ public class AIInvestmentStrategist {
         /** Adjust threshold multiplier */
         public Double thresholdMultiplier;
 
+        /** Adjust individual confluence weights (more granular control) */
+        public ConfluenceWeights.WeightAdjustment weightAdjustment;
+
         /** Reasoning for the threshold adjustment */
         public String reasoning;
 
@@ -728,7 +784,8 @@ public class AIInvestmentStrategist {
                    icebergMinOrders != null ||
                    spoofMinSize != null ||
                    absorptionMinSize != null ||
-                   thresholdMultiplier != null;
+                   thresholdMultiplier != null ||
+                   (weightAdjustment != null && weightAdjustment.hasAdjustments());
         }
 
         @Override
@@ -740,6 +797,7 @@ public class AIInvestmentStrategist {
             if (spoofMinSize != null) sb.append("spoofMinSize=").append(spoofMinSize).append(" ");
             if (absorptionMinSize != null) sb.append("absorptionMinSize=").append(absorptionMinSize).append(" ");
             if (thresholdMultiplier != null) sb.append("thresholdMultiplier=").append(thresholdMultiplier).append(" ");
+            if (weightAdjustment != null) sb.append("weightAdjustment=").append(weightAdjustment).append(" ");
             sb.append("reasoning='").append(reasoning).append("'}");
             return sb.toString();
         }
