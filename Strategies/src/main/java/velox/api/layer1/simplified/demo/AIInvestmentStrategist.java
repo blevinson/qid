@@ -20,14 +20,20 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * AI Investment Strategist
- * Uses memory search to make intelligent trading decisions
- * Philosophy: "Investment strategist vs speed daemon"
+ * Qid - AI Investment Strategist (Decision Mode)
+ *
+ * Part of the unified Qid AI system. This class handles TAKE/SKIP decisions
+ * using memory search and AI analysis.
+ *
+ * Philosophy: "Intelligence over speed" - NOT an HFT speed daemon
+ * Key Innovation: Search memory BEFORE acting, learn from EVERY outcome
  *
  * This class evaluates trading setups by searching memory for similar historical patterns
  * and using AI to make strategic decisions about whether to take or skip a setup.
  *
  * Unified Session: All decisions are logged to TranscriptWriter for shared context with AI chat.
+ *
+ * @see QidIdentity for unified identity shared with AI Chat
  */
 public class AIInvestmentStrategist {
     private final TradingMemoryService memoryService;
@@ -35,12 +41,15 @@ public class AIInvestmentStrategist {
     private final HttpClient httpClient;
     private final Gson gson;
     private final TranscriptWriter transcriptWriter;  // Unified session transcript
-    private static final String API_URL = "https://api.z.ai/api/anthropic/v1/messages";
+    private static final String API_URL = "https://zai.cloudtorch.ai/v1/messages";
     private static final String MODEL = "glm-5";
 
     // File logging
     private static final String LOG_FILE = System.getProperty("user.home") + "/ai-strategist.log";
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
+
+    // Prompt mode: "FULL" or "COMPACT"
+    private String promptMode = "COMPACT";
 
     /**
      * Constructor for AIInvestmentStrategist
@@ -62,6 +71,14 @@ public class AIInvestmentStrategist {
         if (transcriptWriter != null) {
             log("📝 Session transcript logging: ENABLED");
         }
+    }
+
+    /**
+     * Set prompt mode: "FULL" or "COMPACT"
+     */
+    public void setPromptMode(String mode) {
+        this.promptMode = "FULL".equalsIgnoreCase(mode) ? "FULL" : "COMPACT";
+        log("📊 Prompt mode set to: " + this.promptMode);
     }
 
     /**
@@ -199,165 +216,99 @@ public class AIInvestmentStrategist {
      * @return AI prompt string
      */
     private String buildAIPrompt(SignalData signal, String memoryContext, SessionContext sessionContext, boolean devMode) {
-        double pips = signal.pips;  // For converting tick prices to actual prices
+        double pips = signal.pips;
         double actualPrice = signal.price * pips;
 
-        // Build key levels section
+        // Build key levels (used in both modes)
         StringBuilder keyLevels = new StringBuilder();
-
-        // VWAP
         if (!Double.isNaN(signal.market.vwap) && signal.market.vwap > 0) {
-            keyLevels.append(String.format("- VWAP: %.2f (%s, %.1f ticks away)\n",
-                signal.market.vwap * pips,
-                signal.market.priceVsVwap,
-                signal.market.vwapDistanceTicks));
+            keyLevels.append(String.format("VWAP:%.2f(%s) ", signal.market.vwap * pips, signal.market.priceVsVwap));
+        }
+        if (signal.market.pocPrice > 0) {
+            keyLevels.append(String.format("POC:%.2f ", signal.market.pocPrice * pips));
+        }
+        if (signal.market.domSupportPrice > 0) {
+            keyLevels.append(String.format("Sup:%.2f ", signal.market.domSupportPrice * pips));
+        }
+        if (signal.market.domResistancePrice > 0) {
+            keyLevels.append(String.format("Res:%.2f ", signal.market.domResistancePrice * pips));
+        }
+        String keyLevelsStr = keyLevels.length() > 0 ? keyLevels.toString().trim() : "N/A";
+
+        // COMPACT mode - minimal prompt
+        if ("COMPACT".equals(promptMode)) {
+            String devNote = devMode ? " [DEV MODE: be permissive]" : "";
+            return String.format("""
+                SIGNAL: %s %s @ %.2f | Score: %d | CVD: %d (%s) | Trend: %s%s
+                KEY LEVELS: %s
+                %s
+                Decide TAKE or SKIP. Respond with JSON only.
+                {"action":"TAKE"|"SKIP","confidence":0.0-1.0,"reasoning":"brief","plan":{"orderType":"BUY"|"SELL","entryPrice":%.2f,"stopLossPrice":N,"takeProfitPrice":N}}
+                """,
+                signal.direction, signal.detection.type, actualPrice, signal.score,
+                signal.market.cvd, signal.market.cvdTrend, signal.market.trend,
+                devNote, keyLevelsStr, memoryContext, actualPrice);
         }
 
-        // Volume Profile levels (POC, Value Area)
+        // FULL mode - detailed prompt
+        StringBuilder fullKeyLevels = new StringBuilder();
+        if (!Double.isNaN(signal.market.vwap) && signal.market.vwap > 0) {
+            fullKeyLevels.append(String.format("- VWAP: %.2f (%s, %.1f ticks away)\n",
+                signal.market.vwap * pips, signal.market.priceVsVwap, signal.market.vwapDistanceTicks));
+        }
         if (signal.market.pocPrice > 0) {
-            keyLevels.append(String.format("- POC (Point of Control): %.2f\n", signal.market.pocPrice * pips));
+            fullKeyLevels.append(String.format("- POC: %.2f\n", signal.market.pocPrice * pips));
         }
         if (signal.market.valueAreaLow > 0 && signal.market.valueAreaHigh > 0) {
-            keyLevels.append(String.format("- Value Area: %.2f - %.2f\n",
+            fullKeyLevels.append(String.format("- Value Area: %.2f - %.2f\n",
                 signal.market.valueAreaLow * pips, signal.market.valueAreaHigh * pips));
         }
-
-        // EMA levels
         if (signal.market.ema9 > 0) {
-            keyLevels.append(String.format("- EMA9: %.2f (%.1f ticks)\n",
+            fullKeyLevels.append(String.format("- EMA9: %.2f (%.1f ticks)\n",
                 signal.market.ema9 * pips, signal.market.ema9DistanceTicks));
         }
         if (signal.market.ema21 > 0) {
-            keyLevels.append(String.format("- EMA21: %.2f (%.1f ticks)\n",
+            fullKeyLevels.append(String.format("- EMA21: %.2f (%.1f ticks)\n",
                 signal.market.ema21 * pips, signal.market.ema21DistanceTicks));
         }
         if (signal.market.ema50 > 0) {
-            keyLevels.append(String.format("- EMA50: %.2f (%.1f ticks)\n",
+            fullKeyLevels.append(String.format("- EMA50: %.2f (%.1f ticks)\n",
                 signal.market.ema50 * pips, signal.market.ema50DistanceTicks));
         }
-
-        // DOM (Order Book) levels - Real-time support/resistance from liquidity
         if (signal.market.domSupportPrice > 0) {
-            keyLevels.append(String.format("- DOM SUPPORT: %.2f (%d contracts, %d ticks below)\n",
-                signal.market.domSupportPrice * pips,
-                signal.market.domSupportVolume,
-                signal.market.domSupportDistance));
+            fullKeyLevels.append(String.format("- DOM SUPPORT: %.2f (%d contracts)\n",
+                signal.market.domSupportPrice * pips, signal.market.domSupportVolume));
         }
         if (signal.market.domResistancePrice > 0) {
-            keyLevels.append(String.format("- DOM RESISTANCE: %.2f (%d contracts, %d ticks above)\n",
-                signal.market.domResistancePrice * pips,
-                signal.market.domResistanceVolume,
-                signal.market.domResistanceDistance));
+            fullKeyLevels.append(String.format("- DOM RESISTANCE: %.2f (%d contracts)\n",
+                signal.market.domResistancePrice * pips, signal.market.domResistanceVolume));
         }
-        if (signal.market.domImbalanceRatio != 0) {
-            keyLevels.append(String.format("- DOM IMBALANCE: %.2f (%s)\n",
-                signal.market.domImbalanceRatio,
-                signal.market.domImbalanceSentiment));
-        }
+        String fullKeyLevelsStr = fullKeyLevels.length() > 0 ? fullKeyLevels.toString() : "- (calculating...)\n";
 
-        // If no key levels available, add placeholder
-        String keyLevelsStr = keyLevels.length() > 0 ? keyLevels.toString() : "- (calculating...)\n";
+        String sessionContextStr = sessionContext != null ? sessionContext.toAIString() : "";
+        String thresholdContextStr = signal.thresholds != null ? signal.thresholds.toAIString() : "";
 
-        // Build session context section
-        String sessionContextStr = "";
-        if (sessionContext != null) {
-            sessionContextStr = sessionContext.toAIString();
-        }
-
-        // Build threshold context section
-        String thresholdContextStr = "";
-        if (signal.thresholds != null) {
-            thresholdContextStr = signal.thresholds.toAIString();
-        }
-
-        // Build dev mode context
         String devModeContext = "";
         if (devMode) {
-            devModeContext = """
-                🔧 DEVELOPMENT MODE ACTIVE 🔧
-                You are in DEVELOPMENT MODE for testing purposes.
-                - DO NOT adjust thresholds - use current manual settings
-                - Be PERMISSIVE: Take signals even with lower confluence scores
-                - Goal is to test the execution flow, not optimize for profit
-                - If the signal has any merit, TAKE it to verify the system works
-                - Skip ONLY if there's a critical issue (no price data, etc.)
-
-                """;
+            devModeContext = "🔧 DEV MODE: Be permissive, take signals to test execution.\n\n";
         }
 
         return String.format("""
-            You are an AI Investment Strategist analyzing a trading setup.
-
             %s%s
 
-            SIGNAL:
-            - Type: %s %s
-            - Price: %.2f
-            - Confluence Score: %d
-            - CVD: %d (%s)
-            - Trend: %s
+            SIGNAL: %s %s @ %.2f | Score: %d | CVD: %d (%s) | Trend: %s
 
-            KEY LEVELS (use for SL/TP placement):
+            KEY LEVELS:
+            %s
+            %s
             %s
 
-            %s
-
-            %s
-
-            Based on the signal strength, key levels, session context, historical memory, and current thresholds, should we TAKE or SKIP this setup?
-
-            IMPORTANT CONSIDERATIONS:
-            1. If this is a NEW SESSION, be more cautious - indicators are just starting to accumulate
-            2. During OPENING/CLOSING BELL phases, expect higher volatility - require stronger confluence
-            3. During LUNCH HOUR, expect lower volume - may see choppy conditions
-            4. When placing SL/TP, use the KEY LEVELS above:
-               - Place STOP LOSS beyond nearest support/resistance level
-               - Place TAKE PROFIT at or before next resistance/support level
-               - Consider VWAP and POC as key levels for mean reversion
-
-            THRESHOLD ADJUSTMENT (Optional):
-            You CAN recommend threshold adjustments based on market conditions:
-            - If too many low-quality signals: INCREASE minConfluenceScore or confluenceThreshold
-            - If missing good opportunities: DECREASE thresholds slightly
-            - If high volatility: INCREASE detection thresholds (icebergMinOrders, etc.)
-            - If low volatility: detection thresholds can be lower
-            - Only include thresholdAdjustment if you have a specific recommendation
-
-            Respond with JSON:
-            {
-              "action": "TAKE" | "SKIP",
-              "confidence": 0.0-1.0,
-              "reasoning": "brief explanation referencing key levels and session context",
-              "plan": {
-                "orderType": "BUY" | "SELL",
-                "entryPrice": %.2f,
-                "stopLossPrice": calculated based on key levels,
-                "takeProfitPrice": calculated based on key levels
-              },
-              "thresholdAdjustment": {
-                "minConfluenceScore": optional new value,
-                "confluenceThreshold": optional new value,
-                "icebergMinOrders": optional new value,
-                "spoofMinSize": optional new value,
-                "absorptionMinSize": optional new value,
-                "thresholdMultiplier": optional new value,
-                "reasoning": "why you're adjusting thresholds"
-              }
-            }
+            JSON response: {"action":"TAKE"|"SKIP","confidence":0.0-1.0,"reasoning":"brief","plan":{"orderType":"BUY"|"SELL","entryPrice":%.2f,"stopLossPrice":N,"takeProfitPrice":N}}
             """,
-            devModeContext,
-            sessionContextStr,
-            signal.direction,
-            signal.detection.type,
-            actualPrice,
-            signal.score,
-            signal.market.cvd,
-            signal.market.cvdTrend,
-            signal.market.trend,
-            keyLevelsStr,
-            thresholdContextStr,
-            memoryContext,
-            actualPrice);
+            devModeContext, sessionContextStr,
+            signal.direction, signal.detection.type, actualPrice, signal.score,
+            signal.market.cvd, signal.market.cvdTrend, signal.market.trend,
+            fullKeyLevelsStr, thresholdContextStr, memoryContext, actualPrice);
     }
 
     /**
@@ -425,6 +376,8 @@ public class AIInvestmentStrategist {
      * Synchronous Claude API call
      */
     private AIDecision callClaudeAPISync(String prompt, SignalData signal) throws Exception {
+        long startTime = System.currentTimeMillis();
+
         // Build request body
         JsonObject requestBody = new JsonObject();
         requestBody.addProperty("model", MODEL);
@@ -435,36 +388,42 @@ public class AIInvestmentStrategist {
         int strongThreshold = threshold + 30;
         int moderateThreshold = threshold + 10;
 
-        String systemPrompt = String.format("""
-            You are an AI Investment Strategist specializing in order flow trading.
+        // Build system prompt based on mode
+        String systemPrompt;
+        if ("FULL".equals(promptMode)) {
+            systemPrompt = QidIdentity.DECISION_PROMPT + String.format("""
 
-            PHILOSOPHY: "Investment strategist vs speed daemon"
-            - Quality over quantity
-            - High confluence = high probability
-            - Wait for perfect setups
+                DECISION FRAMEWORK FOR THIS SESSION:
+                1. Signal Quality (score 0-135, threshold: %d)
+                   - %d+ = Strong signal (TAKE freely)
+                   - %d-%d = Moderate signal (TAKE if context supports)
+                   - Below %d = Weak signal, SKIP unless exceptional context
 
-            DECISION FRAMEWORK:
-            1. Signal Quality (score 0-135, threshold: %d)
-               - %d+ = Strong signal (TAKE freely)
-               - %d-%d = Moderate signal (TAKE if context supports)
-               - Below %d = Weak signal, SKIP unless exceptional context
+                2. Market Context
+                   - CVD direction alignment
+                   - Trend confirmation
+                   - Volume at price support
 
-            2. Market Context
-               - CVD direction alignment
-               - Trend confirmation
-               - Volume at price support
+                3. Memory Context
+                   - Similar historical patterns
+                   - Win/loss outcomes
+                   - Lessons learned
 
-            3. Memory Context
-               - Similar historical patterns
-               - Win/loss outcomes
-               - Lessons learned
-
-            Respond ONLY with valid JSON:
-            """,
-            threshold,
-            strongThreshold,
-            threshold, strongThreshold,
-            threshold);
+                Respond ONLY with valid JSON:
+                """,
+                threshold,
+                strongThreshold,
+                threshold, strongThreshold,
+                threshold);
+        } else {
+            // COMPACT mode - minimal system prompt
+            systemPrompt = String.format("""
+                You are Qid, an AI trading strategist. Decide TAKE or SKIP.
+                Threshold: %d | Strong: %d+ | Moderate: %d-%d
+                Respond ONLY with JSON: {"action":"TAKE"|"SKIP","confidence":0.0-1.0,"reasoning":"brief","plan":{"orderType":"BUY"|"SELL","entryPrice":%.2f,"stopLossPrice":N,"takeProfitPrice":N}}
+                """,
+                threshold, strongThreshold, threshold, strongThreshold, signal.price * signal.pips);
+        }
 
         requestBody.addProperty("system", systemPrompt);
 
@@ -484,6 +443,9 @@ public class AIInvestmentStrategist {
             .build();
 
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+        long elapsed = System.currentTimeMillis() - startTime;
+        log("⏱️ API response time: %dms".formatted(elapsed));
 
         if (response.statusCode() != 200) {
             throw new Exception("API error: " + response.statusCode() + " - " + response.body());
@@ -581,6 +543,31 @@ public class AIInvestmentStrategist {
                 }
                 if (adjJson.has("reasoning")) {
                     adj.reasoning = adjJson.get("reasoning").getAsString();
+                }
+
+                // Parse weight adjustments (optional - more granular control)
+                if (adjJson.has("weightAdjustment") && !adjJson.get("weightAdjustment").isJsonNull()) {
+                    JsonObject weightJson = adjJson.getAsJsonObject("weightAdjustment");
+                    ConfluenceWeights.WeightAdjustment weightAdj = new ConfluenceWeights.WeightAdjustment();
+
+                    if (weightJson.has("icebergMax")) weightAdj.icebergMax = weightJson.get("icebergMax").getAsInt();
+                    if (weightJson.has("icebergMultiplier")) weightAdj.icebergMultiplier = weightJson.get("icebergMultiplier").getAsInt();
+                    if (weightJson.has("cvdAlignMax")) weightAdj.cvdAlignMax = weightJson.get("cvdAlignMax").getAsInt();
+                    if (weightJson.has("cvdDivergePenalty")) weightAdj.cvdDivergePenalty = weightJson.get("cvdDivergePenalty").getAsInt();
+                    if (weightJson.has("volumeProfileMax")) weightAdj.volumeProfileMax = weightJson.get("volumeProfileMax").getAsInt();
+                    if (weightJson.has("volumeImbalanceMax")) weightAdj.volumeImbalanceMax = weightJson.get("volumeImbalanceMax").getAsInt();
+                    if (weightJson.has("emaAlignMax")) weightAdj.emaAlignMax = weightJson.get("emaAlignMax").getAsInt();
+                    if (weightJson.has("emaAlignPartial")) weightAdj.emaAlignPartial = weightJson.get("emaAlignPartial").getAsInt();
+                    if (weightJson.has("emaDivergePenalty")) weightAdj.emaDivergePenalty = weightJson.get("emaDivergePenalty").getAsInt();
+                    if (weightJson.has("emaDivergePartial")) weightAdj.emaDivergePartial = weightJson.get("emaDivergePartial").getAsInt();
+                    if (weightJson.has("vwapAlign")) weightAdj.vwapAlign = weightJson.get("vwapAlign").getAsInt();
+                    if (weightJson.has("vwapDiverge")) weightAdj.vwapDiverge = weightJson.get("vwapDiverge").getAsInt();
+                    if (weightJson.has("timeOfDayMax")) weightAdj.timeOfDayMax = weightJson.get("timeOfDayMax").getAsInt();
+                    if (weightJson.has("timeOfDaySecondary")) weightAdj.timeOfDaySecondary = weightJson.get("timeOfDaySecondary").getAsInt();
+                    if (weightJson.has("domMax")) weightAdj.domMax = weightJson.get("domMax").getAsInt();
+                    if (weightJson.has("reasoning")) weightAdj.reasoning = weightJson.get("reasoning").getAsString();
+
+                    adj.weightAdjustment = weightAdj;
                 }
 
                 decision.thresholdAdjustment = adj;
@@ -716,6 +703,9 @@ public class AIInvestmentStrategist {
         /** Adjust threshold multiplier */
         public Double thresholdMultiplier;
 
+        /** Adjust individual confluence weights (more granular control) */
+        public ConfluenceWeights.WeightAdjustment weightAdjustment;
+
         /** Reasoning for the threshold adjustment */
         public String reasoning;
 
@@ -728,7 +718,8 @@ public class AIInvestmentStrategist {
                    icebergMinOrders != null ||
                    spoofMinSize != null ||
                    absorptionMinSize != null ||
-                   thresholdMultiplier != null;
+                   thresholdMultiplier != null ||
+                   (weightAdjustment != null && weightAdjustment.hasAdjustments());
         }
 
         @Override
@@ -740,6 +731,7 @@ public class AIInvestmentStrategist {
             if (spoofMinSize != null) sb.append("spoofMinSize=").append(spoofMinSize).append(" ");
             if (absorptionMinSize != null) sb.append("absorptionMinSize=").append(absorptionMinSize).append(" ");
             if (thresholdMultiplier != null) sb.append("thresholdMultiplier=").append(thresholdMultiplier).append(" ");
+            if (weightAdjustment != null) sb.append("weightAdjustment=").append(weightAdjustment).append(" ");
             sb.append("reasoning='").append(reasoning).append("'}");
             return sb.toString();
         }

@@ -1,9 +1,15 @@
-# Qid - AI Investment Strategist Trading System
+---
+name: qid-trading-strategy
+description: AI-driven investment strategist trading system for Bookmap. Implements order flow analysis (iceberg/spoof/absorption detection), 13-factor confluence scoring, memory-based decision making, and strategic order placement. Use when developing trading strategies, understanding order flow patterns, or integrating AI with Bookmap.
+license: Proprietary
+compatibility: Bookmap L1 API 7.6.0.20, Java 17
+metadata:
+  author: Qid Trading
+  version: "2.1"
+  last_updated: "2025-02-13"
+---
 
-**Version:** 1.0
-**Last Updated:** 2025-02-11
-**Type:** Trading Strategy & Order Flow Analysis
-**Platform:** Bookmap (Java L1 API v7.6.0.20)
+# Qid - AI Investment Strategist Trading System
 
 ---
 

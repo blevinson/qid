@@ -9,7 +9,7 @@ import java.util.concurrent.*;
  */
 public class ClaudeEmbeddingProvider {
     private final String apiToken;
-    private final String apiUrl = "https://api.z.ai/v1/embeddings";
+    private final String apiUrl = "https://zai.cloudtorch.ai/v1/embeddings";
 
     // LRU Cache for embeddings (max 1000 entries)
     private final Map<String, float[]> embeddingCache;

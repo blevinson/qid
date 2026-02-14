@@ -5,6 +5,9 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Collections;
 
 /**
  * Session Context for Trading
@@ -16,6 +19,70 @@ import java.time.temporal.ChronoUnit;
  * - Memory should be filtered by session relevance
  */
 public class SessionContext {
+
+    // ========== MARKET SNAPSHOT ==========
+    /**
+     * A point-in-time market snapshot for AI context accumulation.
+     * Snapshots build a narrative of session conditions over time.
+     */
+    public static class MarketSnapshot {
+        public final long timestamp;
+        public final double price;
+        public final double cvd;
+        public final double vwap;
+        public final int emaAlignment;  // -3 to +3
+        public final String trend;
+        public final SessionPhase phase;
+        public final int recentSignals;
+        public final double sessionPnl;
+        public final int tradesThisSession;
+        public final double sessionWinRate;
+
+        public MarketSnapshot(long timestamp, double price, double cvd, double vwap,
+                              int emaAlignment, String trend, SessionPhase phase,
+                              int recentSignals, double sessionPnl,
+                              int tradesThisSession, double sessionWinRate) {
+            this.timestamp = timestamp;
+            this.price = price;
+            this.cvd = cvd;
+            this.vwap = vwap;
+            this.emaAlignment = emaAlignment;
+            this.trend = trend;
+            this.phase = phase;
+            this.recentSignals = recentSignals;
+            this.sessionPnl = sessionPnl;
+            this.tradesThisSession = tradesThisSession;
+            this.sessionWinRate = sessionWinRate;
+        }
+
+        /**
+         * Format for AI context / transcript
+         */
+        public String toAIString() {
+            java.time.ZoneId etZone = java.time.ZoneId.of("America/New_York");
+            java.time.ZonedDateTime dataTime = java.time.Instant.ofEpochMilli(timestamp).atZone(etZone);
+            String timeStr = dataTime.format(DateTimeFormatter.ofPattern("HH:mm"));
+
+            return String.format("[%s] Price: %.2f | CVD: %+.0f | VWAP: %.2f | EMA: %+d | Trend: %s | Phase: %s | Signals: %d | P&L: $%.2f",
+                timeStr, price, cvd, vwap, emaAlignment, trend, phase, recentSignals, sessionPnl);
+        }
+
+        /**
+         * Brief format for compact display
+         */
+        public String toBriefString() {
+            java.time.ZoneId etZone = java.time.ZoneId.of("America/New_York");
+            java.time.ZonedDateTime dataTime = java.time.Instant.ofEpochMilli(timestamp).atZone(etZone);
+            String timeStr = dataTime.format(DateTimeFormatter.ofPattern("HH:mm"));
+
+            return String.format("[%s] %.2f | CVD %+d | EMA %+d | %s",
+                timeStr, price, (int)cvd, emaAlignment, trend);
+        }
+    }
+
+    // Snapshot storage - accumulates throughout session
+    private final List<MarketSnapshot> snapshots = new ArrayList<>();
+    private static final int MAX_SNAPSHOTS = 100;  // Keep last 100 (~8+ hours at 5min intervals)
 
     // ========== WARM-UP CONFIGURATION ==========
     // Signals are suppressed until warm-up is complete
@@ -427,4 +494,96 @@ public class SessionContext {
     public double getCurrentPrice() { return currentPrice; }
     public int getTradesProcessed() { return tradesProcessed; }
     public int getPriceUpdatesProcessed() { return priceUpdatesProcessed; }
+
+    // ========== SNAPSHOT METHODS ==========
+
+    /**
+     * Add a market snapshot to the session history
+     */
+    public void addSnapshot(MarketSnapshot snapshot) {
+        snapshots.add(snapshot);
+        // Keep only the most recent snapshots
+        while (snapshots.size() > MAX_SNAPSHOTS) {
+            snapshots.remove(0);
+        }
+    }
+
+    /**
+     * Get all snapshots (read-only)
+     */
+    public List<MarketSnapshot> getSnapshots() {
+        return Collections.unmodifiableList(snapshots);
+    }
+
+    /**
+     * Get recent snapshots (last N)
+     */
+    public List<MarketSnapshot> getRecentSnapshots(int count) {
+        int start = Math.max(0, snapshots.size() - count);
+        return new ArrayList<>(snapshots.subList(start, snapshots.size()));
+    }
+
+    /**
+     * Get snapshot count
+     */
+    public int getSnapshotCount() {
+        return snapshots.size();
+    }
+
+    /**
+     * Format snapshot history for AI context
+     * Shows a compact timeline of market conditions
+     */
+    public String getSnapshotsAIString() {
+        if (snapshots.isEmpty()) {
+            return "No snapshots recorded yet.";
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format("═══ MARKET SNAPSHOT HISTORY (%d snapshots) ═══\n", snapshots.size()));
+
+        // Show last 10 snapshots in detail
+        int detailCount = Math.min(10, snapshots.size());
+        List<MarketSnapshot> recent = getRecentSnapshots(detailCount);
+
+        sb.append("Recent snapshots (last ").append(detailCount).append("):\n");
+        for (MarketSnapshot snap : recent) {
+            sb.append("  ").append(snap.toAIString()).append("\n");
+        }
+
+        // Show summary stats
+        if (snapshots.size() > 1) {
+            MarketSnapshot first = snapshots.get(0);
+            MarketSnapshot last = snapshots.get(snapshots.size() - 1);
+
+            double priceChange = last.price - first.price;
+            double cvdChange = last.cvd - first.cvd;
+            String priceTrend = priceChange > 0 ? "↑" : (priceChange < 0 ? "↓" : "→");
+            String cvdTrend = cvdChange > 0 ? "↑" : (cvdChange < 0 ? "↓" : "→");
+
+            sb.append(String.format("\nSession Trend: Price %s %.2f | CVD %s %+.0f\n",
+                priceTrend, priceChange, cvdTrend, cvdChange));
+        }
+
+        sb.append("═══════════════════════════════════════\n");
+        return sb.toString();
+    }
+
+    /**
+     * Get compact snapshot timeline for brief context
+     */
+    public String getSnapshotsBrief() {
+        if (snapshots.isEmpty()) {
+            return "No snapshots yet";
+        }
+
+        StringBuilder sb = new StringBuilder();
+        int count = Math.min(5, snapshots.size());
+        List<MarketSnapshot> recent = getRecentSnapshots(count);
+
+        for (MarketSnapshot snap : recent) {
+            sb.append(snap.toBriefString()).append("\n");
+        }
+        return sb.toString();
+    }
 }

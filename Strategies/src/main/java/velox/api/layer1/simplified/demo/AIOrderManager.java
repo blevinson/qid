@@ -35,6 +35,16 @@ public class AIOrderManager {
     public int maxPriceSlippageTicks = 20; // Skip if price moved > 20 ticks (reasonable for ES)
     private Supplier<Integer> currentPriceSupplier;  // Supplies current price in tick units
 
+    // Suppliers for historical context (set from strategy)
+    private Supplier<String> symbolSupplier;
+    private Supplier<ConfluenceWeights> weightsSupplier;
+    private Supplier<Integer> minConfluenceScoreSupplier;
+    private Supplier<Integer> confluenceThresholdSupplier;
+    private Supplier<Double> thresholdMultiplierSupplier;
+    private Supplier<Integer> icebergMinOrdersSupplier;
+    private Supplier<Integer> spoofMinSizeSupplier;
+    private Supplier<Integer> absorptionMinSizeSupplier;
+
     // Statistics
     private final AtomicInteger totalTrades = new AtomicInteger(0);
     private final AtomicInteger winningTrades = new AtomicInteger(0);
@@ -70,6 +80,28 @@ public class AIOrderManager {
      */
     public void setCurrentPriceSupplier(Supplier<Integer> supplier) {
         this.currentPriceSupplier = supplier;
+    }
+
+    /**
+     * Set suppliers for historical context recording
+     */
+    public void setContextSuppliers(
+            Supplier<String> symbolSupplier,
+            Supplier<ConfluenceWeights> weightsSupplier,
+            Supplier<Integer> minConfluenceScoreSupplier,
+            Supplier<Integer> confluenceThresholdSupplier,
+            Supplier<Double> thresholdMultiplierSupplier,
+            Supplier<Integer> icebergMinOrdersSupplier,
+            Supplier<Integer> spoofMinSizeSupplier,
+            Supplier<Integer> absorptionMinSizeSupplier) {
+        this.symbolSupplier = symbolSupplier;
+        this.weightsSupplier = weightsSupplier;
+        this.minConfluenceScoreSupplier = minConfluenceScoreSupplier;
+        this.confluenceThresholdSupplier = confluenceThresholdSupplier;
+        this.thresholdMultiplierSupplier = thresholdMultiplierSupplier;
+        this.icebergMinOrdersSupplier = icebergMinOrdersSupplier;
+        this.spoofMinSizeSupplier = spoofMinSizeSupplier;
+        this.absorptionMinSizeSupplier = absorptionMinSizeSupplier;
     }
 
     /**
@@ -186,7 +218,26 @@ public class AIOrderManager {
                 signal.price + 1 :  // Entry + 1 tick
                 signal.price - 1;   // Entry - 1 tick
 
-            // Create active position tracker
+            // Calculate entry slippage (signal price vs current price)
+            int entrySlippage = 0;
+            if (currentPriceSupplier != null) {
+                int currentPrice = currentPriceSupplier.get();
+                if (currentPrice > 0) {
+                    entrySlippage = Math.abs(currentPrice - signal.price);
+                }
+            }
+
+            // Get context values from suppliers for historical recording
+            String symbol = symbolSupplier != null ? symbolSupplier.get() : "UNKNOWN";
+            ConfluenceWeights weights = weightsSupplier != null ? weightsSupplier.get() : null;
+            int minConfluenceScore = minConfluenceScoreSupplier != null ? minConfluenceScoreSupplier.get() : 0;
+            int confluenceThreshold = confluenceThresholdSupplier != null ? confluenceThresholdSupplier.get() : 50;
+            double thresholdMultiplier = thresholdMultiplierSupplier != null ? thresholdMultiplierSupplier.get() : 3.0;
+            int icebergMinOrders = icebergMinOrdersSupplier != null ? icebergMinOrdersSupplier.get() : 10;
+            int spoofMinSize = spoofMinSizeSupplier != null ? spoofMinSizeSupplier.get() : 20;
+            int absorptionMinSize = absorptionMinSizeSupplier != null ? absorptionMinSizeSupplier.get() : 50;
+
+            // Create active position tracker with full context
             ActivePosition position = new ActivePosition(
                 positionId,
                 decision.isLong,
@@ -197,8 +248,17 @@ public class AIOrderManager {
                 breakEvenTrigger,
                 breakEvenStop,
                 trailAmountTicks,  // Trail amount in tick units
+                entrySlippage,     // Entry slippage in ticks
                 signal,
-                decision
+                decision,
+                symbol,
+                weights,
+                minConfluenceScore,
+                confluenceThreshold,
+                thresholdMultiplier,
+                icebergMinOrders,
+                spoofMinSize,
+                absorptionMinSize
             );
 
             // Place bracket order with native SL/TP (Bookmap managed)
@@ -477,9 +537,16 @@ public class AIOrderManager {
      */
     public void closePosition(String positionId, int exitPrice, String reason, String triggerOrderId) {
         ActivePosition position = activePositions.get(positionId);
-        if (position == null || position.isClosed.get()) return;
+        if (position == null || position.isClosed.get()) {
+            log("⚠️ closePosition called but position %s (closed=%b)",
+                positionId.substring(0, 8), position != null && position.isClosed.get());
+            return;
+        }
 
         try {
+            // Mark as closed FIRST to prevent double-processing
+            position.close(exitPrice, reason, triggerOrderId);
+
             // Cancel existing orders
             if (position.stopLossOrderId.get() != null) {
                 orderExecutor.cancelOrder(position.stopLossOrderId.get());
@@ -493,9 +560,6 @@ public class AIOrderManager {
                 OrderExecutor.OrderSide.SELL : OrderExecutor.OrderSide.BUY;
 
             String exitOrderId = orderExecutor.closePosition(closeSide, position.quantity);
-
-            // Mark position as closed
-            position.close(exitPrice, reason, exitOrderId != null ? exitOrderId : triggerOrderId);
 
             // Update statistics (calculate PnL first for marker callback)
             double pnl = position.getRealizedPnl();
@@ -511,10 +575,19 @@ public class AIOrderManager {
                 markerCallback.onExitMarker(exitPrice, reason, pnl, isWin);
             }
 
+            // Calculate R:R and tick distances
+            int slTicks = Math.abs(position.stopLossPrice.get() - position.entryPrice);
+            int tpTicks = Math.abs(position.takeProfitPrice.get() - position.entryPrice);
+            double rrRatio = slTicks > 0 ? (double) tpTicks / slTicks : 0;
+            double tickValue = 12.5; // ES futures: $12.50 per tick
+            double slDollars = slTicks * tickValue * position.quantity;
+            double tpDollars = tpTicks * tickValue * position.quantity;
+
             // Log closure
             String emoji = pnl > 0 ? "💎" : "🛑";
             log("%s POSITION CLOSED:", emoji);
             log("   Position ID: %s", positionId.substring(0, 8));
+            log("   Symbol: %s", position.symbol);
             log("   %s %d @ %d → %d",
                 position.isLong ? "LONG" : "SHORT",
                 position.quantity,
@@ -522,9 +595,59 @@ public class AIOrderManager {
                 exitPrice);
             log("   Reason: %s", reason);
             log("   P&L: $%.2f", pnl);
+
+            // Log signal details
+            if (position.originalSignal != null) {
+                SignalData sig = position.originalSignal;
+                log("📊 SIGNAL DETAILS:");
+                log("   Type: %s | Direction: %s", sig.detection != null ? sig.detection.type : "N/A", sig.direction);
+                log("   Confluence Score: %d (threshold: %d)", sig.score, sig.threshold);
+                if (sig.market != null) {
+                    log("   Market: trend=%s, CVD=%d (%s), VWAP=%s",
+                        sig.market.trend, sig.market.cvd, sig.market.cvdTrend, sig.market.priceVsVwap);
+                }
+                if (sig.detection != null) {
+                    log("   Detection: orders=%d, size=%d, span=%.1fs",
+                        sig.detection.totalOrders, sig.detection.totalSize, sig.detection.timeSpanMs / 1000.0);
+                }
+            }
+
+            // Log SL/TP and R:R
+            log("🎯 RISK MANAGEMENT:");
+            log("   Stop Loss: %d ticks ($%.0f risk)", slTicks, slDollars);
+            log("   Take Profit: %d ticks ($%.0f target)", tpTicks, tpDollars);
+            log("   R:R Ratio: 1:%.1f", rrRatio);
+            log("   Entry Slippage: %d ticks", position.entrySlippage);
             log("   Time in trade: %d seconds", position.getTimeInPosition() / 1000);
             log("   Max Favorable: $%.2f", position.maxUnrealizedPnl.get() / 100.0);
             log("   Max Adverse: -$%.2f", Math.abs(position.maxAdverseExcursion.get() / 100.0));
+
+            // Log AI decision
+            if (position.aiDecision != null) {
+                log("🤖 AI DECISION:");
+                log("   Confidence: %.0f%%", position.aiDecision.confidence * 100);
+                log("   Reasoning: %s", position.aiDecision.reasoning);
+            }
+
+            // Log entry context for historical analysis
+            if (position.entryContext != null) {
+                log("📋 ENTRY CONTEXT:");
+                log("   Thresholds: minScore=%d, conf=%d, mult=%.1f",
+                    position.entryContext.minConfluenceScore,
+                    position.entryContext.confluenceThreshold,
+                    position.entryContext.thresholdMultiplier);
+                log("   Detection: iceberg=%d, spoof=%d, absorb=%d",
+                    position.entryContext.icebergMinOrders,
+                    position.entryContext.spoofMinSize,
+                    position.entryContext.absorptionMinSize);
+                log("   Weights: iceMax=%d, cvdAlign=%d, cvdDiv=%d, emaAlign=%d, vwapAlign=%d, vwapDiv=%d",
+                    position.entryContext.icebergMax,
+                    position.entryContext.cvdAlignMax,
+                    position.entryContext.cvdDivergePenalty,
+                    position.entryContext.emaAlignMax,
+                    position.entryContext.vwapAlign,
+                    position.entryContext.vwapDiverge);
+            }
 
             // Log daily summary
             log("📊 Daily Summary:");
@@ -534,6 +657,10 @@ public class AIOrderManager {
 
         } catch (Exception e) {
             log("❌ Failed to close position: %s", e.getMessage());
+        } finally {
+            // ALWAYS remove from active positions, even if there was an error
+            activePositions.remove(positionId);
+            log("🧹 Position removed from active map (size now: %d)", activePositions.size());
         }
     }
 

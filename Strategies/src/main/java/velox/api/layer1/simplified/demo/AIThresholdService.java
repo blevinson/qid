@@ -12,17 +12,27 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 /**
- * AI-driven threshold optimization service using Claude API
+ * Qid - AI Chat Interface (Chat Mode)
  *
- * This service analyzes market conditions and signal performance to recommend
- * optimal threshold settings for the order flow strategy.
+ * Part of the unified Qid AI system. This class handles interactive chat
+ * with tool calling capabilities for real-time market data.
+ *
+ * Philosophy: "Intelligence over speed" - NOT an HFT speed daemon
+ * Key Innovation: Search memory BEFORE acting, learn from EVERY outcome
+ *
+ * This service provides:
+ * - Interactive chat with Qid
+ * - Tool calling for real-time market data
+ * - Threshold optimization based on market conditions
+ *
+ * @see QidIdentity for unified identity shared with AI Investment Strategist
  */
 public class AIThresholdService {
 
     private final String apiKey;
     private final HttpClient httpClient;
     private final Gson gson;
-    private final String apiUrl = "https://api.z.ai/api/anthropic/v1/messages";
+    private final String apiUrl = "https://zai.cloudtorch.ai/v1/messages";
 
     // AI response cache
     private String lastAnalysis;
@@ -332,7 +342,8 @@ public class AIThresholdService {
     public CompletableFuture<String> chat(String userPrompt) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                String systemPrompt = "You are a helpful trading assistant. Provide clear, concise responses to trading-related questions.";
+                // Use unified Qid identity
+                String systemPrompt = QidIdentity.CHAT_PROMPT;
 
                 JsonObject requestBody = new JsonObject();
                 requestBody.addProperty("model", "glm-5");
@@ -394,6 +405,7 @@ public class AIThresholdService {
     public CompletableFuture<String> chatWithTools(String userPrompt) {
         return CompletableFuture.supplyAsync(() -> {
             try {
+                System.out.println("[AI Chat] Starting chatWithTools...");
                 List<JsonObject> conversation = new ArrayList<>();
 
                 // Add user message
@@ -402,20 +414,28 @@ public class AIThresholdService {
                 userMessage.addProperty("content", userPrompt);
                 conversation.add(userMessage);
 
-                // Tool call loop (max 10 iterations to prevent infinite loops)
-                for (int iteration = 0; iteration < 10; iteration++) {
+                // Tool call loop (max 3 iterations to prevent long waits)
+                for (int iteration = 0; iteration < 3; iteration++) {
+                    System.out.println("[AI Chat] Iteration " + iteration + ", calling API...");
+                    long startTime = System.currentTimeMillis();
+
                     JsonObject response = callClaudeWithTools(conversation);
+
+                    long elapsed = System.currentTimeMillis() - startTime;
+                    System.out.println("[AI Chat] API response received in " + elapsed + "ms");
 
                     // First, check if there's a text response (prioritize text over more tool calls)
                     String textResponse = extractTextResponse(response);
                     if (textResponse != null && !textResponse.isEmpty() &&
                         !textResponse.equals("No text response from AI") &&
                         !textResponse.startsWith("Error:")) {
+                        System.out.println("[AI Chat] Got text response (" + textResponse.length() + " chars), returning");
                         return textResponse;  // Return text if available
                     }
 
                     // Check if AI wants to use tools
                     if (response.has("tool_use") || hasToolUse(response)) {
+                        System.out.println("[AI Chat] AI wants to use tools, executing...");
                         // Execute tools and add results to conversation
                         List<JsonObject> toolResults = executeToolCalls(response);
                         if (!toolResults.isEmpty()) {
@@ -426,15 +446,28 @@ public class AIThresholdService {
                     }
 
                     // No text and no tools - return whatever we have
+                    System.out.println("[AI Chat] No text and no tools, returning: " +
+                        (textResponse != null ? textResponse.substring(0, Math.min(50, textResponse.length())) : "null"));
                     return textResponse;
                 }
 
-                return "Error: Too many tool call iterations (max 10). Please try a simpler question.";
+                // If we hit max iterations, try one more call without tools to get a response
+                System.out.println("[AI Chat] Max iterations reached, making final call without tools...");
+                return "I've gathered the information but reached the tool call limit. Please ask a more specific question.";
 
+            } catch (java.net.http.HttpTimeoutException e) {
+                System.err.println("[AI Chat] HTTP timeout: " + e.getMessage());
+                return "The request timed out. The AI service may be slow right now. Please try again with a simpler question.";
             } catch (Exception e) {
+                System.err.println("[AI Chat] Exception: " + e.getMessage());
+                e.printStackTrace();
                 throw new RuntimeException("Failed to get AI response: " + e.getMessage(), e);
             }
-        });
+        }).orTimeout(90, java.util.concurrent.TimeUnit.SECONDS)
+          .exceptionally(e -> {
+              System.err.println("[AI Chat] Overall timeout or error: " + e.getMessage());
+              return "The request took too long. Please try a simpler question or try again later.";
+          });
     }
 
     private boolean hasToolUse(JsonObject response) {
@@ -454,28 +487,8 @@ public class AIThresholdService {
     }
 
     private JsonObject callClaudeWithTools(List<JsonObject> conversation) throws Exception {
-        String systemPrompt = """
-            You are a trading assistant with access to real-time market data through tools.
-
-            IMPORTANT: Always use tools to get current data before answering questions about:
-            - Current price or market conditions
-            - Signal thresholds or settings
-            - Recent trading signals
-            - Session statistics
-
-            Available tools:
-            - get_current_price: Get the current market price
-            - get_cvd: Get Cumulative Volume Delta (buying/selling pressure)
-            - get_vwap: Get Volume Weighted Average Price
-            - get_emas: Get EMA values (9, 21, 50)
-            - get_order_book: Get support/resistance from order book
-            - get_recent_signals: Get recent trading signals
-            - get_session_stats: Get session performance
-            - get_thresholds: Get current threshold settings
-            - get_full_snapshot: Get complete market overview
-
-            When asked about current state, call the appropriate tools first, then provide your analysis.
-            """;
+        // Use unified Qid identity (chat mode already includes tool info)
+        String systemPrompt = QidIdentity.CHAT_PROMPT;
 
         JsonObject requestBody = new JsonObject();
         requestBody.addProperty("model", "glm-5");
@@ -496,10 +509,12 @@ public class AIThresholdService {
             .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(requestBody.toString()))
-            .timeout(Duration.ofSeconds(60))
+            .timeout(Duration.ofSeconds(120))  // 2 minutes for tool calls
             .build();
 
+        System.out.println("[AI Chat] Sending API request...");
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        System.out.println("[AI Chat] API response status: " + response.statusCode());
 
         if (response.statusCode() != 200) {
             throw new Exception("API call failed: " + response.statusCode() + " " + response.body());
@@ -521,6 +536,8 @@ public class AIThresholdService {
                     String toolName = block.get("name").getAsString();
                     String toolId = block.has("id") ? block.get("id").getAsString() : "tool_" + System.currentTimeMillis();
 
+                    System.out.println("[AI Chat] Executing tool: " + toolName);
+
                     Map<String, Object> arguments = new HashMap<>();
                     if (block.has("input")) {
                         JsonObject input = block.getAsJsonObject("input");
@@ -530,9 +547,11 @@ public class AIThresholdService {
                     }
 
                     // Execute tool
+                    long toolStart = System.currentTimeMillis();
                     String toolResult = toolsProvider != null ?
                         toolsProvider.executeTool(toolName, arguments) :
                         "{\"error\": \"Tools not configured\"}";
+                    System.out.println("[AI Chat] Tool " + toolName + " completed in " + (System.currentTimeMillis() - toolStart) + "ms");
 
                     // Build tool result message
                     JsonObject toolResultMsg = new JsonObject();
