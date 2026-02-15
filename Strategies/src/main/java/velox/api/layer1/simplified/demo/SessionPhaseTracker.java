@@ -1,13 +1,16 @@
 package velox.api.layer1.simplified.demo;
 
+import java.time.Instant;
 import java.time.LocalTime;
 import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * Session Phase Tracker
@@ -81,6 +84,12 @@ public class SessionPhaseTracker {
     // Check interval in seconds
     private final int checkIntervalSeconds;
 
+    // Data time supplier for replay mode support (uses Bookmap data time instead of wall clock)
+    private Supplier<Long> dataTimeSupplier;
+
+    // Last checked data time to detect phase changes in replay mode
+    private long lastCheckedDataTime = 0;
+
     /**
      * Phase transition event
      */
@@ -134,6 +143,17 @@ public class SessionPhaseTracker {
      */
     public void setLogger(Consumer<String> logger) {
         this.logger = logger;
+    }
+
+    /**
+     * Set the data time supplier for replay mode support
+     * When set, phase detection uses Bookmap's data timestamp instead of wall clock
+     *
+     * @param supplier Supplier that returns current data timestamp in milliseconds
+     */
+    public void setDataTimeSupplier(Supplier<Long> supplier) {
+        this.dataTimeSupplier = supplier;
+        log("📊 Phase tracker configured for replay mode (using data time)");
     }
 
     /**
@@ -196,13 +216,34 @@ public class SessionPhaseTracker {
      */
     private void checkPhase() {
         try {
+            // In replay mode, check if data time has advanced enough to warrant a phase check
+            // This prevents excessive checks when data is flowing fast
+            if (dataTimeSupplier != null) {
+                long currentDataTime = dataTimeSupplier.get();
+                // Only check if data time has advanced by at least 30 seconds
+                if (currentDataTime - lastCheckedDataTime < 30000) {
+                    return;
+                }
+                lastCheckedDataTime = currentDataTime;
+            }
+
             SessionPhase newPhase = determineCurrentPhase();
             SessionPhase oldPhase = currentPhase.getAndSet(newPhase);
 
             // Only trigger callback on actual transition
             if (oldPhase != null && oldPhase != newPhase) {
-                LocalTime now = LocalTime.now(ET_ZONE);
-                String date = java.time.LocalDate.now(ET_ZONE).toString();
+                // Use data time if available, otherwise wall clock
+                LocalTime now;
+                String date;
+                if (dataTimeSupplier != null) {
+                    long dataTs = dataTimeSupplier.get();
+                    ZonedDateTime dataTime = Instant.ofEpochMilli(dataTs).atZone(ET_ZONE);
+                    now = dataTime.toLocalTime();
+                    date = dataTime.toLocalDate().toString();
+                } else {
+                    now = LocalTime.now(ET_ZONE);
+                    date = java.time.LocalDate.now(ET_ZONE).toString();
+                }
 
                 PhaseTransition transition = new PhaseTransition(oldPhase, newPhase, now, date);
 
@@ -225,10 +266,20 @@ public class SessionPhaseTracker {
     }
 
     /**
-     * Determine current phase based on ET time
+     * Determine current phase based on time
+     * Uses data time supplier if available (replay mode), otherwise wall clock
      */
     private SessionPhase determineCurrentPhase() {
-        LocalTime now = LocalTime.now(ET_ZONE);
+        LocalTime now;
+        if (dataTimeSupplier != null) {
+            // Use Bookmap data time (replay-safe)
+            long dataTs = dataTimeSupplier.get();
+            ZonedDateTime dataTime = Instant.ofEpochMilli(dataTs).atZone(ET_ZONE);
+            now = dataTime.toLocalTime();
+        } else {
+            // Use wall clock time
+            now = LocalTime.now(ET_ZONE);
+        }
         int timeAsInt = now.getHour() * 100 + now.getMinute();
 
         return determinePhase(timeAsInt);
