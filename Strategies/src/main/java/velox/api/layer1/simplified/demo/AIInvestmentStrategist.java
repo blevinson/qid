@@ -51,6 +51,53 @@ public class AIInvestmentStrategist {
     // Prompt mode: "FULL" or "COMPACT"
     private String promptMode = "COMPACT";
 
+    // ========== LATENCY TRACKING ==========
+    // Rolling average of API response times (last 20 calls)
+    private final java.util.Queue<Long> latencyHistory = new java.util.LinkedList<>();
+    private static final int LATENCY_HISTORY_SIZE = 20;
+    private long averageLatencyMs = 5000;  // Default to 5 seconds
+    private int latencyCallCount = 0;
+
+    /**
+     * Record API latency and update rolling average
+     */
+    private void recordLatency(long latencyMs) {
+        latencyHistory.offer(latencyMs);
+        if (latencyHistory.size() > LATENCY_HISTORY_SIZE) {
+            latencyHistory.poll();
+        }
+        // Calculate rolling average
+        long sum = 0;
+        for (Long l : latencyHistory) {
+            sum += l;
+        }
+        averageLatencyMs = sum / latencyHistory.size();
+        latencyCallCount++;
+        log("⏱️ API latency: %dms | Rolling avg: %dms (n=%d)".formatted(latencyMs, averageLatencyMs, latencyHistory.size()));
+    }
+
+    /**
+     * Get estimated API latency in milliseconds
+     */
+    public long getEstimatedLatencyMs() {
+        return averageLatencyMs;
+    }
+
+    /**
+     * Get latency statistics
+     */
+    public String getLatencyStats() {
+        if (latencyHistory.isEmpty()) {
+            return "No data yet";
+        }
+        long min = Long.MAX_VALUE, max = Long.MIN_VALUE;
+        for (Long l : latencyHistory) {
+            min = Math.min(min, l);
+            max = Math.max(max, l);
+        }
+        return "avg=%dms, min=%dms, max=%dms, n=%d".formatted(averageLatencyMs, min, max, latencyCallCount);
+    }
+
     /**
      * Constructor for AIInvestmentStrategist
      *
@@ -280,20 +327,29 @@ public class AIInvestmentStrategist {
         }
         String keyLevelsStr = keyLevels.length() > 0 ? keyLevels.toString().trim() : "N/A";
 
+        // Build latency context section
+        String latencySection = String.format("""
+            ⏱️ LATENCY CONTEXT:
+            - API response time: ~%dms (rolling average)
+            - Expected price drift during latency: 2-5 ticks (estimate based on momentum)
+            - YOU MUST predict drift and adjust entry/SL/TP accordingly
+
+            """, averageLatencyMs);
+
         // COMPACT mode - minimal prompt
         if ("COMPACT".equals(promptMode)) {
             String devNote = devMode ? " [DEV MODE: be permissive]" : "";
             return String.format("""
-                %sSIGNAL: %s %s @ %.2f | Score: %d | CVD: %d (%s) | Trend: %s%s
+                %s%sSIGNAL: %s %s @ %.2f | Score: %d | CVD: %d (%s) | Trend: %s%s
                 KEY LEVELS: %s
                 %s
-                Decide TAKE or SKIP. Respond with JSON only.
-                {"action":"TAKE"|"SKIP","confidence":0.0-1.0,"reasoning":"brief","plan":{"orderType":"BUY"|"SELL","entryPrice":%.2f,"stopLossPrice":N,"takeProfitPrice":N}}
+                Decide TAKE or SKIP. Predict price drift from %dms latency.
+                {"action":"TAKE"|"SKIP","confidence":0.0-1.0,"reasoning":"brief","plan":{"orderType":"BUY"|"SELL","executionType":"MARKET"|"STOP_MARKET"|"LIMIT","entryPrice":%.2f,"predictedDriftTicks":N,"adjustedEntryPrice":N,"stopLossPrice":N,"takeProfitPrice":N,"driftReasoning":"why this drift"}}
                 """,
-                sessionAnalysisSection,
+                sessionAnalysisSection, latencySection,
                 signal.direction, signal.detection.type, actualPrice, signal.score,
                 signal.market.cvd, signal.market.cvdTrend, signal.market.trend,
-                devNote, keyLevelsStr, memoryContext, actualPrice);
+                devNote, keyLevelsStr, memoryContext, averageLatencyMs, actualPrice);
         }
 
         // FULL mode - detailed prompt
@@ -340,7 +396,7 @@ public class AIInvestmentStrategist {
         }
 
         return String.format("""
-            %s%s%s
+            %s%s%s%s
 
             SIGNAL: %s %s @ %.2f | Score: %d | CVD: %d (%s) | Trend: %s
 
@@ -349,12 +405,15 @@ public class AIInvestmentStrategist {
             %s
             %s
 
-            JSON response: {"action":"TAKE"|"SKIP","confidence":0.0-1.0,"reasoning":"brief","plan":{"orderType":"BUY"|"SELL","entryPrice":%.2f,"stopLossPrice":N,"takeProfitPrice":N}}
+            LATENCY: ~%dms. Predict price drift and adjust entry/SL/TP.
+
+            JSON response: {"action":"TAKE"|"SKIP","confidence":0.0-1.0,"reasoning":"brief","plan":{"orderType":"BUY"|"SELL","executionType":"MARKET"|"STOP_MARKET"|"LIMIT","entryPrice":%.2f,"predictedDriftTicks":N,"adjustedEntryPrice":N,"stopLossPrice":N,"takeProfitPrice":N,"driftReasoning":"why this drift prediction"}}
             """,
-            devModeContext, sessionContextStr,
+            devModeContext, sessionContextStr, latencySection,
             signal.direction, signal.detection.type, actualPrice, signal.score,
             signal.market.cvd, signal.market.cvdTrend, signal.market.trend,
-            fullKeyLevelsStr, thresholdContextStr, memoryContext, actualPrice);
+            fullKeyLevelsStr, thresholdContextStr, memoryContext,
+            averageLatencyMs, actualPrice);
     }
 
     /**
@@ -455,6 +514,28 @@ public class AIInvestmentStrategist {
                    - Win/loss outcomes
                    - Lessons learned
 
+                4. Order Execution Type Selection
+                   Choose the best execution type based on market context:
+
+                   MARKET - Use when:
+                   - Strong momentum with trend confirmation
+                   - Time-sensitive opportunity (absorption completing)
+                   - Price already at optimal entry level
+
+                   STOP_MARKET - Use when:
+                   - Breakout setup near resistance/support
+                   - Want confirmation of direction before entry
+                   - Signal detected but price hasn't confirmed yet
+                   - DOM shows significant level nearby to trigger above/below
+
+                   LIMIT - Use when:
+                   - Reversal signal, expecting pullback
+                   - Price extended and likely to retrace
+                   - Want better entry price than current
+
+                   For STOP_MARKET: triggerPrice should be above current for LONG, below for SHORT
+                   For LIMIT: triggerPrice should be below current for LONG, above for SHORT
+
                 Respond ONLY with valid JSON:
                 """,
                 threshold,
@@ -462,11 +543,18 @@ public class AIInvestmentStrategist {
                 threshold, strongThreshold,
                 threshold);
         } else {
-            // COMPACT mode - minimal system prompt
+            // COMPACT mode - minimal system prompt with order type guidance
             systemPrompt = String.format("""
                 You are Qid, an AI trading strategist. Decide TAKE or SKIP.
                 Threshold: %d | Strong: %d+ | Moderate: %d-%d
-                Respond ONLY with JSON: {"action":"TAKE"|"SKIP","confidence":0.0-1.0,"reasoning":"brief","plan":{"orderType":"BUY"|"SELL","entryPrice":%.2f,"stopLossPrice":N,"takeProfitPrice":N}}
+
+                ORDER EXECUTION TYPES:
+                - MARKET: Immediate execution (strong momentum, time-sensitive)
+                - STOP_MARKET: Wait for breakout confirmation (near resistance/support)
+                - LIMIT: Wait for better price (reversal, pullback expected)
+
+                Respond ONLY with JSON:
+                {"action":"TAKE"|"SKIP","confidence":0.0-1.0,"reasoning":"brief","plan":{"orderType":"BUY"|"SELL","executionType":"MARKET"|"STOP_MARKET"|"LIMIT","entryPrice":%.2f,"triggerPrice":N,"stopLossPrice":N,"takeProfitPrice":N,"executionReasoning":"why this order type"}}
                 """,
                 threshold, strongThreshold, threshold, strongThreshold, signal.price * signal.pips);
         }
@@ -491,7 +579,7 @@ public class AIInvestmentStrategist {
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
         long elapsed = System.currentTimeMillis() - startTime;
-        log("⏱️ API response time: %dms".formatted(elapsed));
+        recordLatency(elapsed);  // Track latency for drift prediction
 
         if (response.statusCode() != 200) {
             throw new Exception("API error: " + response.statusCode() + " - " + response.body());
@@ -557,6 +645,35 @@ public class AIInvestmentStrategist {
                     planJson.get("takeProfitPrice").getAsInt() : signal.price + 70;
                 plan.contracts = planJson.has("contracts") && !planJson.get("contracts").isJsonNull() ?
                     planJson.get("contracts").getAsInt() : 1;
+
+                // Parse NEW order execution type fields
+                if (planJson.has("executionType") && !planJson.get("executionType").isJsonNull()) {
+                    plan.executionType = OrderExecutionType.fromString(planJson.get("executionType").getAsString());
+                }
+                if (planJson.has("triggerPrice") && !planJson.get("triggerPrice").isJsonNull()) {
+                    plan.triggerPrice = planJson.get("triggerPrice").getAsInt();
+                }
+                if (planJson.has("executionReasoning") && !planJson.get("executionReasoning").isJsonNull()) {
+                    plan.executionReasoning = planJson.get("executionReasoning").getAsString();
+                }
+                // Also check for "notes" field as fallback for reasoning
+                if (plan.executionReasoning == null && planJson.has("notes") && !planJson.get("notes").isJsonNull()) {
+                    plan.executionReasoning = planJson.get("notes").getAsString();
+                }
+
+                // Parse LATENCY-AWARE drift prediction fields
+                if (planJson.has("predictedDriftTicks") && !planJson.get("predictedDriftTicks").isJsonNull()) {
+                    plan.predictedDriftTicks = planJson.get("predictedDriftTicks").getAsInt();
+                }
+                if (planJson.has("adjustedEntryPrice") && !planJson.get("adjustedEntryPrice").isJsonNull()) {
+                    plan.adjustedEntryPrice = planJson.get("adjustedEntryPrice").getAsInt();
+                }
+                if (planJson.has("driftReasoning") && !planJson.get("driftReasoning").isJsonNull()) {
+                    plan.driftReasoning = planJson.get("driftReasoning").getAsString();
+                }
+                if (planJson.has("maxAcceptableDrift") && !planJson.get("maxAcceptableDrift").isJsonNull()) {
+                    plan.maxAcceptableDrift = planJson.get("maxAcceptableDrift").getAsInt();
+                }
 
                 decision.plan = plan;
             } else if (decision.shouldTake) {
@@ -632,8 +749,19 @@ public class AIInvestmentStrategist {
         log("AI DECISION: " + decisionType + " | Confidence: " + String.format("%.0f%%", decision.confidence * 100));
         log("Reasoning: " + decision.reasoning);
         if (decision.shouldTake && decision.plan != null) {
-            log("Plan: " + decision.plan.orderType + " @ " + decision.plan.entryPrice +
+            log("Plan: " + decision.plan.orderType + " | ExecType: " + decision.plan.executionType +
+                " @ " + decision.plan.entryPrice +
+                (decision.plan.triggerPrice != null ? " (trigger: " + decision.plan.triggerPrice + ")" : "") +
                 " | SL: " + decision.plan.stopLossPrice + " | TP: " + decision.plan.takeProfitPrice);
+            if (decision.plan.executionReasoning != null) {
+                log("Exec Reasoning: " + decision.plan.executionReasoning);
+            }
+            // Log drift prediction
+            if (decision.plan.predictedDriftTicks != null) {
+                log("⏱️ DRIFT PREDICTION: " + decision.plan.predictedDriftTicks + " ticks" +
+                    (decision.plan.adjustedEntryPrice != null ? " | Adjusted entry: " + decision.plan.adjustedEntryPrice : "") +
+                    (decision.plan.driftReasoning != null ? " | Reason: " + decision.plan.driftReasoning : ""));
+            }
         }
         // Log threshold adjustments if any
         if (decision.thresholdAdjustment != null && decision.thresholdAdjustment.hasAdjustments()) {
@@ -784,20 +912,56 @@ public class AIInvestmentStrategist {
     }
 
     /**
+     * Order Execution Type enum
+     * Defines how an order should be executed
+     */
+    public enum OrderExecutionType {
+        /** Execute immediately at market price */
+        MARKET("MARKET", "Immediate execution at market price"),
+
+        /** Wait for price to reach trigger, then execute as market order */
+        STOP_MARKET("STOP_MARKET", "Triggers market order when price reaches trigger level"),
+
+        /** Place limit order at trigger price, wait for fill */
+        LIMIT("LIMIT", "Limit order at specified price, waits for better entry");
+
+        private final String value;
+        private final String description;
+
+        OrderExecutionType(String value, String description) {
+            this.value = value;
+            this.description = description;
+        }
+
+        public String getValue() { return value; }
+        public String getDescription() { return description; }
+
+        public static OrderExecutionType fromString(String text) {
+            if (text == null) return MARKET;  // Default
+            for (OrderExecutionType type : values()) {
+                if (type.value.equalsIgnoreCase(text)) {
+                    return type;
+                }
+            }
+            return MARKET;  // Default fallback
+        }
+    }
+
+    /**
      * Trade Plan data class
      * Contains strategic order placement details
      */
     public static class TradePlan {
-        /** Order type: "BUY_STOP", "SELL_STOP", "BUY_LIMIT", "SELL_LIMIT" */
+        /** Order type: "BUY_STOP", "SELL_STOP", "BUY_LIMIT", "SELL_LIMIT" (legacy - direction only) */
         public String orderType;
 
-        /** Entry price for the order */
+        /** Entry price for the order (in ticks) */
         public int entryPrice;
 
-        /** Stop loss price */
+        /** Stop loss price (in ticks) */
         public int stopLossPrice;
 
-        /** Take profit price */
+        /** Take profit price (in ticks) */
         public int takeProfitPrice;
 
         /** Number of contracts (optional, defaults to 1) */
@@ -805,5 +969,56 @@ public class AIInvestmentStrategist {
 
         /** Additional reasoning or notes */
         public String notes;
+
+        // ========== NEW FIELDS FOR ORDER TYPE SELECTION ==========
+
+        /** How to execute the order: MARKET, STOP_MARKET, or LIMIT */
+        public OrderExecutionType executionType = OrderExecutionType.MARKET;
+
+        /** Trigger price for STOP_MARKET or LIMIT orders (in ticks) */
+        public Integer triggerPrice;
+
+        /** AI's reasoning for choosing this execution type */
+        public String executionReasoning;
+
+        // ========== LATENCY-AWARE DRIFT PREDICTION ==========
+
+        /** Predicted price drift during API latency (in ticks, positive = up) */
+        public Integer predictedDriftTicks;
+
+        /** AI's reasoning for drift prediction */
+        public String driftReasoning;
+
+        /** Adjusted entry price accounting for drift (in ticks) */
+        public Integer adjustedEntryPrice;
+
+        /** Maximum acceptable drift before skipping (in ticks) */
+        public Integer maxAcceptableDrift;
+
+        /**
+         * Get the effective trigger price (for STOP_MARKET and LIMIT orders)
+         * Returns entryPrice if triggerPrice is not set
+         */
+        public int getEffectiveTriggerPrice() {
+            return triggerPrice != null ? triggerPrice : entryPrice;
+        }
+
+        /**
+         * Check if this plan uses a pending order type (requires wait for fill)
+         */
+        public boolean isPendingOrderType() {
+            return executionType == OrderExecutionType.STOP_MARKET ||
+                   executionType == OrderExecutionType.LIMIT;
+        }
+
+        @Override
+        public String toString() {
+            return String.format("TradePlan{type=%s, execType=%s, entry=%d, trigger=%s, drift=%s, adjEntry=%s, sl=%d, tp=%d}",
+                orderType, executionType, entryPrice,
+                triggerPrice != null ? triggerPrice : "N/A",
+                predictedDriftTicks != null ? predictedDriftTicks : "N/A",
+                adjustedEntryPrice != null ? adjustedEntryPrice : "N/A",
+                stopLossPrice, takeProfitPrice);
+        }
     }
 }
