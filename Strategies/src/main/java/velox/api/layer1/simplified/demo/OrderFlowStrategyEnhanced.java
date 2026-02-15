@@ -6200,10 +6200,12 @@ public class OrderFlowStrategyEnhanced implements
 
     @Override
     public void onOrderExecuted(ExecutionInfo executionInfo) {
-        // executionInfo.price is in ACTUAL price units, not ticks
-        // Convert to ticks for our internal use
-        int fillPriceTicks = (int) Math.round(executionInfo.price / pips);
-        log("💰 ORDER EXECUTED: " + executionInfo.orderId + " @ " + executionInfo.price + " (ticks: " + fillPriceTicks + ")");
+        // CRITICAL: executionInfo.price is already in TICK UNITS (same as onTrade, onBbo)
+        // Do NOT divide by pips! Bookmap API returns tick units consistently.
+        // Evidence: onTrade comment at line 5369, onBbo receives int prices directly
+        int fillPriceTicks = (int) executionInfo.price;
+        log("💰 ORDER EXECUTED: " + executionInfo.orderId + " @ " + executionInfo.price + " ticks (actual: " + (fillPriceTicks * pips) + ")");
+        fileLog("💰 ORDER EXECUTED: orderId=" + executionInfo.orderId + " price=" + executionInfo.price + " ticks (actual=" + (fillPriceTicks * pips) + ", pips=" + pips + ")");
 
         // Delegate to order executor if available
         if (orderExecutor != null && orderExecutor instanceof BookmapOrderExecutor) {
