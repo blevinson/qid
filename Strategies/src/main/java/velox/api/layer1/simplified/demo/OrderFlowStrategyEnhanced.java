@@ -3247,11 +3247,14 @@ public class OrderFlowStrategyEnhanced implements
                 // Start tracking
                 sessionPhaseTracker.start();
                 log("✅ Session Phase Tracker started - current phase: " + sessionPhaseTracker.getCurrentPhase().getDisplayName());
+                fileLog("📊 SCHEDULER STARTED: Phase tracker running, current phase: " + sessionPhaseTracker.getCurrentPhase().getDisplayName());
+                fileLog("📊 SCHEDULER CONFIG: checkInterval=60s, autoPhaseAnalysis=" + autoPhaseAnalysis);
 
                 // If we're in PRE_MARKET and auto analysis is enabled, run initial analysis
                 if (autoPhaseAnalysis && sessionPhaseTracker.getCurrentPhase() == SessionPhaseTracker.SessionPhase.PRE_MARKET) {
                     if (sessionPhaseAnalyzer != null && !sessionPhaseAnalyzer.getContextManager().hasTodaysContext()) {
                         log("📊 Auto-running pre-market analysis (no context for today)");
+                        fileLog("📊 SCHEDULER: Auto-triggering pre-market analysis (no existing context)");
                         runAutoPreMarketAnalysis();
                     }
                 }
@@ -3604,17 +3607,20 @@ public class OrderFlowStrategyEnhanced implements
      * Automatically runs analysis on phase changes if auto-phase-analysis is enabled
      */
     private void onPhaseTransition(SessionPhaseTracker.PhaseTransition transition) {
-        log("📊 PHASE TRANSITION: " +
-            (transition.fromPhase != null ? transition.fromPhase.getDisplayName() : "START") +
-            " → " + transition.toPhase.getDisplayName());
+        String transitionStr = (transition.fromPhase != null ? transition.fromPhase.getDisplayName() : "START") +
+            " → " + transition.toPhase.getDisplayName();
+        log("📊 PHASE TRANSITION: " + transitionStr);
+        fileLog("📊 PHASE TRANSITION: " + transitionStr + " at " + transition.time);
 
         if (!autoPhaseAnalysis) {
             log("   Auto phase analysis disabled, skipping");
+            fileLog("📊 PHASE TRANSITION: Auto analysis disabled, skipping");
             return;
         }
 
         if (sessionPhaseAnalyzer == null) {
             log("   SessionPhaseAnalyzer not initialized, skipping");
+            fileLog("📊 PHASE TRANSITION: SessionPhaseAnalyzer not initialized, skipping");
             return;
         }
 
@@ -3624,7 +3630,10 @@ public class OrderFlowStrategyEnhanced implements
                 // Run full pre-market analysis if no context for today
                 if (!sessionPhaseAnalyzer.getContextManager().hasTodaysContext()) {
                     log("📊 Running auto pre-market analysis...");
+                    fileLog("📊 PHASE TRANSITION: Triggering pre-market analysis");
                     runAutoPreMarketAnalysis();
+                } else {
+                    fileLog("📊 PHASE TRANSITION: Pre-market context already exists, skipping");
                 }
                 break;
 
@@ -3635,12 +3644,14 @@ public class OrderFlowStrategyEnhanced implements
             case CLOSE:
                 // Run quick phase update
                 log("📊 Running phase update for: " + transition.toPhase.getDisplayName());
+                fileLog("📊 PHASE TRANSITION: Triggering phase update for " + transition.toPhase.getDisplayName());
                 runAutoPhaseUpdate(transition.toPhase);
                 break;
 
             case AFTER_HOURS:
                 // Market closed - could clean up old contexts
                 log("📊 Market closed - session ended");
+                fileLog("📊 PHASE TRANSITION: Market closed, cleaning up old contexts");
                 sessionPhaseAnalyzer.getContextManager().cleanupOldContexts(7);  // Keep last 7 days
                 break;
         }
@@ -3652,14 +3663,18 @@ public class OrderFlowStrategyEnhanced implements
     private void runAutoPreMarketAnalysis() {
         if (sessionPhaseAnalyzer == null) {
             log("⚠️ Cannot run auto pre-market: SessionPhaseAnalyzer not initialized");
+            fileLog("📊 AUTO ANALYSIS: FAILED - SessionPhaseAnalyzer not initialized");
             return;
         }
 
+        fileLog("📊 AUTO ANALYSIS: Starting pre-market analysis...");
         sessionPhaseAnalyzer.runPreMarketAnalysis((analysis, success) -> {
             if (success) {
                 log("✅ Auto pre-market analysis complete - session context saved");
+                fileLog("📊 AUTO ANALYSIS: Pre-market analysis COMPLETE - context saved (" + analysis.length() + " chars)");
             } else {
                 log("⚠️ Auto pre-market analysis failed: " + analysis);
+                fileLog("📊 AUTO ANALYSIS: Pre-market analysis FAILED - " + analysis);
             }
         });
     }
@@ -3670,14 +3685,18 @@ public class OrderFlowStrategyEnhanced implements
     private void runAutoPhaseUpdate(SessionPhaseTracker.SessionPhase phase) {
         if (sessionPhaseAnalyzer == null) {
             log("⚠️ Cannot run phase update: SessionPhaseAnalyzer not initialized");
+            fileLog("📊 AUTO ANALYSIS: FAILED - SessionPhaseAnalyzer not initialized");
             return;
         }
 
+        fileLog("📊 AUTO ANALYSIS: Starting phase update for " + phase.getDisplayName() + "...");
         sessionPhaseAnalyzer.runPhaseUpdate(phase, (analysis, success) -> {
             if (success) {
                 log("✅ Phase update complete: " + phase.getDisplayName());
+                fileLog("📊 AUTO ANALYSIS: Phase update COMPLETE for " + phase.getDisplayName() + " (" + analysis.length() + " chars)");
             } else {
                 log("⚠️ Phase update failed: " + analysis);
+                fileLog("📊 AUTO ANALYSIS: Phase update FAILED for " + phase.getDisplayName() + " - " + analysis);
             }
         });
     }
@@ -4627,10 +4646,13 @@ public class OrderFlowStrategyEnhanced implements
                                 sessionContext != null ? sessionContext.getCurrentPhase() : "null",
                                 sessionContext != null ? sessionContext.getMinutesIntoSession() : -1));
 
+                            // Get today's session analysis report for AI context
+                            String sessionAnalysisReport = getTodaysSessionContext();
+
                             // Use AI Investment Strategist (memory-aware) if available
                             if (aiStrategist != null) {
                                 log("🧠 Using AI Investment Strategist (memory-aware evaluation)");
-                            aiStrategist.evaluateSetup(signalData, sessionContext, devMode, new AIInvestmentStrategist.AIStrategistCallback() {
+                            aiStrategist.evaluateSetup(signalData, sessionContext, sessionAnalysisReport, devMode, new AIInvestmentStrategist.AIStrategistCallback() {
                             @Override
                             public void onDecision(AIInvestmentStrategist.AIDecision decision) {
                                 // UNCONDITIONAL LOG - always log callback entry for debugging
