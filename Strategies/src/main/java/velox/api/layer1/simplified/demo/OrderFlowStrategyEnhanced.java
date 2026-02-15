@@ -1,6 +1,7 @@
 package velox.api.layer1.simplified.demo;
 
 import java.awt.*;
+import java.io.File;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.awt.image.BufferedImage;
@@ -10,6 +11,7 @@ import java.io.PrintWriter;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.List;
+import java.util.stream.Collectors;
 import java.util.concurrent.Executors;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledExecutorService;
@@ -519,6 +521,10 @@ public class OrderFlowStrategyEnhanced implements
 
     // Market state tracking
     private double lastKnownPrice = 0;
+    private int lastKnownBid = 0;
+    private int lastKnownAsk = 0;
+    private int lastKnownBidSize = 0;
+    private int lastKnownAskSize = 0;
     private long lastPriceDebugLog = 0;  // For throttling price debug logs
     private double priceVolatility = 0;
     private AtomicLong totalVolume = new AtomicLong(0);
@@ -5499,6 +5505,30 @@ public class OrderFlowStrategyEnhanced implements
         signal.threshold = confluenceThreshold;
         signal.thresholdPassed = signal.score >= confluenceThreshold;
 
+        // ========== CREATE AND SAVE SIGNAL SNAPSHOT ==========
+        // Capture EVERYTHING used to generate this signal for post-analysis
+        try {
+            SignalSnapshot snapshot = createSignalSnapshot(isBid, price, totalSize, signal);
+
+            // Save to JSON file
+            File memoryDir = new File(System.getProperty("user.home"), "Library/Application Support/Bookmap/trading-memory");
+            snapshot.save(memoryDir);
+
+            // Log summary to file for quick reference
+            fileLog(snapshot.getSummary());
+
+            // Record this signal for future snapshots
+            recordSignalForSnapshot(signal.direction, price, signal.score, currentDataTimestampMs);
+
+            // Increment signal counter
+            signalsThisSession++;
+
+            log("📸 Signal snapshot saved: " + snapshot.signalId.substring(0, 8));
+        } catch (Exception e) {
+            log("⚠️ Failed to save signal snapshot: " + e.getMessage());
+            fileLog("⚠️ Failed to save signal snapshot: " + e.getMessage());
+        }
+
         return signal;
     }
 
@@ -5532,6 +5562,301 @@ public class OrderFlowStrategyEnhanced implements
         // Use ATR or recent price movement to determine
         return false;  // Placeholder
     }
+
+    // ========== SIGNAL SNAPSHOT TRACKING ==========
+    // Track recent activity for comprehensive snapshots
+    private final LinkedList<SignalSnapshot.TradeEvent> recentTradesSnapshot = new LinkedList<>();
+    private final LinkedList<SignalSnapshot.BboEvent> recentBboSnapshot = new LinkedList<>();
+    private final LinkedList<SignalSnapshot.SignalEvent> recentSignalsSnapshot = new LinkedList<>();
+    private static final int MAX_RECENT_EVENTS = 50;  // Keep last 50 events
+
+    /**
+     * Record a trade for snapshot history
+     */
+    private void recordTradeForSnapshot(int priceTicks, int size, boolean isBuy, long timestamp) {
+        SignalSnapshot.TradeEvent event = new SignalSnapshot.TradeEvent();
+        event.timestamp = timestamp;
+        event.priceTicks = priceTicks;
+        event.size = size;
+        event.isBuy = isBuy;
+
+        synchronized (recentTradesSnapshot) {
+            recentTradesSnapshot.addLast(event);
+            while (recentTradesSnapshot.size() > MAX_RECENT_EVENTS) {
+                recentTradesSnapshot.removeFirst();
+            }
+        }
+    }
+
+    /**
+     * Record BBO for snapshot history
+     */
+    private void recordBboForSnapshot(int bidTicks, int askTicks, int bidSize, int askSize, long timestamp) {
+        SignalSnapshot.BboEvent event = new SignalSnapshot.BboEvent();
+        event.timestamp = timestamp;
+        event.bidTicks = bidTicks;
+        event.askTicks = askTicks;
+        event.bidSize = bidSize;
+        event.askSize = askSize;
+
+        synchronized (recentBboSnapshot) {
+            recentBboSnapshot.addLast(event);
+            while (recentBboSnapshot.size() > MAX_RECENT_EVENTS) {
+                recentBboSnapshot.removeFirst();
+            }
+        }
+    }
+
+    /**
+     * Record signal for history (other signals at similar time)
+     */
+    private void recordSignalForSnapshot(String direction, int priceTicks, int score, long timestamp) {
+        SignalSnapshot.SignalEvent event = new SignalSnapshot.SignalEvent();
+        event.timestamp = timestamp;
+        event.direction = direction;
+        event.priceTicks = priceTicks;
+        event.score = score;
+        event.outcome = "PENDING";
+
+        synchronized (recentSignalsSnapshot) {
+            recentSignalsSnapshot.addLast(event);
+            while (recentSignalsSnapshot.size() > MAX_RECENT_EVENTS) {
+                recentSignalsSnapshot.removeFirst();
+            }
+        }
+    }
+
+    /**
+     * Create a comprehensive snapshot of ALL data used to generate this signal
+     * This captures everything for post-analysis and debugging
+     */
+    private SignalSnapshot createSignalSnapshot(boolean isBid, int price, int totalSize, SignalData signal) {
+        String signalId = java.util.UUID.randomUUID().toString();
+
+        // Get orders at this price level for iceberg details
+        List<String> ordersAtPrice = priceLevels.getOrDefault(price, Collections.emptyList());
+
+        // Build iceberg data
+        SignalSnapshot.IcebergData icebergData = new SignalSnapshot.IcebergData();
+        icebergData.orderCount = ordersAtPrice.size();
+        icebergData.totalSize = totalSize;
+        icebergData.adaptiveOrderThreshold = adaptiveOrderThreshold;
+        icebergData.adaptiveSizeThreshold = adaptiveSizeThreshold;
+
+        // Individual order details
+        icebergData.orders = ordersAtPrice.stream()
+            .map(orderId -> {
+                SignalSnapshot.OrderDetail od = new SignalSnapshot.OrderDetail();
+                od.orderId = orderId;
+                OrderInfo info = orders.getOrDefault(orderId, new OrderInfo());
+                od.size = info.size;
+                od.isBid = info.isBid;
+                od.timestamp = currentDataTimestampMs;
+                return od;
+            })
+            .collect(Collectors.toList());
+
+        // Build market context
+        SignalSnapshot.MarketContext marketCtx = new SignalSnapshot.MarketContext();
+        marketCtx.bidTicks = lastKnownBid;
+        marketCtx.askTicks = lastKnownAsk;
+        marketCtx.midTicks = (lastKnownBid + lastKnownAsk) / 2;
+        marketCtx.bidSize = lastKnownBidSize;
+        marketCtx.askSize = lastKnownAskSize;
+
+        // CVD
+        marketCtx.cvd = cvdCalculator.getCVD();
+        marketCtx.cvdAtSignalPrice = cvdCalculator.getCVDAtPrice(price);
+        marketCtx.cvdTrend = cvdCalculator.getCVDTrend();
+        marketCtx.cvdStrength = cvdCalculator.getCVDStrength();
+        marketCtx.cvdBuySellRatio = cvdCalculator.getBuySellRatio();
+        marketCtx.cvdDivergence = cvdCalculator.checkDivergence(price, 20).toString();
+
+        // EMAs
+        marketCtx.ema9 = ema9.isInitialized() ? ema9.getEMA() : 0;
+        marketCtx.ema21 = ema21.isInitialized() ? ema21.getEMA() : 0;
+        marketCtx.ema50 = ema50.isInitialized() ? ema50.getEMA() : 0;
+        marketCtx.ema9_ticks = ema9.isInitialized() ? (int)(marketCtx.ema9 / pips) : 0;
+        marketCtx.ema21_ticks = ema21.isInitialized() ? (int)(marketCtx.ema21 / pips) : 0;
+        marketCtx.ema50_ticks = ema50.isInitialized() ? (int)(marketCtx.ema50 / pips) : 0;
+
+        // EMA alignment
+        if (signal.market != null) {
+            marketCtx.emaAlignment = signal.market.trendStrength;
+        } else {
+            marketCtx.emaAlignment = "NEUTRAL";
+        }
+
+        // VWAP
+        if (vwapCalculator.isInitialized()) {
+            marketCtx.vwap = vwapCalculator.getVWAP();
+            marketCtx.vwapTicks = (int)(marketCtx.vwap / pips);
+            marketCtx.priceVsVwap = vwapCalculator.getRelationship(price);
+            marketCtx.vwapDistance = vwapCalculator.getDistance(price, pips);
+        }
+
+        // Volume Profile
+        marketCtx.pocTicks = volumeProfile.getPOC();
+        marketCtx.pocActual = marketCtx.pocTicks * pips;
+        VolumeProfileCalculator.ValueArea va = volumeProfile.getValueArea();
+        marketCtx.vaHighTicks = va.vaHigh;
+        marketCtx.vaLowTicks = va.vaLow;
+
+        if (signal.market != null) {
+            marketCtx.volumeAtSignalPrice = signal.market.volumeAtSignalPrice;
+            marketCtx.volumeRatioAtSignal = signal.market.volumeRatioAtPrice;
+            marketCtx.volumeImbalance = signal.market.volumeImbalanceSentiment;
+        }
+
+        // DOM levels
+        marketCtx.domBidLevels = new ArrayList<>();
+        marketCtx.domAskLevels = new ArrayList<>();
+        DOMAnalyzer.DOMLevel support = domAnalyzer.getNearestSupport();
+        DOMAnalyzer.DOMLevel resistance = domAnalyzer.getNearestResistance();
+        if (support != null) {
+            SignalSnapshot.DomLevel sl = new SignalSnapshot.DomLevel();
+            sl.priceTicks = support.price;
+            sl.size = support.volume;
+            marketCtx.domBidLevels.add(sl);
+        }
+        if (resistance != null) {
+            SignalSnapshot.DomLevel rl = new SignalSnapshot.DomLevel();
+            rl.priceTicks = resistance.price;
+            rl.size = resistance.volume;
+            marketCtx.domAskLevels.add(rl);
+        }
+
+        // Build confluence breakdown
+        SignalSnapshot.ConfluenceBreakdown confluenceBd = new SignalSnapshot.ConfluenceBreakdown();
+        if (signal.scoreBreakdown != null) {
+            confluenceBd.icebergPoints = signal.scoreBreakdown.icebergPoints;
+            confluenceBd.icebergDetails = signal.scoreBreakdown.icebergDetails;
+            confluenceBd.icebergCount = signal.scoreBreakdown.icebergCount;
+            confluenceBd.totalSize = signal.scoreBreakdown.totalSize;
+            confluenceBd.cvdPoints = signal.scoreBreakdown.cvdPoints;
+            confluenceBd.cvdDetails = signal.scoreBreakdown.cvdDetails;
+            confluenceBd.cvdDivergencePoints = signal.scoreBreakdown.cvdDivergencePoints;
+            confluenceBd.emaPoints = signal.scoreBreakdown.emaTrendPoints;
+            confluenceBd.emaDetails = signal.scoreBreakdown.emaTrendDetails;
+            confluenceBd.vwapPoints = signal.scoreBreakdown.vwapPoints;
+            confluenceBd.vwapDetails = signal.scoreBreakdown.vwapDetails;
+            confluenceBd.volumeProfilePoints = signal.scoreBreakdown.volumeProfilePoints;
+            confluenceBd.volumeProfileDetails = signal.scoreBreakdown.volumeProfileDetails;
+        }
+        confluenceBd.totalPoints = signal.score;
+        confluenceBd.maxPossiblePoints = 100;  // Rough estimate
+
+        // R:R
+        if (signal.rrQuality != null) {
+            confluenceBd.rrPoints = signal.rrQuality.qualityScore;
+            confluenceBd.rrDetails = signal.rrQuality.qualityLevel;
+        }
+
+        // Build risk data
+        SignalSnapshot.RiskData riskData = new SignalSnapshot.RiskData();
+        if (signal.risk != null) {
+            riskData.stopLossTicks = signal.risk.stopLossTicks;
+            riskData.takeProfitTicks = signal.risk.takeProfitTicks;
+            riskData.stopLossActual = signal.risk.stopLossPrice * pips;
+            riskData.takeProfitActual = signal.risk.takeProfitPrice * pips;
+            riskData.slDistanceTicks = signal.risk.stopLossTicks;
+            riskData.tpDistanceTicks = signal.risk.takeProfitTicks;
+            riskData.rrRatio = signal.risk.takeProfitTicks > 0 ?
+                (double) signal.risk.takeProfitTicks / signal.risk.stopLossTicks : 0;
+            riskData.slReasoning = signal.risk.slTpReasoning;
+            riskData.tpReasoning = signal.risk.slTpReasoning;
+            riskData.tickValue = tickValue;
+            riskData.slDollarRisk = signal.risk.stopLossValue;
+            riskData.tpDollarTarget = signal.risk.takeProfitValue;
+        }
+        if (signal.rrQuality != null) {
+            riskData.rrQuality = signal.rrQuality.qualityLevel;
+        }
+        if (signal.market != null && signal.market.atr > 0) {
+            riskData.atrValue = signal.market.atr;
+            riskData.atrTicks = (int)(signal.market.atr / pips);
+        }
+
+        // Build session data
+        SignalSnapshot.SessionData sessionData = new SignalSnapshot.SessionData();
+        if (sessionContext != null) {
+            sessionData.phase = sessionContext.getCurrentPhase() != null ?
+                sessionContext.getCurrentPhase().name() : "UNKNOWN";
+            sessionData.minutesIntoSession = sessionContext.getMinutesIntoSession();
+        }
+        sessionData.signalsThisSession = signalsThisSession;
+        sessionData.tradesThisSession = aiOrderManager != null ? aiOrderManager.getTotalTrades() : 0;
+        sessionData.dailyPnl = aiOrderManager != null ? aiOrderManager.getDailyPnl() : 0;
+        sessionData.sessionPnl = sessionData.dailyPnl;
+
+        // Build recent activity
+        SignalSnapshot.RecentActivity recentData = new SignalSnapshot.RecentActivity();
+        synchronized (recentTradesSnapshot) {
+            recentData.last20Trades = new ArrayList<>(recentTradesSnapshot);
+        }
+        synchronized (recentBboSnapshot) {
+            recentData.last20Bbo = new ArrayList<>(recentBboSnapshot);
+        }
+        synchronized (recentSignalsSnapshot) {
+            // Only include signals from last 5 minutes
+            long cutoff = currentDataTimestampMs - 300000;
+            recentData.recentSignals = recentSignalsSnapshot.stream()
+                .filter(s -> s.timestamp > cutoff)
+                .collect(Collectors.toList());
+        }
+
+        // Build order flow state
+        SignalSnapshot.OrderFlowState orderFlowData = new SignalSnapshot.OrderFlowState();
+        orderFlowData.totalIcebergSignalsToday = signalsThisSession;
+        orderFlowData.activePositions = aiOrderManager != null ? aiOrderManager.getActivePositionCount() : 0;
+        orderFlowData.bidLiquidityByLevel = new HashMap<>();
+        orderFlowData.askLiquidityByLevel = new HashMap<>();
+
+        // Build weights data
+        SignalSnapshot.WeightsData weightsData = new SignalSnapshot.WeightsData();
+        weightsData.icebergMax = confluenceWeights.get(ConfluenceWeights.ICEBERG_MAX);
+        weightsData.cvdAlignMax = confluenceWeights.get(ConfluenceWeights.CVD_ALIGN_MAX);
+        weightsData.cvdDivergePenalty = confluenceWeights.get(ConfluenceWeights.CVD_DIVERGE_PENALTY);
+        weightsData.emaAlignMax = confluenceWeights.get(ConfluenceWeights.EMA_ALIGN_MAX);
+        weightsData.vwapAlign = confluenceWeights.get(ConfluenceWeights.VWAP_ALIGN);
+        weightsData.vwapDiverge = confluenceWeights.get(ConfluenceWeights.VWAP_DIVERGE);
+
+        // Raw data for deep debugging
+        Map<String, Object> raw = new HashMap<>();
+        raw.put("lastIcebergSignalTime", lastIcebergSignalTime.get(price));
+        raw.put("lastGlobalSignalTime", lastGlobalSignalTime);
+        raw.put("recentOrderCounts", recentOrderCounts);
+        raw.put("recentTotalSizes", recentTotalSizes);
+        raw.put("minConfluenceScore", minConfluenceScore);
+        raw.put("maxPosition", maxPosition);
+        raw.put("accountSize", accountSize);
+
+        // Build the snapshot
+        SignalSnapshot snapshot = SignalSnapshot.builder()
+            .signalId(signalId)
+            .timestamp(currentDataTimestampMs)
+            .instrument(alias)
+            .pips(pips)
+            .direction(isBid ? "LONG" : "SHORT")
+            .priceTicks(price)
+            .confluenceScore(signal.score)
+            .confluenceThreshold(confluenceThreshold)
+            .iceberg(icebergData)
+            .market(marketCtx)
+            .confluence(confluenceBd)
+            .risk(riskData)
+            .session(sessionData)
+            .recentActivity(recentData)
+            .orderFlow(orderFlowData)
+            .weights(weightsData)
+            .rawData(raw)
+            .build();
+
+        return snapshot;
+    }
+
+    // Counter for signals this session
+    private int signalsThisSession = 0;
 
     /**
      * Calculate confluence score using adjustable weights
@@ -5743,6 +6068,9 @@ public class OrderFlowStrategyEnhanced implements
             sessionContext.recordProcessedTrade();
         }
 
+        // Record trade for signal snapshots
+        recordTradeForSnapshot((int)price, size, tradeInfo.isBidAggressor, currentDataTimestampMs);
+
         // Update ATR (track high/low)
         if (Double.isNaN(currentHigh) || price > currentHigh) {
             currentHigh = price;
@@ -5841,6 +6169,13 @@ public class OrderFlowStrategyEnhanced implements
 
         // Update lastKnownPrice with corrected BBO data
         lastKnownPrice = midPrice;
+        lastKnownBid = realPriceBid;
+        lastKnownAsk = realPriceAsk;
+        lastKnownBidSize = realSizeBid;
+        lastKnownAskSize = realSizeAsk;
+
+        // Record BBO for signal snapshots
+        recordBboForSnapshot(realPriceBid, realPriceAsk, realSizeBid, realSizeAsk, currentDataTimestampMs);
 
         // Monitor positions on BBO update
         if (aiOrderManager != null) {
