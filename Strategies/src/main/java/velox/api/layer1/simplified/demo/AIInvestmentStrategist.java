@@ -327,20 +327,29 @@ public class AIInvestmentStrategist {
         }
         String keyLevelsStr = keyLevels.length() > 0 ? keyLevels.toString().trim() : "N/A";
 
+        // Build latency context section
+        String latencySection = String.format("""
+            ⏱️ LATENCY CONTEXT:
+            - API response time: ~%dms (rolling average)
+            - Expected price drift during latency: 2-5 ticks (estimate based on momentum)
+            - YOU MUST predict drift and adjust entry/SL/TP accordingly
+
+            """, averageLatencyMs);
+
         // COMPACT mode - minimal prompt
         if ("COMPACT".equals(promptMode)) {
             String devNote = devMode ? " [DEV MODE: be permissive]" : "";
             return String.format("""
-                %sSIGNAL: %s %s @ %.2f | Score: %d | CVD: %d (%s) | Trend: %s%s
+                %s%sSIGNAL: %s %s @ %.2f | Score: %d | CVD: %d (%s) | Trend: %s%s
                 KEY LEVELS: %s
                 %s
-                Decide TAKE or SKIP. Respond with JSON only.
-                {"action":"TAKE"|"SKIP","confidence":0.0-1.0,"reasoning":"brief","plan":{"orderType":"BUY"|"SELL","executionType":"MARKET"|"STOP_MARKET"|"LIMIT","entryPrice":%.2f,"triggerPrice":N,"stopLossPrice":N,"takeProfitPrice":N,"executionReasoning":"why this order type"}}
+                Decide TAKE or SKIP. Predict price drift from %dms latency.
+                {"action":"TAKE"|"SKIP","confidence":0.0-1.0,"reasoning":"brief","plan":{"orderType":"BUY"|"SELL","executionType":"MARKET"|"STOP_MARKET"|"LIMIT","entryPrice":%.2f,"predictedDriftTicks":N,"adjustedEntryPrice":N,"stopLossPrice":N,"takeProfitPrice":N,"driftReasoning":"why this drift"}}
                 """,
-                sessionAnalysisSection,
+                sessionAnalysisSection, latencySection,
                 signal.direction, signal.detection.type, actualPrice, signal.score,
                 signal.market.cvd, signal.market.cvdTrend, signal.market.trend,
-                devNote, keyLevelsStr, memoryContext, actualPrice);
+                devNote, keyLevelsStr, memoryContext, averageLatencyMs, actualPrice);
         }
 
         // FULL mode - detailed prompt
@@ -387,7 +396,7 @@ public class AIInvestmentStrategist {
         }
 
         return String.format("""
-            %s%s%s
+            %s%s%s%s
 
             SIGNAL: %s %s @ %.2f | Score: %d | CVD: %d (%s) | Trend: %s
 
@@ -396,12 +405,15 @@ public class AIInvestmentStrategist {
             %s
             %s
 
-            JSON response: {"action":"TAKE"|"SKIP","confidence":0.0-1.0,"reasoning":"brief","plan":{"orderType":"BUY"|"SELL","executionType":"MARKET"|"STOP_MARKET"|"LIMIT","entryPrice":%.2f,"triggerPrice":N,"stopLossPrice":N,"takeProfitPrice":N,"executionReasoning":"why this order type"}}
+            LATENCY: ~%dms. Predict price drift and adjust entry/SL/TP.
+
+            JSON response: {"action":"TAKE"|"SKIP","confidence":0.0-1.0,"reasoning":"brief","plan":{"orderType":"BUY"|"SELL","executionType":"MARKET"|"STOP_MARKET"|"LIMIT","entryPrice":%.2f,"predictedDriftTicks":N,"adjustedEntryPrice":N,"stopLossPrice":N,"takeProfitPrice":N,"driftReasoning":"why this drift prediction"}}
             """,
-            devModeContext, sessionContextStr,
+            devModeContext, sessionContextStr, latencySection,
             signal.direction, signal.detection.type, actualPrice, signal.score,
             signal.market.cvd, signal.market.cvdTrend, signal.market.trend,
-            fullKeyLevelsStr, thresholdContextStr, memoryContext, actualPrice);
+            fullKeyLevelsStr, thresholdContextStr, memoryContext,
+            averageLatencyMs, actualPrice);
     }
 
     /**
@@ -649,6 +661,20 @@ public class AIInvestmentStrategist {
                     plan.executionReasoning = planJson.get("notes").getAsString();
                 }
 
+                // Parse LATENCY-AWARE drift prediction fields
+                if (planJson.has("predictedDriftTicks") && !planJson.get("predictedDriftTicks").isJsonNull()) {
+                    plan.predictedDriftTicks = planJson.get("predictedDriftTicks").getAsInt();
+                }
+                if (planJson.has("adjustedEntryPrice") && !planJson.get("adjustedEntryPrice").isJsonNull()) {
+                    plan.adjustedEntryPrice = planJson.get("adjustedEntryPrice").getAsInt();
+                }
+                if (planJson.has("driftReasoning") && !planJson.get("driftReasoning").isJsonNull()) {
+                    plan.driftReasoning = planJson.get("driftReasoning").getAsString();
+                }
+                if (planJson.has("maxAcceptableDrift") && !planJson.get("maxAcceptableDrift").isJsonNull()) {
+                    plan.maxAcceptableDrift = planJson.get("maxAcceptableDrift").getAsInt();
+                }
+
                 decision.plan = plan;
             } else if (decision.shouldTake) {
                 // Create default plan if taking but no plan provided
@@ -729,6 +755,12 @@ public class AIInvestmentStrategist {
                 " | SL: " + decision.plan.stopLossPrice + " | TP: " + decision.plan.takeProfitPrice);
             if (decision.plan.executionReasoning != null) {
                 log("Exec Reasoning: " + decision.plan.executionReasoning);
+            }
+            // Log drift prediction
+            if (decision.plan.predictedDriftTicks != null) {
+                log("⏱️ DRIFT PREDICTION: " + decision.plan.predictedDriftTicks + " ticks" +
+                    (decision.plan.adjustedEntryPrice != null ? " | Adjusted entry: " + decision.plan.adjustedEntryPrice : "") +
+                    (decision.plan.driftReasoning != null ? " | Reason: " + decision.plan.driftReasoning : ""));
             }
         }
         // Log threshold adjustments if any
@@ -949,6 +981,20 @@ public class AIInvestmentStrategist {
         /** AI's reasoning for choosing this execution type */
         public String executionReasoning;
 
+        // ========== LATENCY-AWARE DRIFT PREDICTION ==========
+
+        /** Predicted price drift during API latency (in ticks, positive = up) */
+        public Integer predictedDriftTicks;
+
+        /** AI's reasoning for drift prediction */
+        public String driftReasoning;
+
+        /** Adjusted entry price accounting for drift (in ticks) */
+        public Integer adjustedEntryPrice;
+
+        /** Maximum acceptable drift before skipping (in ticks) */
+        public Integer maxAcceptableDrift;
+
         /**
          * Get the effective trigger price (for STOP_MARKET and LIMIT orders)
          * Returns entryPrice if triggerPrice is not set
@@ -967,11 +1013,12 @@ public class AIInvestmentStrategist {
 
         @Override
         public String toString() {
-            return String.format("TradePlan{type=%s, execType=%s, entry=%d, trigger=%s, sl=%d, tp=%d, contracts=%d, reason=%s}",
+            return String.format("TradePlan{type=%s, execType=%s, entry=%d, trigger=%s, drift=%s, adjEntry=%s, sl=%d, tp=%d}",
                 orderType, executionType, entryPrice,
                 triggerPrice != null ? triggerPrice : "N/A",
-                stopLossPrice, takeProfitPrice, contracts,
-                executionReasoning != null ? executionReasoning : notes);
+                predictedDriftTicks != null ? predictedDriftTicks : "N/A",
+                adjustedEntryPrice != null ? adjustedEntryPrice : "N/A",
+                stopLossPrice, takeProfitPrice);
         }
     }
 }
