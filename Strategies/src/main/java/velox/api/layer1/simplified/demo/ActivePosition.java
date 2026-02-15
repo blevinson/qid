@@ -59,6 +59,11 @@ public class ActivePosition {
     public final AtomicInteger exitPrice = new AtomicInteger(0);
     public final AtomicBoolean isClosed = new AtomicBoolean(false);
 
+    // NEW: Pending order tracking (for STOP_MARKET and LIMIT orders)
+    // When true, SL/TP orders need to be placed after entry order fills
+    public final AtomicBoolean pendingSLTP = new AtomicBoolean(false);
+    public final AtomicInteger pendingTriggerPrice = new AtomicInteger(0);  // Trigger price for pending orders
+
     /**
      * Snapshot of thresholds and weights at entry time for historical analysis
      */

@@ -224,6 +224,16 @@ public class OrderFlowStrategyEnhanced implements
     @Parameter(name = "Dev Mode")
     private Boolean devMode = false;  // When true, AI is more permissive for testing
 
+    // ========== ORDER EXECUTION TYPE PARAMETERS ==========
+    @Parameter(name = "Allow AI Order Type Selection")
+    private Boolean allowAIOrderTypeSelection = true;  // When true, AI can choose MARKET, STOP_MARKET, or LIMIT
+
+    @Parameter(name = "Default Order Type")
+    private String defaultOrderType = "MARKET";  // MARKET, STOP_MARKET, or LIMIT - used when AI doesn't specify
+
+    @Parameter(name = "Log Order Type Reasoning")
+    private Boolean logOrderTypeReasoning = true;  // When true, log AI's reasoning for order type choice
+
     @Parameter(name = "Confluence Threshold")
     private Integer confluenceThreshold = 50;
 
@@ -296,6 +306,10 @@ public class OrderFlowStrategyEnhanced implements
         public Integer replayStartHour = 9;   // Hour (24h) when replay data starts (9 = 9:00 AM)
         public Integer replayStartMinute = 30; // Minute when replay data starts (30 = :30)
         public Boolean devMode = false;  // Dev mode for permissive AI testing
+        // Order execution type settings
+        public Boolean allowAIOrderTypeSelection = true;  // AI can choose MARKET, STOP_MARKET, LIMIT
+        public String defaultOrderType = "MARKET";  // Default when AI doesn't specify
+        public Boolean logOrderTypeReasoning = true;  // Log AI's reasoning for order type
         public String aiPromptMode = "COMPACT";  // FULL or COMPACT prompts
         public Integer maxSlippageTicks = 50;  // Max price slippage before rejecting signal
         // Position sizing settings
@@ -1239,7 +1253,7 @@ public class OrderFlowStrategyEnhanced implements
         });
         settingsPanel.add(enableAITradingCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 20;
+        gbc.gridx = 0; gbc.gridy = 19;
         JLabel aiModeLabel = new JLabel("AI Mode:");
         aiModeLabel.setToolTipText("<html>AI trading autonomy level:<br>• MANUAL: AI only suggests, you execute<br>• SEMI_AUTO: AI executes approved signals<br>• FULL_AUTO: AI manages all trading</html>");
         settingsPanel.add(aiModeLabel, gbc);
@@ -1255,7 +1269,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(aiModeComboBox, gbc);
 
         // Dev Mode checkbox - for testing with permissive AI
-        gbc.gridx = 0; gbc.gridy = 21;
+        gbc.gridx = 0; gbc.gridy = 20;
         JLabel devModeLabel = new JLabel("Dev Mode:");
         devModeLabel.setToolTipText("Testing mode with more permissive AI decisions");
         settingsPanel.add(devModeLabel, gbc);
@@ -1276,7 +1290,7 @@ public class OrderFlowStrategyEnhanced implements
         }
 
         // AI Prompt Mode (FULL/COMPACT)
-        gbc.gridx = 0; gbc.gridy = 22;
+        gbc.gridx = 0; gbc.gridy = 21;
         JLabel promptModeLabel = new JLabel("Prompt Mode:");
         promptModeLabel.setToolTipText("AI prompt verbosity - affects speed and token usage");
         settingsPanel.add(promptModeLabel, gbc);
@@ -1296,7 +1310,69 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(promptModeCombo, gbc);
         // Note: aiPromptMode is synced from settings during initialize(), no need to sync again here
 
+        // ========== ORDER EXECUTION TYPE SETTINGS ==========
+        // Allow AI to choose order type
+        gbc.gridx = 0; gbc.gridy = 22;
+        JLabel aiOrderTypeLabel = new JLabel("AI Chooses Order Type:");
+        aiOrderTypeLabel.setToolTipText("<html>When enabled, AI selects MARKET, STOP_MARKET, or LIMIT based on market context.<br>MARKET: Immediate execution<br>STOP_MARKET: Wait for breakout confirmation<br>LIMIT: Wait for better entry price</html>");
+        settingsPanel.add(aiOrderTypeLabel, gbc);
+        gbc.gridx = 1;
+        JCheckBox aiOrderTypeCheckBox = new JCheckBox();
+        aiOrderTypeCheckBox.setSelected(settings.allowAIOrderTypeSelection != null ? settings.allowAIOrderTypeSelection : allowAIOrderTypeSelection);
+        aiOrderTypeCheckBox.setToolTipText("<html>ON: AI decides order type based on market context<br>OFF: Always use default order type</html>");
+        aiOrderTypeCheckBox.addActionListener(e -> {
+            allowAIOrderTypeSelection = aiOrderTypeCheckBox.isSelected();
+            settings.allowAIOrderTypeSelection = allowAIOrderTypeSelection;
+            log("📊 AI Order Type Selection: " + (allowAIOrderTypeSelection ? "ENABLED" : "DISABLED"));
+            saveSettings();
+        });
+        settingsPanel.add(aiOrderTypeCheckBox, gbc);
+        if (settings.allowAIOrderTypeSelection != null) {
+            allowAIOrderTypeSelection = settings.allowAIOrderTypeSelection;
+        }
+
+        // Default Order Type dropdown
         gbc.gridx = 0; gbc.gridy = 23;
+        JLabel defaultOrderTypeLabel = new JLabel("Default Order Type:");
+        defaultOrderTypeLabel.setToolTipText("<html>Order type used when AI doesn't specify or AI selection is disabled.<br>MARKET: Execute immediately<br>STOP_MARKET: Wait for price trigger<br>LIMIT: Place limit order</html>");
+        settingsPanel.add(defaultOrderTypeLabel, gbc);
+        gbc.gridx = 1;
+        JComboBox<String> defaultOrderTypeCombo = new JComboBox<>(new String[]{"MARKET", "STOP_MARKET", "LIMIT"});
+        defaultOrderTypeCombo.setSelectedItem(settings.defaultOrderType != null ? settings.defaultOrderType : defaultOrderType);
+        defaultOrderTypeCombo.setToolTipText("<html>Default execution type when AI doesn't choose</html>");
+        defaultOrderTypeCombo.addActionListener(e -> {
+            defaultOrderType = (String) defaultOrderTypeCombo.getSelectedItem();
+            settings.defaultOrderType = defaultOrderType;
+            log("📊 Default Order Type: " + defaultOrderType);
+            saveSettings();
+        });
+        settingsPanel.add(defaultOrderTypeCombo, gbc);
+        if (settings.defaultOrderType != null) {
+            defaultOrderType = settings.defaultOrderType;
+        }
+
+        // Log Order Type Reasoning checkbox
+        gbc.gridx = 0; gbc.gridy = 24;
+        JLabel logReasoningLabel = new JLabel("Log Order Type Reasoning:");
+        logReasoningLabel.setToolTipText("Show AI's reasoning for order type selection in logs");
+        settingsPanel.add(logReasoningLabel, gbc);
+        gbc.gridx = 1;
+        JCheckBox logReasoningCheckBox = new JCheckBox();
+        logReasoningCheckBox.setSelected(settings.logOrderTypeReasoning != null ? settings.logOrderTypeReasoning : logOrderTypeReasoning);
+        logReasoningCheckBox.addActionListener(e -> {
+            logOrderTypeReasoning = logReasoningCheckBox.isSelected();
+            settings.logOrderTypeReasoning = logOrderTypeReasoning;
+            log("📝 Log Order Type Reasoning: " + (logOrderTypeReasoning ? "ENABLED" : "DISABLED"));
+            saveSettings();
+        });
+        settingsPanel.add(logReasoningCheckBox, gbc);
+        if (settings.logOrderTypeReasoning != null) {
+            logOrderTypeReasoning = settings.logOrderTypeReasoning;
+        }
+
+        // ========== END ORDER EXECUTION TYPE SETTINGS ==========
+
+        gbc.gridx = 0; gbc.gridy = 25;
         JLabel confThreshLabel = new JLabel("Confluence Threshold:");
         confThreshLabel.setToolTipText("<html>Minimum score for AI to consider executing a trade.<br>Higher = more conservative (fewer trades)<br>Lower = more aggressive (more trades)</html>");
         settingsPanel.add(confThreshLabel, gbc);
@@ -1311,7 +1387,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(aiConfluenceThresholdLabel, gbc);
 
         // AI Managed Weights toggle
-        gbc.gridx = 0; gbc.gridy = 24; gbc.gridwidth = 1;
+        gbc.gridx = 0; gbc.gridy = 26; gbc.gridwidth = 1;
         JLabel aiManagedLabel = new JLabel("AI Managed Weights:");
         aiManagedLabel.setToolTipText("When enabled, AI can adjust confluence weights automatically");
         settingsPanel.add(aiManagedLabel, gbc);
@@ -1326,7 +1402,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(aiManagedWeightsCheckBox, gbc);
 
         // Auto Phase Analysis toggle
-        gbc.gridx = 0; gbc.gridy = 25;
+        gbc.gridx = 0; gbc.gridy = 27;
         JLabel autoPhaseLabel = new JLabel("Auto Phase Analysis:");
         autoPhaseLabel.setToolTipText("Automatically run session analysis at phase transitions (pre-market, morning, lunch, etc.)");
         settingsPanel.add(autoPhaseLabel, gbc);
@@ -1341,18 +1417,18 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(autoPhaseCheckBox, gbc);
 
         // Confluence Weights section (collapsible-style)
-        gbc.gridx = 0; gbc.gridy = 26; gbc.gridwidth = 3;
+        gbc.gridx = 0; gbc.gridy = 28; gbc.gridwidth = 3;
         addSeparator(settingsPanel, "Confluence Weights (Advanced)", gbc);
 
         // Column headers for weights
-        gbc.gridy = 27; gbc.gridwidth = 1;
+        gbc.gridy = 29; gbc.gridwidth = 1;
         gbc.gridx = 1;
         settingsPanel.add(new JLabel("Base"), gbc);
         gbc.gridx = 2;
         settingsPanel.add(new JLabel("AI Current"), gbc);
 
         // Weight controls - key weights with AI Current column
-        gbc.gridx = 0; gbc.gridy = 28; gbc.gridwidth = 1;
+        gbc.gridx = 0; gbc.gridy = 30; gbc.gridwidth = 1;
         JLabel icebergMaxLabel = new JLabel("Iceberg Max (20-60):");
         icebergMaxLabel.setToolTipText("<html>Maximum points from iceberg detection.<br>Higher = more weight on iceberg signals<br>Lower = icebergs contribute less to score</html>");
         settingsPanel.add(icebergMaxLabel, gbc);
@@ -1370,7 +1446,7 @@ public class OrderFlowStrategyEnhanced implements
         aiIcebergMaxLabel.setForeground(new java.awt.Color(100, 100, 255));
         settingsPanel.add(aiIcebergMaxLabel, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 29;
+        gbc.gridx = 0; gbc.gridy = 27;
         JLabel cvdAlignLabel = new JLabel("CVD Align Max (10-40):");
         cvdAlignLabel.setToolTipText("<html>Points when CVD (Cumulative Volume Delta) aligns with signal direction.<br>CVD shows if buyers or sellers are in control.</html>");
         settingsPanel.add(cvdAlignLabel, gbc);
@@ -1388,7 +1464,7 @@ public class OrderFlowStrategyEnhanced implements
         aiCvdAlignLabel.setForeground(new java.awt.Color(100, 100, 255));
         settingsPanel.add(aiCvdAlignLabel, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 30;
+        gbc.gridx = 0; gbc.gridy = 28;
         JLabel cvdDivergeLabel = new JLabel("CVD Diverge Penalty (15-50):");
         cvdDivergeLabel.setToolTipText("<html>Penalty when CVD diverges from signal direction.<br>Example: Long signal but sellers dominate = penalty<br>Higher = stronger filter against diverging signals</html>");
         settingsPanel.add(cvdDivergeLabel, gbc);
@@ -1406,7 +1482,7 @@ public class OrderFlowStrategyEnhanced implements
         aiCvdDivergeLabel.setForeground(new java.awt.Color(100, 100, 255));
         settingsPanel.add(aiCvdDivergeLabel, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 31;
+        gbc.gridx = 0; gbc.gridy = 29;
         JLabel emaAlignLabel = new JLabel("EMA Align Max (10-30):");
         emaAlignLabel.setToolTipText("<html>Points when EMAs (9, 21, 50) align with signal direction.<br>More EMAs aligned = more points (up to this max)</html>");
         settingsPanel.add(emaAlignLabel, gbc);
@@ -1424,7 +1500,7 @@ public class OrderFlowStrategyEnhanced implements
         aiEmaAlignLabel.setForeground(new java.awt.Color(100, 100, 255));
         settingsPanel.add(aiEmaAlignLabel, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 32;
+        gbc.gridx = 0; gbc.gridy = 30;
         JLabel vwapAlignLabel = new JLabel("VWAP Align (5-15):");
         vwapAlignLabel.setToolTipText("<html>Points when price is favorably positioned relative to VWAP.<br>Long above VWAP or Short below VWAP = bonus</html>");
         settingsPanel.add(vwapAlignLabel, gbc);
@@ -1442,7 +1518,7 @@ public class OrderFlowStrategyEnhanced implements
         aiVwapAlignLabel.setForeground(new java.awt.Color(100, 100, 255));
         settingsPanel.add(aiVwapAlignLabel, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 33;
+        gbc.gridx = 0; gbc.gridy = 31;
         JLabel vwapDivergeLabel = new JLabel("VWAP Diverge (2-10):");
         vwapDivergeLabel.setToolTipText("<html>Penalty when price is unfavorably positioned relative to VWAP.<br>Long below VWAP or Short above VWAP = penalty</html>");
         settingsPanel.add(vwapDivergeLabel, gbc);
@@ -1460,7 +1536,7 @@ public class OrderFlowStrategyEnhanced implements
         aiVwapDivergeLabel.setForeground(new java.awt.Color(100, 100, 255));
         settingsPanel.add(aiVwapDivergeLabel, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 34;
+        gbc.gridx = 0; gbc.gridy = 32;
         JButton resetWeightsBtn = new JButton("Reset Weights");
         resetWeightsBtn.setToolTipText("Reset all weights to default values");
         resetWeightsBtn.addActionListener(e -> {
@@ -1479,7 +1555,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(resetWeightsBtn, gbc);
 
         // Max Slippage setting
-        gbc.gridx = 0; gbc.gridy = 35;
+        gbc.gridx = 0; gbc.gridy = 33;
         JLabel slippageLabel = new JLabel("Max Slippage (ticks):");
         slippageLabel.setToolTipText("Reject signal if price moved more than this many ticks");
         settingsPanel.add(slippageLabel, gbc);
@@ -1503,10 +1579,10 @@ public class OrderFlowStrategyEnhanced implements
         }
 
         // Safety Controls section
-        gbc.gridx = 0; gbc.gridy = 36; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 34; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Safety Controls", gbc);
 
-        gbc.gridx = 0; gbc.gridy = 37; gbc.gridwidth = 1;
+        gbc.gridx = 0; gbc.gridy = 35; gbc.gridwidth = 1;
         JLabel simModeLabel = new JLabel("Simulation Mode Only:");
         simModeLabel.setToolTipText("When enabled, no real orders are sent to exchange");
         settingsPanel.add(simModeLabel, gbc);
@@ -1517,7 +1593,7 @@ public class OrderFlowStrategyEnhanced implements
         simModeCheckBox.addActionListener(e -> updateSimMode());
         settingsPanel.add(simModeCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 38;
+        gbc.gridx = 0; gbc.gridy = 36;
         JLabel autoExecLabel = new JLabel("Enable Auto-Execution:");
         autoExecLabel.setToolTipText("When enabled, signals automatically execute without confirmation");
         settingsPanel.add(autoExecLabel, gbc);
@@ -1529,10 +1605,10 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(autoExecCheckBox, gbc);
 
         // Risk Management section
-        gbc.gridx = 0; gbc.gridy = 39; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 37; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Risk Management", gbc);
 
-        gbc.gridx = 0; gbc.gridy = 40; gbc.gridwidth = 1;
+        gbc.gridx = 0; gbc.gridy = 38; gbc.gridwidth = 1;
         JLabel maxPosLabel = new JLabel("Max Position:");
         maxPosLabel.setToolTipText("<html>Maximum number of contracts/shares allowed at once.<br>Limits exposure in the market.</html>");
         settingsPanel.add(maxPosLabel, gbc);
@@ -1542,7 +1618,7 @@ public class OrderFlowStrategyEnhanced implements
         maxPosSpinner.addChangeListener(e -> maxPosition = (Integer) maxPosSpinner.getValue());
         settingsPanel.add(maxPosSpinner, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 41;
+        gbc.gridx = 0; gbc.gridy = 39;
         JLabel lossLimitLabel = new JLabel("Daily Loss Limit ($):");
         lossLimitLabel.setToolTipText("<html>Maximum loss allowed per day.<br>Trading stops when this limit is reached.<br>Critical risk management control!</html>");
         settingsPanel.add(lossLimitLabel, gbc);
@@ -1553,7 +1629,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(lossLimitSpinner, gbc);
 
         // Position Sizing (within Risk Management)
-        gbc.gridx = 0; gbc.gridy = 42;
+        gbc.gridx = 0; gbc.gridy = 40;
         JLabel accountSizeLabel = new JLabel("Account Size ($):");
         accountSizeLabel.setToolTipText("<html>Your trading account balance.<br>Used to calculate position sizes based on risk %.</html>");
         settingsPanel.add(accountSizeLabel, gbc);
@@ -1563,7 +1639,7 @@ public class OrderFlowStrategyEnhanced implements
         accountSizeSpinner.addChangeListener(e -> accountSize = (Double) accountSizeSpinner.getValue());
         settingsPanel.add(accountSizeSpinner, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 43;
+        gbc.gridx = 0; gbc.gridy = 41;
         JLabel riskPerTradeLabel = new JLabel("Risk Per Trade (%):");
         riskPerTradeLabel.setToolTipText("<html>Percentage of account to risk per trade.<br>• 0.5-1% = Conservative<br>• 1-2% = Moderate (recommended)<br>• 2-5% = Aggressive</html>");
         settingsPanel.add(riskPerTradeLabel, gbc);
@@ -1573,7 +1649,7 @@ public class OrderFlowStrategyEnhanced implements
         riskPerTradeSpinner.addChangeListener(e -> riskPerTradePercent = (Double) riskPerTradeSpinner.getValue());
         settingsPanel.add(riskPerTradeSpinner, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 44;
+        gbc.gridx = 0; gbc.gridy = 42;
         JLabel tickValueLabel = new JLabel("Tick Value ($):");
         tickValueLabel.setToolTipText("<html>Dollar value per tick movement.<br>Example: ES futures = $12.50 per tick<br>Used for P&L and risk calculations.</html>");
         settingsPanel.add(tickValueLabel, gbc);
@@ -1584,7 +1660,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(tickValueSpinner, gbc);
 
         // Fixed position size (declared first so checkbox can reference it)
-        gbc.gridx = 0; gbc.gridy = 45;
+        gbc.gridx = 0; gbc.gridy = 43;
         JLabel fixedPosLabel = new JLabel("Fixed Position Size:");
         fixedPosLabel.setToolTipText("<html>Number of contracts when NOT auto-calculating.<br>Used when Auto-Calculate Size is disabled.</html>");
         settingsPanel.add(fixedPosLabel, gbc);
@@ -1595,7 +1671,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(fixedPosSizeSpinner, gbc);
 
         // Auto-calculate checkbox (after spinner so it can enable/disable it)
-        gbc.gridx = 0; gbc.gridy = 46;
+        gbc.gridx = 0; gbc.gridy = 44;
         JLabel autoCalcLabel = new JLabel("Auto-Calculate Size:");
         autoCalcLabel.setToolTipText("<html>When enabled, position size is calculated from:<br>Account Size × Risk % ÷ (Stop Loss × Tick Value)</html>");
         settingsPanel.add(autoCalcLabel, gbc);
@@ -1613,7 +1689,7 @@ public class OrderFlowStrategyEnhanced implements
         fixedPosSizeSpinner.setEnabled(!autoCalculatePositionSize);
 
         // Stop Loss Ticks
-        gbc.gridx = 0; gbc.gridy = 47;
+        gbc.gridx = 0; gbc.gridy = 45;
         JLabel slTicksLabel = new JLabel("Stop Loss (ticks):");
         slTicksLabel.setToolTipText("<html>Fixed stop loss distance from entry price.<br>Used when Smart SL/TP is disabled.</html>");
         settingsPanel.add(slTicksLabel, gbc);
@@ -1624,7 +1700,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(slTicksSpinner, gbc);
 
         // Take Profit Ticks
-        gbc.gridx = 0; gbc.gridy = 48;
+        gbc.gridx = 0; gbc.gridy = 46;
         JLabel tpTicksLabel = new JLabel("Take Profit (ticks):");
         tpTicksLabel.setToolTipText("<html>Fixed take profit distance from entry price.<br>Used when Smart SL/TP is disabled.</html>");
         settingsPanel.add(tpTicksLabel, gbc);
@@ -1635,7 +1711,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(tpTicksSpinner, gbc);
 
         // R:R display label (calculated)
-        gbc.gridx = 0; gbc.gridy = 49;
+        gbc.gridx = 0; gbc.gridy = 47;
         JLabel rrLabel = new JLabel("R:R Ratio:");
         rrLabel.setToolTipText("<html>Calculated from Stop Loss and Take Profit ticks.<br>Formula: TP ticks ÷ SL ticks<br>Example: TP=30, SL=10 → R:R = 1:3.0</html>");
         settingsPanel.add(rrLabel, gbc);
@@ -1658,11 +1734,11 @@ public class OrderFlowStrategyEnhanced implements
         });
 
         // ========== SMART SL/TP SECTION ==========
-        gbc.gridx = 0; gbc.gridy = 50; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 48; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Smart SL/TP (ATR + DOM)", gbc);
 
         // Use Smart SL/TP checkbox
-        gbc.gridx = 0; gbc.gridy = 51; gbc.gridwidth = 1;
+        gbc.gridx = 0; gbc.gridy = 49; gbc.gridwidth = 1;
         JLabel smartSlTpLabel = new JLabel("Use Smart SL/TP:");
         smartSlTpLabel.setToolTipText("<html>When enabled, uses dynamic SL/TP based on:<br>• ATR (Average True Range) for volatility<br>• DOM support/resistance levels<br>• Trade memory from past performance</html>");
         settingsPanel.add(smartSlTpLabel, gbc);
@@ -1674,7 +1750,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(smartSlTpCheckBox, gbc);
 
         // ATR SL Multiplier
-        gbc.gridx = 0; gbc.gridy = 52;
+        gbc.gridx = 0; gbc.gridy = 50;
         JLabel atrSlLabel = new JLabel("ATR SL Multiplier:");
         atrSlLabel.setToolTipText("<html>Stop Loss distance based on ATR volatility.<br>Higher = wider stop (more room)<br>Lower = tighter stop (less risk but more stops)</html>");
         settingsPanel.add(atrSlLabel, gbc);
@@ -1686,7 +1762,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(atrSlSpinner, gbc);
 
         // ATR TP Multiplier
-        gbc.gridx = 0; gbc.gridy = 53;
+        gbc.gridx = 0; gbc.gridy = 51;
         JLabel atrTpLabel = new JLabel("ATR TP Multiplier:");
         atrTpLabel.setToolTipText("<html>Take Profit distance based on ATR volatility.<br>Should be higher than SL multiplier for positive R:R</html>");
         settingsPanel.add(atrTpLabel, gbc);
@@ -1698,7 +1774,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(atrTpSpinner, gbc);
 
         // Min R:R Ratio - displayed as "1:[spinner]"
-        gbc.gridx = 0; gbc.gridy = 54;
+        gbc.gridx = 0; gbc.gridy = 52;
         JLabel minRRPrefixLabel = new JLabel("Min R:R 1:");
         minRRPrefixLabel.setFont(new Font("SansSerif", Font.BOLD, 12));
         minRRPrefixLabel.setToolTipText("<html><b>Minimum Risk:Reward ratio required</b><br><br>Signals with R:R below this threshold will be flagged as poor quality.<br><br>• 1:1.5 = Risk $1 to make $1.50 (break-even long term)<br>• 1:2.0 = Risk $1 to make $2.00 (recommended)<br>• 1:3.0 = Risk $1 to make $3.00 (conservative)</html>");
@@ -1721,7 +1797,7 @@ public class OrderFlowStrategyEnhanced implements
         }
 
         // Max SL Ticks
-        gbc.gridx = 0; gbc.gridy = 55;
+        gbc.gridx = 0; gbc.gridy = 53;
         JLabel maxSlLabel = new JLabel("Max SL (ticks):");
         maxSlLabel.setToolTipText("<html>Maximum stop loss allowed when using Smart SL/TP.<br>Prevents runaway risk from ATR calculations.</html>");
         settingsPanel.add(maxSlLabel, gbc);
@@ -1732,7 +1808,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(maxSlSpinner, gbc);
 
         // Max TP Ticks
-        gbc.gridx = 0; gbc.gridy = 56;
+        gbc.gridx = 0; gbc.gridy = 54;
         JLabel maxTpLabel = new JLabel("Max TP (ticks):");
         maxTpLabel.setToolTipText("<html>Maximum take profit allowed when using Smart SL/TP.<br>Keeps targets realistic.</html>");
         settingsPanel.add(maxTpLabel, gbc);
@@ -1743,7 +1819,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(maxTpSpinner, gbc);
 
         // Min DOM Volume for SL/TP
-        gbc.gridx = 0; gbc.gridy = 57;
+        gbc.gridx = 0; gbc.gridy = 55;
         JLabel minDomVolLabel = new JLabel("Min DOM Volume:");
         minDomVolLabel.setToolTipText("<html>Minimum volume at DOM level to use for SL/TP.<br>Filters out weak support/resistance levels.</html>");
         settingsPanel.add(minDomVolLabel, gbc);
@@ -1754,7 +1830,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(minDomVolSpinner, gbc);
 
         // DOM Level Priority
-        gbc.gridx = 0; gbc.gridy = 58;
+        gbc.gridx = 0; gbc.gridy = 56;
         JLabel domPriorityLabel = new JLabel("DOM Priority:");
         domPriorityLabel.setToolTipText("<html>When enabled, DOM levels take priority over ATR for SL/TP.<br>Uses actual support/resistance instead of volatility.</html>");
         settingsPanel.add(domPriorityLabel, gbc);
@@ -1766,7 +1842,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(domPriorityCheckBox, gbc);
 
         // Session-Aware ATR Scaling
-        gbc.gridx = 0; gbc.gridy = 59;
+        gbc.gridx = 0; gbc.gridy = 57;
         JLabel sessionAtrLabel = new JLabel("Session-Aware ATR:");
         sessionAtrLabel.setToolTipText("<html>Adjust ATR multipliers based on trading session.<br>Opening = wider, Lunch = tighter, Close = wider</html>");
         settingsPanel.add(sessionAtrLabel, gbc);
@@ -1778,7 +1854,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(sessionAtrCheckBox, gbc);
 
         // Use Trade Memory for SL/TP
-        gbc.gridx = 0; gbc.gridy = 60;
+        gbc.gridx = 0; gbc.gridy = 58;
         JLabel tradeMemoryLabel = new JLabel("Use Trade Memory:");
         tradeMemoryLabel.setToolTipText("<html>Use past trade MFE/MAE to optimize SL/TP.<br>MFE = Max Favorable Excursion (best price)<br>MAE = Max Adverse Excursion (worst price)</html>");
         settingsPanel.add(tradeMemoryLabel, gbc);
@@ -1790,7 +1866,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(tradeMemoryCheckBox, gbc);
 
         // Memory Lookback
-        gbc.gridx = 0; gbc.gridy = 61;
+        gbc.gridx = 0; gbc.gridy = 59;
         JLabel memoryLookbackLabel = new JLabel("Memory Lookback:");
         memoryLookbackLabel.setToolTipText("<html>Number of recent trades to analyze for MFE/MAE.<br>Higher = more data but slower adaptation.</html>");
         settingsPanel.add(memoryLookbackLabel, gbc);
@@ -1801,10 +1877,10 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(memoryLookbackSpinner, gbc);
 
         // Notifications section
-        gbc.gridx = 0; gbc.gridy = 62; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 60; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Notifications", gbc);
 
-        gbc.gridx = 0; gbc.gridy = 63; gbc.gridwidth = 1;
+        gbc.gridx = 0; gbc.gridy = 61; gbc.gridwidth = 1;
         JLabel eventNotifLabel = new JLabel("Event Notifications:");
         eventNotifLabel.setToolTipText("Show alerts for trades and signal events");
         settingsPanel.add(eventNotifLabel, gbc);
@@ -1815,7 +1891,7 @@ public class OrderFlowStrategyEnhanced implements
         eventNotifCheckBox.addActionListener(e -> enableEventNotifications = eventNotifCheckBox.isSelected());
         settingsPanel.add(eventNotifCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 64;
+        gbc.gridx = 0; gbc.gridy = 62;
         JLabel aiNotifLabel = new JLabel("AI Notifications:");
         aiNotifLabel.setToolTipText("Allow AI to send alerts and recommendations");
         settingsPanel.add(aiNotifLabel, gbc);
@@ -1826,7 +1902,7 @@ public class OrderFlowStrategyEnhanced implements
         aiNotifCheckBox.addActionListener(e -> enableAINotifications = aiNotifCheckBox.isSelected());
         settingsPanel.add(aiNotifCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 65;
+        gbc.gridx = 0; gbc.gridy = 63;
         JLabel periodicNotifLabel = new JLabel("Periodic Updates:");
         periodicNotifLabel.setToolTipText("Receive regular status updates from AI");
         settingsPanel.add(periodicNotifLabel, gbc);
@@ -1844,7 +1920,7 @@ public class OrderFlowStrategyEnhanced implements
         });
         settingsPanel.add(periodicNotifCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 66;
+        gbc.gridx = 0; gbc.gridy = 64;
         JLabel updateIntervalLabel = new JLabel("Update Interval (min):");
         updateIntervalLabel.setToolTipText("<html>How often to receive AI status updates.<br>Only applies when Periodic Updates is enabled.</html>");
         settingsPanel.add(updateIntervalLabel, gbc);
@@ -1861,13 +1937,13 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(periodicIntervalSpinner, gbc);
 
         // Apply button
-        gbc.gridx = 0; gbc.gridy = 67; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 65; gbc.gridwidth = 2;
         JButton applyButton = new JButton("Apply Settings");
         applyButton.addActionListener(e -> applySettings());
         settingsPanel.add(applyButton, gbc);
 
         // ========== TEST SL/TP LINES BUTTON ==========
-        gbc.gridx = 0; gbc.gridy = 68; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 66; gbc.gridwidth = 2;
         gbc.anchor = GridBagConstraints.CENTER;
         JButton testLinesButton = new JButton("TEST SL/TP LINES");
         testLinesButton.setToolTipText("Click to test SL/TP line drawing independently of AI/signals");
@@ -1880,7 +1956,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(testLinesButton, gbc);
 
         // Clear lines button (on same row as test button, to the right)
-        gbc.gridx = 2; gbc.gridy = 68; gbc.gridwidth = 1;
+        gbc.gridx = 2; gbc.gridy = 66; gbc.gridwidth = 1;
         JButton clearLinesButton = new JButton("Clear Lines");
         clearLinesButton.setToolTipText("Clear the test SL/TP lines");
         clearLinesButton.setOpaque(true);
@@ -1889,8 +1965,8 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(clearLinesButton, gbc);
         gbc.anchor = GridBagConstraints.WEST;  // Reset anchor
 
-        // Version label (bottom right, after all other components)
-        gbc.gridx = 0; gbc.gridy = 69; gbc.gridwidth = 3;
+        // Version label (bottom right)
+        gbc.gridx = 1; gbc.gridy = 57; gbc.gridwidth = 1;
         gbc.anchor = GridBagConstraints.EAST;
         gbc.weightx = 1.0;
         JLabel versionLabel = new JLabel("Qid v2.2 - AI Trading with Memory");
@@ -4728,6 +4804,19 @@ public class OrderFlowStrategyEnhanced implements
                                         aiDecision.direction = isLong ? "LONG" : "SHORT";
                                         aiDecision.stopLoss = stopLossPrice;
                                         aiDecision.takeProfit = takeProfitPrice;
+
+                                        // NEW: Copy execution type from TradePlan
+                                        if (decision.plan != null) {
+                                            aiDecision.executionType = decision.plan.executionType != null
+                                                ? decision.plan.executionType.getValue()
+                                                : "MARKET";
+                                            aiDecision.triggerPrice = decision.plan.triggerPrice;
+                                            aiDecision.executionReasoning = decision.plan.executionReasoning;
+                                            log("📊 Execution type: %s, trigger: %s, reason: %s".formatted(
+                                                aiDecision.executionType,
+                                                aiDecision.triggerPrice != null ? aiDecision.triggerPrice : "N/A",
+                                                aiDecision.executionReasoning != null ? aiDecision.executionReasoning : "N/A"));
+                                        }
 
                                         // Check mode: SEMI_AUTO requires approval, FULL_AUTO executes immediately
                                         if ("SEMI_AUTO".equals(aiMode)) {

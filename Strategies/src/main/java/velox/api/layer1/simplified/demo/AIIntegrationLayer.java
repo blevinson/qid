@@ -321,6 +321,11 @@ public class AIIntegrationLayer {
         public int stopLoss;
         public int takeProfit;
         public int breakEven;
+
+        // NEW: Order execution type (MARKET, STOP_MARKET, LIMIT)
+        public String executionType = "MARKET";  // Default to MARKET
+        public Integer triggerPrice;  // Price for STOP_MARKET or LIMIT orders (in ticks)
+        public String executionReasoning;  // AI's reasoning for order type choice
     }
 
     /**
