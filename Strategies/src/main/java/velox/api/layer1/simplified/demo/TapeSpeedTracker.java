@@ -178,7 +178,10 @@ public class TapeSpeedTracker {
         synchronized (tradeEvents) {
             if (tradeEvents.isEmpty()) {
                 analysis.speedLevel = "NO_DATA";
+                analysis.dominantSide = "BALANCED";
+                analysis.dominanceRatio = 1.0;
                 analysis.interpretation = "No trades recorded";
+                analysis.signal = "NO_DATA";
                 cachedAnalysis = analysis;
                 cacheTime = now;
                 return analysis;
@@ -380,20 +383,28 @@ public class TapeSpeedTracker {
     public boolean isFavorableForDirection(boolean isLong) {
         TapeSpeedAnalysis analysis = analyze();
 
-        // Quiet market = low conviction, not favorable
-        if (analysis.speedLevel.equals("VERY_SLOW")) {
+        // No data = not favorable
+        if ("NO_DATA".equals(analysis.speedLevel)) {
             return false;
         }
 
-        // Check alignment
+        // Quiet market = low conviction, not favorable
+        if ("VERY_SLOW".equals(analysis.speedLevel)) {
+            return false;
+        }
+
+        // Check alignment (null-safe)
+        String side = analysis.dominantSide;
+        String sig = analysis.signal != null ? analysis.signal : "";
+
         if (isLong) {
             // For longs, want buyer dominance or exhaustion of sellers
-            if (analysis.dominantSide.equals("BUYERS")) return true;
-            if (analysis.signal.contains("EXHAUSTION_SELLERS")) return true;
+            if ("BUYERS".equals(side)) return true;
+            if (sig.contains("EXHAUSTION_SELLERS")) return true;
         } else {
             // For shorts, want seller dominance or exhaustion of buyers
-            if (analysis.dominantSide.equals("SELLERS")) return true;
-            if (analysis.signal.contains("EXHAUSTION_BUYERS")) return true;
+            if ("SELLERS".equals(side)) return true;
+            if (sig.contains("EXHAUSTION_BUYERS")) return true;
         }
 
         return false;
@@ -404,6 +415,12 @@ public class TapeSpeedTracker {
      */
     public int getSpeedScoreAdjustment(boolean isLong) {
         TapeSpeedAnalysis analysis = analyze();
+
+        // No data = no adjustment
+        if ("NO_DATA".equals(analysis.speedLevel)) {
+            return 0;
+        }
+
         int adjustment = 0;
 
         // Base adjustment from speed level
@@ -427,18 +444,21 @@ public class TapeSpeedTracker {
                 break;
         }
 
-        // Direction alignment bonus
-        if (isLong && analysis.dominantSide.equals("BUYERS")) {
+        // Direction alignment bonus (null-safe)
+        String side = analysis.dominantSide;
+        String sig = analysis.signal != null ? analysis.signal : "";
+
+        if (isLong && "BUYERS".equals(side)) {
             adjustment += 3;
-        } else if (!isLong && analysis.dominantSide.equals("SELLERS")) {
+        } else if (!isLong && "SELLERS".equals(side)) {
             adjustment += 3;
         }
 
         // Exhaustion reversal bonus
         if (analysis.isExhaustion) {
-            if (isLong && analysis.signal.contains("SELLERS")) {
+            if (isLong && sig.contains("SELLERS")) {
                 adjustment += 5;  // Exhausted sellers = potential long
-            } else if (!isLong && analysis.signal.contains("BUYERS")) {
+            } else if (!isLong && sig.contains("BUYERS")) {
                 adjustment += 5;  // Exhausted buyers = potential short
             }
         }

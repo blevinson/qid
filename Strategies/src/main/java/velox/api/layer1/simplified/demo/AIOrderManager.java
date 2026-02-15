@@ -826,6 +826,13 @@ public class AIOrderManager {
     }
 
     /**
+     * Get all active positions (for bracket order fill detection)
+     */
+    public Map<String, ActivePosition> getActivePositions() {
+        return activePositions;
+    }
+
+    /**
      * Get total trades count
      */
     public int getTotalTrades() {
