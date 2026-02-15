@@ -355,6 +355,7 @@ public class OrderFlowStrategyEnhanced implements
     private AIToolsProvider aiToolsProvider;  // Tool functions for AI chat
     private Object memoryService;  // TradingMemoryService - initialized as Object to avoid loading issues
     private AIInvestmentStrategist aiStrategist;
+    private PreMarketAnalyzer preMarketAnalyzer;  // Pre-market analysis and planning
     private final Map<String, SignalData> pendingSignals = new ConcurrentHashMap<>();
 
     // Unified Session Transcript - shared by AI chat and AI Investment Strategist
@@ -1185,6 +1186,14 @@ public class OrderFlowStrategyEnhanced implements
         aiReevaluateButton.setEnabled(token != null && !token.isEmpty());
         aiReevaluateButton.addActionListener(e -> triggerAIReevaluation());
         settingsPanel.add(aiReevaluateButton, gbc);
+
+        // Pre-market Prep button
+        gbc.gridy = 16; gbc.gridwidth = 1;
+        JButton preMarketButton = new JButton("📊 Pre-market Prep");
+        preMarketButton.setToolTipText("Run AI pre-market analysis: sentiment, key levels, trade plan. Saves to memory.");
+        preMarketButton.setEnabled(token != null && !token.isEmpty());
+        preMarketButton.addActionListener(e -> runPreMarketAnalysis());
+        settingsPanel.add(preMarketButton, gbc);
 
         // AI Investment Strategist section
         gbc.gridx = 0; gbc.gridy = 17; gbc.gridwidth = 2;
@@ -3121,6 +3130,45 @@ public class OrderFlowStrategyEnhanced implements
                 log("✅ AI Investment Strategist initialized");
             }
 
+            // Initialize Pre-Market Analyzer
+            if (preMarketAnalyzer == null && tradingMemoryDir != null) {
+                preMarketAnalyzer = new PreMarketAnalyzer(
+                    aiAuthToken,
+                    tradingMemoryDir.toFile(),
+                    (velox.api.layer1.simplified.demo.storage.TradingMemoryService) memoryService
+                );
+                // Wire up data suppliers
+                preMarketAnalyzer.setPriceSupplier(() -> getCurrentPrice() * pips);
+                preMarketAnalyzer.setCvdSupplier(() -> cvdCalculator.getCVD());
+                preMarketAnalyzer.setVwapSupplier(() -> vwapCalculator.isInitialized() ? vwapCalculator.getVWAP() * pips : 0.0);
+                preMarketAnalyzer.setEmaSupplier(() -> new double[] {
+                    ema9.isInitialized() ? ema9.getEMA() * pips : 0.0,
+                    ema21.isInitialized() ? ema21.getEMA() * pips : 0.0,
+                    ema50.isInitialized() ? ema50.getEMA() * pips : 0.0
+                });
+                preMarketAnalyzer.setPocSupplier(() -> {
+                    return (double) volumeProfile.getPOC() * pips;
+                });
+                preMarketAnalyzer.setValueAreaSupplier(() -> {
+                    VolumeProfileCalculator.ValueArea va = volumeProfile.getValueArea();
+                    return new double[] { va.vaLow * pips, va.vaHigh * pips };
+                });
+                preMarketAnalyzer.setDomSupplier(() -> {
+                    DOMAnalyzer.DOMLevel support = domAnalyzer.getNearestSupport();
+                    DOMAnalyzer.DOMLevel resistance = domAnalyzer.getNearestResistance();
+                    double supportPrice = support != null ? support.price * pips : 0.0;
+                    double resistancePrice = resistance != null ? resistance.price * pips : 0.0;
+                    return new double[] {
+                        supportPrice,
+                        resistancePrice,
+                        domAnalyzer.getImbalanceRatio()
+                    };
+                });
+                preMarketAnalyzer.setInstrumentSupplier(() -> alias);
+                preMarketAnalyzer.setPipsSupplier(() -> pips);
+                log("✅ Pre-Market Analyzer initialized");
+            }
+
         } catch (Exception e) {
             log("❌ Failed to initialize AI Trading: " + e.getMessage());
             e.printStackTrace();
@@ -3333,6 +3381,100 @@ public class OrderFlowStrategyEnhanced implements
                 });
                 return null;
             });
+    }
+
+    /**
+     * Run pre-market analysis and create trade plan
+     * This performs a deep analysis of current market conditions and stores in memory
+     */
+    private void runPreMarketAnalysis() {
+        // Initialize if needed
+        if (preMarketAnalyzer == null) {
+            // Try to initialize
+            if (tradingMemoryDir != null && aiAuthToken != null && !aiAuthToken.isEmpty()) {
+                preMarketAnalyzer = new PreMarketAnalyzer(
+                    aiAuthToken,
+                    tradingMemoryDir.toFile(),
+                    (velox.api.layer1.simplified.demo.storage.TradingMemoryService) memoryService
+                );
+                // Wire up data suppliers
+                preMarketAnalyzer.setPriceSupplier(() -> getCurrentPrice() * pips);
+                preMarketAnalyzer.setCvdSupplier(() -> cvdCalculator.getCVD());
+                preMarketAnalyzer.setVwapSupplier(() -> vwapCalculator.isInitialized() ? vwapCalculator.getVWAP() * pips : 0.0);
+                preMarketAnalyzer.setEmaSupplier(() -> new double[] {
+                    ema9.isInitialized() ? ema9.getEMA() * pips : 0.0,
+                    ema21.isInitialized() ? ema21.getEMA() * pips : 0.0,
+                    ema50.isInitialized() ? ema50.getEMA() * pips : 0.0
+                });
+                preMarketAnalyzer.setPocSupplier(() -> {
+                    return (double) volumeProfile.getPOC() * pips;
+                });
+                preMarketAnalyzer.setValueAreaSupplier(() -> {
+                    VolumeProfileCalculator.ValueArea va = volumeProfile.getValueArea();
+                    return new double[] { va.vaLow * pips, va.vaHigh * pips };
+                });
+                preMarketAnalyzer.setDomSupplier(() -> {
+                    DOMAnalyzer.DOMLevel support = domAnalyzer.getNearestSupport();
+                    DOMAnalyzer.DOMLevel resistance = domAnalyzer.getNearestResistance();
+                    double supportPrice = support != null ? support.price * pips : 0.0;
+                    double resistancePrice = resistance != null ? resistance.price * pips : 0.0;
+                    return new double[] {
+                        supportPrice,
+                        resistancePrice,
+                        domAnalyzer.getImbalanceRatio()
+                    };
+                });
+                preMarketAnalyzer.setInstrumentSupplier(() -> alias);
+                preMarketAnalyzer.setPipsSupplier(() -> pips);
+                log("✅ Pre-Market Analyzer initialized on-demand");
+            } else {
+                showAlert("Pre-Market Analysis Unavailable",
+                    "Pre-market analysis requires:\n\n" +
+                    "1. AI Auth Token configured\n" +
+                    "2. Memory directory available\n\n" +
+                    "Please configure these settings and try again.");
+                return;
+            }
+        }
+
+        log("📊 Running Pre-Market Analysis...");
+        log("   This will analyze current market and create a trade plan.");
+
+        // Run analysis asynchronously
+        preMarketAnalyzer.runAnalysis((analysis, success) -> {
+            SwingUtilities.invokeLater(() -> {
+                if (success) {
+                    showPreMarketDialog(analysis);
+                } else {
+                    showAlert("Pre-Market Analysis Failed", analysis);
+                }
+            });
+        });
+    }
+
+    /**
+     * Show pre-market analysis result in a dialog
+     */
+    private void showPreMarketDialog(String analysis) {
+        // Create scrollable text area
+        JTextArea textArea = new JTextArea(analysis);
+        textArea.setEditable(false);
+        textArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
+        textArea.setLineWrap(true);
+        textArea.setWrapStyleWord(true);
+
+        JScrollPane scrollPane = new JScrollPane(textArea);
+        scrollPane.setPreferredSize(new Dimension(700, 500));
+
+        // Show in dialog
+        JOptionPane.showMessageDialog(
+            null,
+            scrollPane,
+            "📊 Pre-Market Analysis - " + alias,
+            JOptionPane.INFORMATION_MESSAGE
+        );
+
+        log("✅ Pre-Market Analysis complete and saved to memory");
     }
 
     private void showAIResponseDialog(String prompt, String response) {
