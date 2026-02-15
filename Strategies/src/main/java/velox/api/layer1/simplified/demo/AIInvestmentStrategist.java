@@ -110,6 +110,19 @@ public class AIInvestmentStrategist {
      * @param callback AIStrategistCallback for async decision
      */
     public void evaluateSetup(SignalData signal, SessionContext sessionContext, boolean devMode, AIStrategistCallback callback) {
+        evaluateSetup(signal, sessionContext, null, devMode, callback);
+    }
+
+    /**
+     * Evaluate a trading signal using AI with memory context and session analysis
+     *
+     * @param signal SignalData with market context
+     * @param sessionContext Session state (can be null)
+     * @param sessionAnalysisReport Today's pre-market/phase analysis report (can be null)
+     * @param devMode If true, AI should be permissive for testing
+     * @param callback AIStrategistCallback for async decision
+     */
+    public void evaluateSetup(SignalData signal, SessionContext sessionContext, String sessionAnalysisReport, boolean devMode, AIStrategistCallback callback) {
         // Validate input
         if (signal == null || callback == null) {
             if (callback != null) {
@@ -130,6 +143,17 @@ public class AIInvestmentStrategist {
         // Log session context
         if (sessionContext != null) {
             log("SESSION: " + sessionContext.toSummary());
+        }
+
+        // Log session analysis report inclusion
+        if (sessionAnalysisReport != null && !sessionAnalysisReport.isEmpty()) {
+            int reportLen = sessionAnalysisReport.length();
+            log("📋 SESSION ANALYSIS REPORT: INCLUDED (" + reportLen + " chars)");
+            // Log a preview (first 200 chars)
+            String preview = sessionAnalysisReport.substring(0, Math.min(200, reportLen));
+            log("📋 REPORT PREVIEW: " + preview.replace("\n", " ").trim() + "...");
+        } else {
+            log("📋 SESSION ANALYSIS REPORT: NOT AVAILABLE");
         }
 
         // Log key levels for debugging (convert to actual prices)
@@ -163,8 +187,8 @@ public class AIInvestmentStrategist {
             log("WARNING: No memory context - AI will use general analysis");
         }
 
-        // Step 3: Ask AI to make decision
-        String prompt = buildAIPrompt(signal, context, sessionContext, devMode);
+        // Step 3: Ask AI to make decision (include session analysis report)
+        String prompt = buildAIPrompt(signal, context, sessionContext, sessionAnalysisReport, devMode);
 
         // Call Claude API
         callClaudeAPI(prompt, callback, signal);
@@ -207,18 +231,35 @@ public class AIInvestmentStrategist {
     }
 
     /**
-     * Build AI prompt with signal data, memory context, and session context
+     * Build AI prompt with signal data, memory context, session context, and session analysis
      * This prompt will be sent to Claude API for decision making
      *
      * @param signal SignalData with market context
      * @param memoryContext Formatted memory search results
      * @param sessionContext Session state (can be null)
+     * @param sessionAnalysisReport Today's pre-market/phase analysis (can be null)
      * @param devMode If true, AI should be permissive for testing
      * @return AI prompt string
      */
-    private String buildAIPrompt(SignalData signal, String memoryContext, SessionContext sessionContext, boolean devMode) {
+    private String buildAIPrompt(SignalData signal, String memoryContext, SessionContext sessionContext, String sessionAnalysisReport, boolean devMode) {
         double pips = signal.pips;
         double actualPrice = signal.price * pips;
+
+        // Build session analysis section (truncate if too long)
+        String sessionAnalysisSection = "";
+        if (sessionAnalysisReport != null && !sessionAnalysisReport.isEmpty()) {
+            // Limit to ~2000 chars to avoid bloat
+            String truncated = sessionAnalysisReport.length() > 2000
+                ? sessionAnalysisReport.substring(0, 2000) + "\n... (truncated)"
+                : sessionAnalysisReport;
+            sessionAnalysisSection = """
+
+                ═══ TODAY'S SESSION ANALYSIS ═══
+                """ + truncated + """
+
+
+                """;
+        }
 
         // Build key levels (used in both modes)
         StringBuilder keyLevels = new StringBuilder();
@@ -240,12 +281,13 @@ public class AIInvestmentStrategist {
         if ("COMPACT".equals(promptMode)) {
             String devNote = devMode ? " [DEV MODE: be permissive]" : "";
             return String.format("""
-                SIGNAL: %s %s @ %.2f | Score: %d | CVD: %d (%s) | Trend: %s%s
+                %sSIGNAL: %s %s @ %.2f | Score: %d | CVD: %d (%s) | Trend: %s%s
                 KEY LEVELS: %s
                 %s
                 Decide TAKE or SKIP. Respond with JSON only.
                 {"action":"TAKE"|"SKIP","confidence":0.0-1.0,"reasoning":"brief","plan":{"orderType":"BUY"|"SELL","entryPrice":%.2f,"stopLossPrice":N,"takeProfitPrice":N}}
                 """,
+                sessionAnalysisSection,
                 signal.direction, signal.detection.type, actualPrice, signal.score,
                 signal.market.cvd, signal.market.cvdTrend, signal.market.trend,
                 devNote, keyLevelsStr, memoryContext, actualPrice);
@@ -295,7 +337,7 @@ public class AIInvestmentStrategist {
         }
 
         return String.format("""
-            %s%s
+            %s%s%s
 
             SIGNAL: %s %s @ %.2f | Score: %d | CVD: %d (%s) | Trend: %s
 
