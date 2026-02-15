@@ -1177,14 +1177,14 @@ public class OrderFlowStrategyEnhanced implements
         aiAdaptiveModeCheckBox.addActionListener(e -> updateAIAdaptiveMode());
         settingsPanel.add(aiAdaptiveModeCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 12; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 13; gbc.gridwidth = 2;
         settingsPanel.add(new JLabel("AI Status:"), gbc);
-        gbc.gridy = 13;
+        gbc.gridy = 14;
         aiStatusIndicator = new JLabel(enableAITrading ? "🟢 AI Trading Active" : "🔴 AI Disabled");
         aiStatusIndicator.setForeground(enableAITrading ? new Color(0, 150, 0) : Color.GRAY);
         settingsPanel.add(aiStatusIndicator, gbc);
 
-        gbc.gridy = 14; gbc.gridwidth = 1;
+        gbc.gridy = 15; gbc.gridwidth = 1;
         JButton aiChatButton = new JButton("💬 Open AI Chat");
         aiChatButton.setToolTipText("Open AI Chat window");
         String token = getEffectiveApiToken();
@@ -1192,7 +1192,7 @@ public class OrderFlowStrategyEnhanced implements
         aiChatButton.addActionListener(e -> openAIChatWindow());
         settingsPanel.add(aiChatButton, gbc);
 
-        gbc.gridy = 15; gbc.gridwidth = 1;
+        gbc.gridy = 16; gbc.gridwidth = 1;
         aiReevaluateButton = new JButton("🔄 Optimize Thresholds");
         aiReevaluateButton.setToolTipText("Ask AI to optimize trading thresholds based on market conditions");
         aiReevaluateButton.setEnabled(token != null && !token.isEmpty());
@@ -1200,7 +1200,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(aiReevaluateButton, gbc);
 
         // Show Analysis button (shows existing or runs new)
-        gbc.gridy = 16; gbc.gridwidth = 1;
+        gbc.gridy = 17; gbc.gridwidth = 1;
         JButton analysisButton = new JButton("📊 Show Analysis");
         analysisButton.setToolTipText("View today's session analysis (or run if not yet generated). Includes pre-market prep and phase updates.");
         analysisButton.setEnabled(token != null && !token.isEmpty());
