@@ -556,6 +556,10 @@ public class OrderFlowStrategyEnhanced implements
     private double todayMaxDrawdown = 0.0;
     private double todayPeakEquity = 0.0;
 
+    // Alert tracking (prevent repeated alerts)
+    private boolean dailyLossAlertShown = false;
+    private boolean drawdownWarningShown = false;
+
     // Current activity
     private List<Integer> activeSignals = new ArrayList<>();
     private Integer lastSignal = null;
@@ -2933,16 +2937,18 @@ public class OrderFlowStrategyEnhanced implements
     }
 
     private void checkAlerts() {
-        // Daily loss limit alert
-        if (todayPnL <= -dailyLossLimit) {
+        // Daily loss limit alert (only show once)
+        if (todayPnL <= -dailyLossLimit && !dailyLossAlertShown) {
+            dailyLossAlertShown = true;
             showAlert("⛔ DAILY LOSS LIMIT REACHED!",
                 "Today's loss: $" + todayPnL + "\n" +
                 "Limit: $" + dailyLossLimit + "\n\n" +
                 "⛔ STOPPING TRADING FOR TODAY!");
         }
 
-        // Drawdown alert
-        if (todayMaxDrawdown > dailyLossLimit * 0.8) {
+        // Drawdown alert (only show once)
+        if (todayMaxDrawdown > dailyLossLimit * 0.8 && !drawdownWarningShown) {
+            drawdownWarningShown = true;
             showWarning("⚠️ Approaching max drawdown",
                 "Current: $" + todayMaxDrawdown);
         }
