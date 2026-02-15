@@ -41,6 +41,9 @@ public class AIToolsProvider {
     // Performance analytics supplier
     private Supplier<Map<String, Object>> performanceSupplier;
 
+    // Trading memory path for trade history access
+    private java.nio.file.Path tradingMemoryPath;
+
     // Threshold adjustment callback (strategy handles actual adjustment)
     private BiFunction<String, Integer, Boolean> thresholdAdjuster;
 
@@ -312,6 +315,40 @@ public class AIToolsProvider {
                 "required": []
             }
         }
+        """,
+        """
+        {
+            "name": "get_trade_history",
+            "description": "Get historical trade data from the persistent trade log. Shows all closed trades with P&L, duration, entry/exit prices, and performance metrics. Use this to analyze past performance and identify patterns.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "count": {
+                        "type": "integer",
+                        "description": "Number of recent trades to return (default 20, max 100)",
+                        "default": 20
+                    },
+                    "outcome": {
+                        "type": "string",
+                        "enum": ["all", "WIN", "LOSS"],
+                        "description": "Filter by trade outcome",
+                        "default": "all"
+                    }
+                },
+                "required": []
+            }
+        }
+        """,
+        """
+        {
+            "name": "get_trade_statistics",
+            "description": "Get aggregate trade statistics from historical data. Returns win rate, average win/loss, profit factor, max drawdown, and other key performance metrics. Use this to evaluate overall trading performance.",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
         """
     };
 
@@ -331,6 +368,7 @@ public class AIToolsProvider {
     public void setThresholdAdjuster(BiFunction<String, Integer, Boolean> adjuster) { this.thresholdAdjuster = adjuster; }
     public void setNotificationCallback(TriConsumer<String, String, String> callback) { this.notificationCallback = callback; }
     public void setSnapshotSupplier(Supplier<String> supplier) { this.snapshotSupplier = supplier; }
+    public void setTradingMemoryPath(java.nio.file.Path path) { this.tradingMemoryPath = path; }
 
     // ========== TOOL EXECUTION ==========
 
@@ -360,6 +398,8 @@ public class AIToolsProvider {
                 case "get_weights" -> getWeights();
                 case "adjust_weight" -> adjustWeight(arguments);
                 case "get_snapshot_history" -> getSnapshotHistory(arguments);
+                case "get_trade_history" -> getTradeHistory(arguments);
+                case "get_trade_statistics" -> getTradeStatistics();
                 default -> "{\"error\": \"Unknown tool: " + toolName + "\"}";
             };
         } catch (Exception e) {
@@ -888,6 +928,196 @@ public class AIToolsProvider {
         }
 
         return "{\"count\": " + count + ", \"history\": \"" + history.replace("\"", "\\\"").replace("\n", "\\n") + "\"}";
+    }
+
+    private String getTradeHistory(Map<String, Object> arguments) {
+        if (tradingMemoryPath == null) {
+            return "{\"error\": \"Trade history path not configured\"}";
+        }
+
+        java.nio.file.Path csvPath = tradingMemoryPath.resolve("trade-history.csv");
+        if (!java.nio.file.Files.exists(csvPath)) {
+            return "{\"message\": \"No trade history yet. Trades will be logged to: " + csvPath + "\"}";
+        }
+
+        int count = 20;
+        String outcomeFilter = "all";
+
+        if (arguments != null) {
+            if (arguments.get("count") != null) {
+                try {
+                    count = Math.min(100, ((Number) arguments.get("count")).intValue());
+                } catch (Exception e) { }
+            }
+            if (arguments.get("outcome") != null) {
+                outcomeFilter = (String) arguments.get("outcome");
+            }
+        }
+
+        try {
+            java.util.List<String> lines = java.nio.file.Files.readAllLines(csvPath);
+            if (lines.size() <= 1) {
+                return "{\"message\": \"No trades recorded yet\"}";
+            }
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("{\"total_trades\": ").append(lines.size() - 1);
+            sb.append(", \"returned\": ");
+
+            // Parse header
+            String[] headers = lines.get(0).split(",");
+
+            // Get trades (most recent first)
+            java.util.List<String> trades = new java.util.ArrayList<>();
+            for (int i = lines.size() - 1; i >= 1 && trades.size() < count; i--) {
+                String line = lines.get(i);
+                if (!line.trim().isEmpty()) {
+                    // Apply outcome filter
+                    if (!"all".equals(outcomeFilter)) {
+                        String[] parts = line.split(",", -1);
+                        int outcomeIdx = 11; // outcome is at index 11
+                        if (parts.length > outcomeIdx) {
+                            if (!parts[outcomeIdx].equals(outcomeFilter)) {
+                                continue;
+                            }
+                        }
+                    }
+                    trades.add(line);
+                }
+            }
+
+            sb.append(trades.size()).append(", \"trades\": [");
+
+            for (int i = 0; i < trades.size(); i++) {
+                if (i > 0) sb.append(",");
+                String[] parts = trades.get(i).split(",", -1);
+
+                // Build JSON object for each trade
+                sb.append("{");
+                sb.append("\"timestamp\":\"").append(escape(parts[0])).append("\"");
+                sb.append(",\"trade_id\":\"").append(escape(parts[1])).append("\"");
+                sb.append(",\"symbol\":\"").append(escape(parts[2])).append("\"");
+                sb.append(",\"direction\":\"").append(escape(parts[3])).append("\"");
+                sb.append(",\"entry_price\":").append(parts[4]);
+                sb.append(",\"exit_price\":").append(parts[5]);
+                sb.append(",\"quantity\":").append(parts[6]);
+                sb.append(",\"pnl_ticks\":").append(parts[9]);
+                sb.append(",\"pnl_dollars\":").append(parts[10]);
+                sb.append(",\"outcome\":\"").append(escape(parts[11])).append("\"");
+                sb.append(",\"duration_seconds\":").append(parts[12]);
+                sb.append(",\"signal_score\":").append(parts[13]);
+                sb.append(",\"exit_reason\":\"").append(escape(parts[15])).append("\"");
+                sb.append(",\"rr_ratio\":").append(parts[18]);
+                sb.append(",\"mfe_ticks\":").append(parts[19]);
+                sb.append(",\"mae_ticks\":").append(parts[20]);
+                if (parts.length > 21) {
+                    sb.append(",\"ai_confidence\":").append(parts[21]);
+                }
+                sb.append("}");
+            }
+
+            sb.append("]}");
+            return sb.toString();
+
+        } catch (Exception e) {
+            return "{\"error\": \"Failed to read trade history: " + e.getMessage().replace("\"", "\\\"") + "\"}";
+        }
+    }
+
+    private String getTradeStatistics() {
+        if (tradingMemoryPath == null) {
+            return "{\"error\": \"Trade history path not configured\"}";
+        }
+
+        java.nio.file.Path csvPath = tradingMemoryPath.resolve("trade-history.csv");
+        java.nio.file.Path statePath = tradingMemoryPath.resolve("session-state.json");
+
+        if (!java.nio.file.Files.exists(csvPath)) {
+            return "{\"message\": \"No trade history yet\"}";
+        }
+
+        try {
+            java.util.List<String> lines = java.nio.file.Files.readAllLines(csvPath);
+            if (lines.size() <= 1) {
+                return "{\"message\": \"No trades recorded yet\"}";
+            }
+
+            int totalTrades = 0;
+            int wins = 0;
+            int losses = 0;
+            double totalPnl = 0;
+            double totalWins = 0;
+            double totalLosses = 0;
+            double maxWin = 0;
+            double maxLoss = 0;
+            double peakPnl = 0;
+            double maxDrawdown = 0;
+            double runningPnl = 0;
+
+            for (int i = 1; i < lines.size(); i++) {
+                String line = lines.get(i);
+                if (line.trim().isEmpty()) continue;
+
+                String[] parts = line.split(",", -1);
+                if (parts.length < 12) continue;
+
+                totalTrades++;
+                double pnl = Double.parseDouble(parts[10]);
+                String outcome = parts[11];
+
+                totalPnl += pnl;
+                runningPnl += pnl;
+
+                if (runningPnl > peakPnl) {
+                    peakPnl = runningPnl;
+                }
+                double drawdown = peakPnl - runningPnl;
+                if (drawdown > maxDrawdown) {
+                    maxDrawdown = drawdown;
+                }
+
+                if ("WIN".equals(outcome)) {
+                    wins++;
+                    totalWins += pnl;
+                    if (pnl > maxWin) maxWin = pnl;
+                } else {
+                    losses++;
+                    totalLosses += Math.abs(pnl);
+                    if (pnl < maxLoss) maxLoss = pnl;
+                }
+            }
+
+            double winRate = totalTrades > 0 ? (wins * 100.0 / totalTrades) : 0;
+            double avgWin = wins > 0 ? totalWins / wins : 0;
+            double avgLoss = losses > 0 ? totalLosses / losses : 0;
+            double profitFactor = totalLosses > 0 ? totalWins / totalLosses : totalWins > 0 ? Double.MAX_VALUE : 0;
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("{");
+            sb.append("\"total_trades\":").append(totalTrades);
+            sb.append(",\"wins\":").append(wins);
+            sb.append(",\"losses\":").append(losses);
+            sb.append(",\"win_rate\":").append(String.format("%.1f", winRate));
+            sb.append(",\"total_pnl\":").append(String.format("%.2f", totalPnl));
+            sb.append(",\"avg_win\":").append(String.format("%.2f", avgWin));
+            sb.append(",\"avg_loss\":").append(String.format("%.2f", avgLoss));
+            sb.append(",\"max_win\":").append(String.format("%.2f", maxWin));
+            sb.append(",\"max_loss\":").append(String.format("%.2f", maxLoss));
+            sb.append(",\"profit_factor\":").append(String.format("%.2f", profitFactor));
+            sb.append(",\"peak_pnl\":").append(String.format("%.2f", peakPnl));
+            sb.append(",\"max_drawdown\":").append(String.format("%.2f", maxDrawdown));
+            sb.append("}");
+
+            return sb.toString();
+
+        } catch (Exception e) {
+            return "{\"error\": \"Failed to calculate statistics: " + e.getMessage().replace("\"", "\\\"") + "\"}";
+        }
+    }
+
+    private String escape(String s) {
+        if (s == null) return "";
+        return s.replace("\"", "\\\"").replace("\n", "\\n");
     }
 
     /**

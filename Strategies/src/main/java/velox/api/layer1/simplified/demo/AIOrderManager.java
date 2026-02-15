@@ -27,6 +27,7 @@ public class AIOrderManager {
     public int breakEvenTicks = 3;
     public int trailAmountTicks = 2;
     private double pips = 1.0;  // Tick size - set from signal during executeEntry
+    private double tickValue = 12.50;  // Dollar value per tick (ES futures default)
 
     // Risk limits
     public int maxPositions = 1;
@@ -132,6 +133,13 @@ public class AIOrderManager {
             this.winningTrades.set(state.winningTrades);
             fileLog("📊 SessionState loaded: " + state);
         }
+    }
+
+    /**
+     * Set tick value (dollar value per tick)
+     */
+    public void setTickValue(double tickValue) {
+        this.tickValue = tickValue;
     }
 
     /**
@@ -523,8 +531,8 @@ public class AIOrderManager {
                 position.stopLossPrice.set(newStopPriceTicks);
 
                 double lockedProfit = position.isLong ?
-                    (currentPrice - newStopPriceTicks) * 12.5 :
-                    (newStopPriceTicks - currentPrice) * 12.5;
+                    (currentPrice - newStopPriceTicks) * tickValue :
+                    (newStopPriceTicks - currentPrice) * tickValue;
 
                 log("📍 TRAILING STOP (visual only for bracket order):");
                 log("   Position: %s", position.id.substring(0, 8));
@@ -549,8 +557,8 @@ public class AIOrderManager {
                 position.stopLossPrice.set(newStopPriceTicks);  // Keep tick value for internal tracking
 
                 double lockedProfit = position.isLong ?
-                    (currentPrice - newStopPriceTicks) * 12.5 :
-                    (newStopPriceTicks - currentPrice) * 12.5;
+                    (currentPrice - newStopPriceTicks) * tickValue :
+                    (newStopPriceTicks - currentPrice) * tickValue;
 
                 log("📍 TRAILING STOP:");
                 log("   Position: %s", position.id.substring(0, 8));
@@ -602,8 +610,8 @@ public class AIOrderManager {
             // Log trade to CSV and update session state
             if (tradeLogger != null) {
                 try {
-                    int mfeTicks = (int) (position.maxUnrealizedPnl.get() / 12.5);  // Simplified tick calculation
-                    int maeTicks = (int) (position.maxAdverseExcursion.get() / 12.5);
+                    int mfeTicks = (int) (position.maxUnrealizedPnl.get() / tickValue);
+                    int maeTicks = (int) (position.maxAdverseExcursion.get() / tickValue);
                     double aiConfidence = position.aiDecision != null ? position.aiDecision.confidence : 0.0;
                     int signalScore = position.originalSignal != null ? position.originalSignal.score : 0;
 
@@ -645,7 +653,6 @@ public class AIOrderManager {
             int slTicks = Math.abs(position.stopLossPrice.get() - position.entryPrice);
             int tpTicks = Math.abs(position.takeProfitPrice.get() - position.entryPrice);
             double rrRatio = slTicks > 0 ? (double) tpTicks / slTicks : 0;
-            double tickValue = 12.5; // ES futures: $12.50 per tick
             double slDollars = slTicks * tickValue * position.quantity;
             double tpDollars = tpTicks * tickValue * position.quantity;
 
