@@ -127,10 +127,12 @@ public class BookmapOrderExecutor implements OrderExecutor {
             log("📝 PLACING BRACKET ORDER (Native SL/TP):");
             log("   Order ID: %s", orderId);
             log("   Type: %s, Side: %s, Qty: %d, Price: %.2f", type, side, quantity, price);
-            log("   SL Offset: %.2f, TP Offset: %.2f", stopLossOffset, takeProfitOffset);
+            log("   SL Offset: %.2f ticks, TP Offset: %.2f ticks", stopLossOffset, takeProfitOffset);
+            log("   NOTE: Offsets are applied from ACTUAL FILL PRICE, not signal price");
 
             fileLog("📝 placeBracketOrder: " + orderId + " " + type + " " + side + " " + quantity + " @ " + price +
-                    " SL=" + stopLossOffset + " TP=" + takeProfitOffset);
+                    " SL_offset=" + stopLossOffset + "ticks TP_offset=" + takeProfitOffset + "ticks");
+            fileLog("📝 IMPORTANT: Bookmap will apply offsets from fill price, not signal price!");
 
             boolean isBuy = side == OrderSide.BUY;
             double limitPrice;
@@ -152,7 +154,13 @@ public class BookmapOrderExecutor implements OrderExecutor {
             }
 
             // Create bracket order with native SL/TP offsets
-            // Note: SL/TP offsets are in TICKS (int), not price units
+            // Note: SL/TP offsets are in TICKS (price levels), not actual price units
+            // Bookmap will apply these offsets from the actual fill price
+            int slOffsetInt = (int) Math.round(stopLossOffset);
+            int tpOffsetInt = (int) Math.round(takeProfitOffset);
+
+            fileLog("📝 Sending to Bookmap: SL_offset=" + slOffsetInt + " TP_offset=" + tpOffsetInt + " (as integers)");
+
             SimpleOrderSendParameters orderParams = new SimpleOrderSendParameters(
                 alias,                    // alias (instrument)
                 isBuy,                    // isBuy
@@ -161,8 +169,8 @@ public class BookmapOrderExecutor implements OrderExecutor {
                 orderId,                   // user-defined order ID
                 limitPrice,                // limit price
                 stopPrice,                 // stop price
-                (int) takeProfitOffset,    // take profit offset (in ticks!)
-                (int) stopLossOffset,      // stop loss offset (in ticks!)
+                tpOffsetInt,               // take profit offset (in price levels/ticks)
+                slOffsetInt,               // stop loss offset (in price levels/ticks)
                 0,                         // trailing stop offset
                 0,                         // trailing step
                 false                      // reduce only flag
@@ -174,8 +182,9 @@ public class BookmapOrderExecutor implements OrderExecutor {
             OrderCallback callback = new OrderCallback(orderId, type, side, quantity, price);
             orderCallbacks.put(orderId, callback);
 
-            log("   ✅ Bracket order sent to Bookmap API (native SL/TP)");
-            fileLog("✅ BRACKET ORDER SENT: " + orderId + " with native SL=" + stopLossOffset + " TP=" + takeProfitOffset);
+            log("   ✅ Bracket order sent to Bookmap API");
+            log("   📊 Expected TP/SL will be calculated from FILL PRICE when order executes");
+            fileLog("✅ BRACKET ORDER SENT: " + orderId + " SL=" + slOffsetInt + "ticks TP=" + tpOffsetInt + "ticks");
             return orderId;
 
         } catch (Exception e) {
