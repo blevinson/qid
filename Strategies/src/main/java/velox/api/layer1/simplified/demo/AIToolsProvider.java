@@ -41,6 +41,10 @@ public class AIToolsProvider {
     // Performance analytics supplier
     private Supplier<Map<String, Object>> performanceSupplier;
 
+    // Session context supplier (today's trading plan and phase info)
+    private Supplier<String> sessionContextSupplier;
+    private Supplier<String> currentPhaseSupplier;
+
     // Trading memory path for trade history access
     private java.nio.file.Path tradingMemoryPath;
 
@@ -349,6 +353,28 @@ public class AIToolsProvider {
                 "required": []
             }
         }
+        """,
+        """
+        {
+            "name": "get_todays_plan",
+            "description": "Get today's trading session plan including pre-market analysis, key levels, trade bias, and phase updates. This is the AI-generated context that was created at market open and updated throughout the session. Use this to understand the strategic context for today.",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+        """,
+        """
+        {
+            "name": "get_current_phase",
+            "description": "Get the current trading session phase (Pre-Market, Opening Range, Morning, Lunch, Afternoon, Close). Includes recommended behavior for the current phase and any phase-specific notes. Use this to adapt trading behavior to market conditions.",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
         """
     };
 
@@ -365,6 +391,8 @@ public class AIToolsProvider {
     public void setWeightsSupplier(Supplier<Map<String, Integer>> supplier) { this.weightsSupplier = supplier; }
     public void setWeightAdjuster(BiFunction<String, Integer, Boolean> adjuster) { this.weightAdjuster = adjuster; }
     public void setPerformanceSupplier(Supplier<Map<String, Object>> supplier) { this.performanceSupplier = supplier; }
+    public void setSessionContextSupplier(Supplier<String> supplier) { this.sessionContextSupplier = supplier; }
+    public void setCurrentPhaseSupplier(Supplier<String> supplier) { this.currentPhaseSupplier = supplier; }
     public void setThresholdAdjuster(BiFunction<String, Integer, Boolean> adjuster) { this.thresholdAdjuster = adjuster; }
     public void setNotificationCallback(TriConsumer<String, String, String> callback) { this.notificationCallback = callback; }
     public void setSnapshotSupplier(Supplier<String> supplier) { this.snapshotSupplier = supplier; }
@@ -400,6 +428,8 @@ public class AIToolsProvider {
                 case "get_snapshot_history" -> getSnapshotHistory(arguments);
                 case "get_trade_history" -> getTradeHistory(arguments);
                 case "get_trade_statistics" -> getTradeStatistics();
+                case "get_todays_plan" -> getTodaysPlan();
+                case "get_current_phase" -> getCurrentPhase();
                 default -> "{\"error\": \"Unknown tool: " + toolName + "\"}";
             };
         } catch (Exception e) {
@@ -1112,6 +1142,44 @@ public class AIToolsProvider {
 
         } catch (Exception e) {
             return "{\"error\": \"Failed to calculate statistics: " + e.getMessage().replace("\"", "\\\"") + "\"}";
+        }
+    }
+
+    /**
+     * Get today's session plan (pre-market analysis and phase updates)
+     */
+    private String getTodaysPlan() {
+        if (sessionContextSupplier == null) {
+            return "{\"error\": \"Session context not available\"}";
+        }
+
+        try {
+            String context = sessionContextSupplier.get();
+            if (context == null || context.isEmpty()) {
+                return "{\"message\": \"No session plan available for today. Run pre-market analysis first.\"}";
+            }
+            return "{\"plan\": \"" + escape(context) + "\"}";
+        } catch (Exception e) {
+            return "{\"error\": \"Failed to get session context: " + e.getMessage().replace("\"", "\\\"") + "\"}";
+        }
+    }
+
+    /**
+     * Get current trading phase
+     */
+    private String getCurrentPhase() {
+        if (currentPhaseSupplier == null) {
+            return "{\"error\": \"Phase tracking not available\"}";
+        }
+
+        try {
+            String phase = currentPhaseSupplier.get();
+            if (phase == null || phase.isEmpty()) {
+                return "{\"phase\": \"UNKNOWN\", \"message\": \"Phase tracking not initialized\"}";
+            }
+            return "{\"phase\": \"" + phase + "\"}";
+        } catch (Exception e) {
+            return "{\"error\": \"Failed to get current phase: " + e.getMessage().replace("\"", "\\\"") + "\"}";
         }
     }
 

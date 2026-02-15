@@ -228,6 +228,9 @@ public class OrderFlowStrategyEnhanced implements
     @Parameter(name = "AI Managed Weights")
     private Boolean aiManagedWeights = true;  // When true, AI can adjust confluence weights
 
+    @Parameter(name = "Auto Phase Analysis")
+    private Boolean autoPhaseAnalysis = true;  // When true, automatically run phase analysis at transitions
+
     // Adjustable confluence weights (AI can modify within safety bounds when enabled)
     private ConfluenceWeights confluenceWeights = new ConfluenceWeights();
 
@@ -355,7 +358,9 @@ public class OrderFlowStrategyEnhanced implements
     private AIToolsProvider aiToolsProvider;  // Tool functions for AI chat
     private Object memoryService;  // TradingMemoryService - initialized as Object to avoid loading issues
     private AIInvestmentStrategist aiStrategist;
-    private PreMarketAnalyzer preMarketAnalyzer;  // Pre-market analysis and planning
+    private PreMarketAnalyzer preMarketAnalyzer;  // Pre-market analysis and planning (legacy)
+    private SessionPhaseTracker sessionPhaseTracker;  // Automatic phase tracking
+    private SessionPhaseAnalyzer sessionPhaseAnalyzer;  // Phase-aware analysis
     private final Map<String, SignalData> pendingSignals = new ConcurrentHashMap<>();
 
     // Unified Session Transcript - shared by AI chat and AI Investment Strategist
@@ -1313,19 +1318,34 @@ public class OrderFlowStrategyEnhanced implements
         });
         settingsPanel.add(aiManagedWeightsCheckBox, gbc);
 
+        // Auto Phase Analysis toggle
+        gbc.gridx = 0; gbc.gridy = 24;
+        JLabel autoPhaseLabel = new JLabel("Auto Phase Analysis:");
+        autoPhaseLabel.setToolTipText("Automatically run session analysis at phase transitions (pre-market, morning, lunch, etc.)");
+        settingsPanel.add(autoPhaseLabel, gbc);
+        gbc.gridx = 1;
+        JCheckBox autoPhaseCheckBox = new JCheckBox();
+        autoPhaseCheckBox.setSelected(autoPhaseAnalysis);
+        autoPhaseCheckBox.setToolTipText("When enabled, AI analyzes market at each phase transition and maintains session context");
+        autoPhaseCheckBox.addActionListener(e -> {
+            autoPhaseAnalysis = autoPhaseCheckBox.isSelected();
+            log("📊 Auto Phase Analysis: " + (autoPhaseAnalysis ? "ENABLED" : "DISABLED"));
+        });
+        settingsPanel.add(autoPhaseCheckBox, gbc);
+
         // Confluence Weights section (collapsible-style)
-        gbc.gridx = 0; gbc.gridy = 24; gbc.gridwidth = 3;
+        gbc.gridx = 0; gbc.gridy = 25; gbc.gridwidth = 3;
         addSeparator(settingsPanel, "Confluence Weights (Advanced)", gbc);
 
         // Column headers for weights
-        gbc.gridy = 25; gbc.gridwidth = 1;
+        gbc.gridy = 26; gbc.gridwidth = 1;
         gbc.gridx = 1;
         settingsPanel.add(new JLabel("Base"), gbc);
         gbc.gridx = 2;
         settingsPanel.add(new JLabel("AI Current"), gbc);
 
         // Weight controls - key weights with AI Current column
-        gbc.gridx = 0; gbc.gridy = 26; gbc.gridwidth = 1;
+        gbc.gridx = 0; gbc.gridy = 27; gbc.gridwidth = 1;
         JLabel icebergMaxLabel = new JLabel("Iceberg Max (20-60):");
         icebergMaxLabel.setToolTipText("<html>Maximum points from iceberg detection.<br>Higher = more weight on iceberg signals<br>Lower = icebergs contribute less to score</html>");
         settingsPanel.add(icebergMaxLabel, gbc);
@@ -3169,6 +3189,64 @@ public class OrderFlowStrategyEnhanced implements
                 log("✅ Pre-Market Analyzer initialized");
             }
 
+            // Initialize Session Phase Analyzer (new phase-aware system)
+            if (sessionPhaseAnalyzer == null && tradingMemoryDir != null) {
+                String phaseApiToken = getEffectiveApiToken();
+                sessionPhaseAnalyzer = new SessionPhaseAnalyzer(
+                    phaseApiToken,
+                    tradingMemoryDir.toFile(),
+                    (velox.api.layer1.simplified.demo.storage.TradingMemoryService) memoryService
+                );
+                sessionPhaseAnalyzer.setLogger(this::log);
+                sessionPhaseAnalyzer.setPriceSupplier(() -> getCurrentPrice() * pips);
+                sessionPhaseAnalyzer.setCvdSupplier(() -> cvdCalculator.getCVD());
+                sessionPhaseAnalyzer.setVwapSupplier(() -> vwapCalculator.isInitialized() ? vwapCalculator.getVWAP() * pips : 0.0);
+                sessionPhaseAnalyzer.setEmaSupplier(() -> new double[] {
+                    ema9.isInitialized() ? ema9.getEMA() * pips : 0.0,
+                    ema21.isInitialized() ? ema21.getEMA() * pips : 0.0,
+                    ema50.isInitialized() ? ema50.getEMA() * pips : 0.0
+                });
+                sessionPhaseAnalyzer.setPocSupplier(() -> (double) volumeProfile.getPOC() * pips);
+                sessionPhaseAnalyzer.setValueAreaSupplier(() -> {
+                    VolumeProfileCalculator.ValueArea va = volumeProfile.getValueArea();
+                    return new double[] { va.vaLow * pips, va.vaHigh * pips };
+                });
+                sessionPhaseAnalyzer.setDomSupplier(() -> {
+                    DOMAnalyzer.DOMLevel support = domAnalyzer.getNearestSupport();
+                    DOMAnalyzer.DOMLevel resistance = domAnalyzer.getNearestResistance();
+                    return new double[] {
+                        support != null ? support.price * pips : 0.0,
+                        support != null ? support.volume : 0,
+                        resistance != null ? resistance.price * pips : 0.0,
+                        resistance != null ? resistance.volume : 0
+                    };
+                });
+                sessionPhaseAnalyzer.setInstrumentSupplier(() -> alias);
+                sessionPhaseAnalyzer.setPipsSupplier(() -> pips);
+                log("✅ Session Phase Analyzer initialized");
+            }
+
+            // Initialize Session Phase Tracker (automatic phase detection)
+            if (sessionPhaseTracker == null) {
+                sessionPhaseTracker = new SessionPhaseTracker(60);  // Check every 60 seconds
+                sessionPhaseTracker.setLogger(this::log);
+
+                // Set up phase transition callback
+                sessionPhaseTracker.setOnPhaseTransition(this::onPhaseTransition);
+
+                // Start tracking
+                sessionPhaseTracker.start();
+                log("✅ Session Phase Tracker started - current phase: " + sessionPhaseTracker.getCurrentPhase().getDisplayName());
+
+                // If we're in PRE_MARKET and auto analysis is enabled, run initial analysis
+                if (autoPhaseAnalysis && sessionPhaseTracker.getCurrentPhase() == SessionPhaseTracker.SessionPhase.PRE_MARKET) {
+                    if (sessionPhaseAnalyzer != null && !sessionPhaseAnalyzer.getContextManager().hasTodaysContext()) {
+                        log("📊 Auto-running pre-market analysis (no context for today)");
+                        runAutoPreMarketAnalysis();
+                    }
+                }
+            }
+
         } catch (Exception e) {
             log("❌ Failed to initialize AI Trading: " + e.getMessage());
             e.printStackTrace();
@@ -3450,6 +3528,109 @@ public class OrderFlowStrategyEnhanced implements
                 }
             });
         });
+    }
+
+    /**
+     * Handle phase transition events from SessionPhaseTracker
+     * Automatically runs analysis on phase changes if auto-phase-analysis is enabled
+     */
+    private void onPhaseTransition(SessionPhaseTracker.PhaseTransition transition) {
+        log("📊 PHASE TRANSITION: " +
+            (transition.fromPhase != null ? transition.fromPhase.getDisplayName() : "START") +
+            " → " + transition.toPhase.getDisplayName());
+
+        if (!autoPhaseAnalysis) {
+            log("   Auto phase analysis disabled, skipping");
+            return;
+        }
+
+        if (sessionPhaseAnalyzer == null) {
+            log("   SessionPhaseAnalyzer not initialized, skipping");
+            return;
+        }
+
+        // Handle different phase transitions
+        switch (transition.toPhase) {
+            case PRE_MARKET:
+                // Run full pre-market analysis if no context for today
+                if (!sessionPhaseAnalyzer.getContextManager().hasTodaysContext()) {
+                    log("📊 Running auto pre-market analysis...");
+                    runAutoPreMarketAnalysis();
+                }
+                break;
+
+            case OPENING_RANGE:
+            case MORNING_SESSION:
+            case LUNCH:
+            case AFTERNOON:
+            case CLOSE:
+                // Run quick phase update
+                log("📊 Running phase update for: " + transition.toPhase.getDisplayName());
+                runAutoPhaseUpdate(transition.toPhase);
+                break;
+
+            case AFTER_HOURS:
+                // Market closed - could clean up old contexts
+                log("📊 Market closed - session ended");
+                sessionPhaseAnalyzer.getContextManager().cleanupOldContexts(7);  // Keep last 7 days
+                break;
+        }
+    }
+
+    /**
+     * Auto-run pre-market analysis (no dialog, just log and store)
+     */
+    private void runAutoPreMarketAnalysis() {
+        if (sessionPhaseAnalyzer == null) {
+            log("⚠️ Cannot run auto pre-market: SessionPhaseAnalyzer not initialized");
+            return;
+        }
+
+        sessionPhaseAnalyzer.runPreMarketAnalysis((analysis, success) -> {
+            if (success) {
+                log("✅ Auto pre-market analysis complete - session context saved");
+            } else {
+                log("⚠️ Auto pre-market analysis failed: " + analysis);
+            }
+        });
+    }
+
+    /**
+     * Auto-run phase update (quick check)
+     */
+    private void runAutoPhaseUpdate(SessionPhaseTracker.SessionPhase phase) {
+        if (sessionPhaseAnalyzer == null) {
+            log("⚠️ Cannot run phase update: SessionPhaseAnalyzer not initialized");
+            return;
+        }
+
+        sessionPhaseAnalyzer.runPhaseUpdate(phase, (analysis, success) -> {
+            if (success) {
+                log("✅ Phase update complete: " + phase.getDisplayName());
+            } else {
+                log("⚠️ Phase update failed: " + analysis);
+            }
+        });
+    }
+
+    /**
+     * Get today's session context (for AI tools and strategist)
+     */
+    public String getTodaysSessionContext() {
+        if (sessionPhaseAnalyzer != null) {
+            return sessionPhaseAnalyzer.getContextManager().getTodaysContextSummary();
+        }
+        return null;
+    }
+
+    /**
+     * Get current trading phase
+     */
+    public SessionPhaseTracker.SessionPhase getCurrentTradingPhase() {
+        if (sessionPhaseTracker != null) {
+            return sessionPhaseTracker.getCurrentPhase();
+        }
+        return SessionPhaseTracker.SessionPhase.PRE_MARKET;
     }
 
     /**
@@ -3794,6 +3975,13 @@ public class OrderFlowStrategyEnhanced implements
 
         // Trading memory path - allows AI tools to access trade history
         aiToolsProvider.setTradingMemoryPath(tradingMemoryDir);
+
+        // Session context suppliers - allows AI to access today's trading plan
+        aiToolsProvider.setSessionContextSupplier(() -> getTodaysSessionContext());
+        aiToolsProvider.setCurrentPhaseSupplier(() -> {
+            SessionPhaseTracker.SessionPhase phase = getCurrentTradingPhase();
+            return phase.getDisplayName() + ": " + phase.getDescription();
+        });
     }
 
     /**
