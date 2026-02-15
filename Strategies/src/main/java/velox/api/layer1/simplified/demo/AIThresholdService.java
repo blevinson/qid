@@ -403,6 +403,13 @@ public class AIThresholdService {
      * 4. Repeat until AI gives text response
      */
     public CompletableFuture<String> chatWithTools(String userPrompt) {
+        System.out.println("[AI Chat] chatWithTools called, prompt length: " +
+            (userPrompt != null ? userPrompt.length() : "null"));
+
+        if (apiKey == null || apiKey.isEmpty()) {
+            return CompletableFuture.completedFuture("Error: API key is not configured. Please set AI Auth Token in Settings.");
+        }
+
         return CompletableFuture.supplyAsync(() -> {
             try {
                 System.out.println("[AI Chat] Starting chatWithTools...");
@@ -466,7 +473,20 @@ public class AIThresholdService {
         }).orTimeout(90, java.util.concurrent.TimeUnit.SECONDS)
           .exceptionally(e -> {
               System.err.println("[AI Chat] Overall timeout or error: " + e.getMessage());
-              return "The request took too long. Please try a simpler question or try again later.";
+              e.printStackTrace();
+
+              // Provide more specific error message
+              if (e instanceof java.util.concurrent.TimeoutException) {
+                  return "The request timed out (90s limit). The AI service may be slow. Please try again.";
+              } else if (e.getCause() != null) {
+                  String causeMsg = e.getCause().getMessage();
+                  if (causeMsg != null && causeMsg.contains("API call failed")) {
+                      return "API Error: " + causeMsg;
+                  }
+                  return "Error: " + e.getCause().getMessage();
+              } else {
+                  return "Error: " + e.getMessage();
+              }
           });
     }
 
@@ -503,20 +523,24 @@ public class AIThresholdService {
         // Add conversation
         requestBody.add("messages", gson.toJsonTree(conversation.toArray()));
 
+        String requestBodyStr = requestBody.toString();
+        System.out.println("[AI Chat] Request body length: " + requestBodyStr.length() + " chars");
+
         HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create(apiUrl))
             .header("x-api-key", apiKey)
             .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(requestBody.toString()))
+            .POST(HttpRequest.BodyPublishers.ofString(requestBodyStr))
             .timeout(Duration.ofSeconds(120))  // 2 minutes for tool calls
             .build();
 
-        System.out.println("[AI Chat] Sending API request...");
+        System.out.println("[AI Chat] Sending API request to: " + apiUrl);
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
         System.out.println("[AI Chat] API response status: " + response.statusCode());
 
         if (response.statusCode() != 200) {
+            System.err.println("[AI Chat] API error response: " + response.body());
             throw new Exception("API call failed: " + response.statusCode() + " " + response.body());
         }
 

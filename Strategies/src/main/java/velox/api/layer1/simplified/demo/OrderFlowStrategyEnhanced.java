@@ -138,7 +138,29 @@ public class OrderFlowStrategyEnhanced implements
     private Double dailyLossLimit = 500.0;
 
     @Parameter(name = "Max Slippage (ticks)")
-    private Integer maxSlippageTicks = 20;  // Skip if price moved > 20 ticks
+    private Integer maxSlippageTicks = 50;  // Skip if price moved > 50 ticks
+
+    // ========== POSITION SIZING PARAMETERS ==========
+    @Parameter(name = "Account Size ($)")
+    private Double accountSize = 10000.0;
+
+    @Parameter(name = "Risk Per Trade (%)")
+    private Double riskPerTradePercent = 1.0;  // 1% of account per trade
+
+    @Parameter(name = "Tick Value ($)")
+    private Double tickValue = 12.50;  // ES futures: $12.50 per tick
+
+    @Parameter(name = "Auto-Calculate Position Size")
+    private Boolean autoCalculatePositionSize = false;  // If true, calculate from risk %
+
+    @Parameter(name = "Fixed Position Size")
+    private Integer fixedPositionSize = 1;  // Contracts per trade (used if auto-calc is off)
+
+    @Parameter(name = "Stop Loss Ticks")
+    private Integer stopLossTicks = 20;  // Distance from entry to SL in ticks
+
+    @Parameter(name = "Take Profit Ticks")
+    private Integer takeProfitTicks = 40;  // Distance from entry to TP in ticks
 
     // ========== SAFETY PARAMETERS ==========
     @Parameter(name = "Simulation Mode Only")
@@ -215,6 +237,14 @@ public class OrderFlowStrategyEnhanced implements
         public Integer replayStartHour = 9;   // Hour (24h) when replay data starts (9 = 9:00 AM)
         public Integer replayStartMinute = 30; // Minute when replay data starts (30 = :30)
         public Boolean devMode = false;  // Dev mode for permissive AI testing
+        // Position sizing settings
+        public Double accountSize = 10000.0;
+        public Double riskPerTradePercent = 1.0;
+        public Double tickValue = 12.50;
+        public Boolean autoCalculatePositionSize = false;
+        public Integer fixedPositionSize = 1;
+        public Integer stopLossTicks = 20;
+        public Integer takeProfitTicks = 40;
     }
 
     private Settings settings;
@@ -262,6 +292,11 @@ public class OrderFlowStrategyEnhanced implements
 
     // Unified Session Transcript - shared by AI chat and AI Investment Strategist
     private velox.api.layer1.simplified.demo.storage.TranscriptWriter transcriptWriter;
+
+    // Trade logging and session state persistence
+    private velox.api.layer1.simplified.demo.storage.TradeLogger tradeLogger;
+    private velox.api.layer1.simplified.demo.storage.SessionStateManager sessionStateManager;
+    private java.nio.file.Path tradingMemoryDir;  // Path to trading-memory directory
 
     // Session Context - tracks trading session state for AI
     private SessionContext sessionContext;
@@ -484,6 +519,14 @@ public class OrderFlowStrategyEnhanced implements
         aiMode = settings.aiMode;
         confluenceThreshold = settings.confluenceThreshold;
         aiAuthToken = settings.aiAuthToken;
+        // Position sizing settings
+        accountSize = settings.accountSize;
+        riskPerTradePercent = settings.riskPerTradePercent;
+        tickValue = settings.tickValue;
+        autoCalculatePositionSize = settings.autoCalculatePositionSize;
+        fixedPositionSize = settings.fixedPositionSize;
+        stopLossTicks = settings.stopLossTicks;
+        takeProfitTicks = settings.takeProfitTicks;
 
         // Create detection MARKER indicators (Layer 1)
         // These will use custom icons instead of continuous lines
@@ -578,6 +621,9 @@ public class OrderFlowStrategyEnhanced implements
                     log("📁 Using Bookmap memory directory: " + memoryDir);
                 }
 
+                // Store for AI tools access
+                tradingMemoryDir = memoryDir;
+
                 // Import TradingMemoryService
                 velox.api.layer1.simplified.demo.storage.TradingMemoryService service =
                     new velox.api.layer1.simplified.demo.storage.TradingMemoryService(
@@ -592,6 +638,14 @@ public class OrderFlowStrategyEnhanced implements
                 memoryService = service;
                 log("✅ Memory Service initialized: " + service.getIndexedFileCount() + " files, " +
                     service.getIndexedChunkCount() + " chunks");
+
+                // Initialize Trade Logger for persistent trade history
+                tradeLogger = new velox.api.layer1.simplified.demo.storage.TradeLogger(memoryDir);
+                log("✅ Trade Logger initialized: " + memoryDir.resolve("trade-history.csv"));
+
+                // Initialize Session State Manager for daily stat persistence
+                sessionStateManager = new velox.api.layer1.simplified.demo.storage.SessionStateManager(memoryDir);
+                log("✅ Session State Manager initialized: " + sessionStateManager.getCurrentState());
 
                 // Initialize Session Context
                 sessionContext = new SessionContext();
@@ -1200,7 +1254,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(slippageLabel, gbc);
         gbc.gridx = 1;
         JSpinner slippageSpinner = new JSpinner(new SpinnerNumberModel(maxSlippageTicks.intValue(), 5, 100, 5));
-        slippageSpinner.setToolTipText("Higher = allow more price movement (default: 20)");
+        slippageSpinner.setToolTipText("Higher = allow more price movement (default: 50)");
         slippageSpinner.addChangeListener(e -> {
             maxSlippageTicks = (Integer) slippageSpinner.getValue();
             if (aiOrderManager != null) {
@@ -1248,11 +1302,97 @@ public class OrderFlowStrategyEnhanced implements
         lossLimitSpinner.addChangeListener(e -> dailyLossLimit = (Double) lossLimitSpinner.getValue());
         settingsPanel.add(lossLimitSpinner, gbc);
 
+        // Position Sizing (within Risk Management)
+        gbc.gridx = 0; gbc.gridy = 40;
+        settingsPanel.add(new JLabel("Account Size ($):"), gbc);
+        gbc.gridx = 1;
+        JSpinner accountSizeSpinner = new JSpinner(new SpinnerNumberModel(accountSize.doubleValue(), 1000.0, 1000000.0, 1000.0));
+        accountSizeSpinner.addChangeListener(e -> accountSize = (Double) accountSizeSpinner.getValue());
+        settingsPanel.add(accountSizeSpinner, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 41;
+        settingsPanel.add(new JLabel("Risk Per Trade (%):"), gbc);
+        gbc.gridx = 1;
+        JSpinner riskPerTradeSpinner = new JSpinner(new SpinnerNumberModel(riskPerTradePercent.doubleValue(), 0.25, 5.0, 0.25));
+        riskPerTradeSpinner.addChangeListener(e -> riskPerTradePercent = (Double) riskPerTradeSpinner.getValue());
+        settingsPanel.add(riskPerTradeSpinner, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 42;
+        settingsPanel.add(new JLabel("Tick Value ($):"), gbc);
+        gbc.gridx = 1;
+        JSpinner tickValueSpinner = new JSpinner(new SpinnerNumberModel(tickValue.doubleValue(), 0.01, 100.0, 0.01));
+        tickValueSpinner.addChangeListener(e -> tickValue = (Double) tickValueSpinner.getValue());
+        settingsPanel.add(tickValueSpinner, gbc);
+
+        // Fixed position size (declared first so checkbox can reference it)
+        gbc.gridx = 0; gbc.gridy = 43;
+        settingsPanel.add(new JLabel("Fixed Position Size:"), gbc);
+        gbc.gridx = 1;
+        JSpinner fixedPosSizeSpinner = new JSpinner(new SpinnerNumberModel(fixedPositionSize.intValue(), 1, 50, 1));
+        fixedPosSizeSpinner.setToolTipText("Contracts per trade (used when Auto-Calculate is off)");
+        fixedPosSizeSpinner.addChangeListener(e -> fixedPositionSize = (Integer) fixedPosSizeSpinner.getValue());
+        settingsPanel.add(fixedPosSizeSpinner, gbc);
+
+        // Auto-calculate checkbox (after spinner so it can enable/disable it)
+        gbc.gridx = 0; gbc.gridy = 44;
+        settingsPanel.add(new JLabel("Auto-Calculate Size:"), gbc);
+        gbc.gridx = 1;
+        JCheckBox autoCalcCheckBox = new JCheckBox();
+        autoCalcCheckBox.setSelected(autoCalculatePositionSize);
+        autoCalcCheckBox.setToolTipText("Calculate position size from Account Size and Risk %");
+        autoCalcCheckBox.addActionListener(e -> {
+            autoCalculatePositionSize = autoCalcCheckBox.isSelected();
+            fixedPosSizeSpinner.setEnabled(!autoCalculatePositionSize);
+        });
+        settingsPanel.add(autoCalcCheckBox, gbc);
+
+        // Set initial state of spinner based on auto-calc setting
+        fixedPosSizeSpinner.setEnabled(!autoCalculatePositionSize);
+
+        // Stop Loss Ticks
+        gbc.gridx = 0; gbc.gridy = 45;
+        settingsPanel.add(new JLabel("Stop Loss (ticks):"), gbc);
+        gbc.gridx = 1;
+        JSpinner slTicksSpinner = new JSpinner(new SpinnerNumberModel(stopLossTicks.intValue(), 1, 200, 1));
+        slTicksSpinner.setToolTipText("Distance from entry to stop loss in ticks");
+        slTicksSpinner.addChangeListener(e -> stopLossTicks = (Integer) slTicksSpinner.getValue());
+        settingsPanel.add(slTicksSpinner, gbc);
+
+        // Take Profit Ticks
+        gbc.gridx = 0; gbc.gridy = 46;
+        settingsPanel.add(new JLabel("Take Profit (ticks):"), gbc);
+        gbc.gridx = 1;
+        JSpinner tpTicksSpinner = new JSpinner(new SpinnerNumberModel(takeProfitTicks.intValue(), 1, 500, 1));
+        tpTicksSpinner.setToolTipText("Distance from entry to take profit in ticks");
+        tpTicksSpinner.addChangeListener(e -> takeProfitTicks = (Integer) tpTicksSpinner.getValue());
+        settingsPanel.add(tpTicksSpinner, gbc);
+
+        // R:R display label (calculated)
+        gbc.gridx = 0; gbc.gridy = 47;
+        JLabel rrLabel = new JLabel("R:R Ratio:");
+        settingsPanel.add(rrLabel, gbc);
+        gbc.gridx = 1;
+        JLabel rrValueLabel = new JLabel(String.format("1:%.1f", (double) takeProfitTicks / stopLossTicks));
+        rrValueLabel.setFont(new Font("SansSerif", Font.BOLD, 12));
+        settingsPanel.add(rrValueLabel, gbc);
+
+        // Update R:R label when SL/TP changes
+        slTicksSpinner.addChangeListener(e -> {
+            int sl = (Integer) slTicksSpinner.getValue();
+            int tp = (Integer) tpTicksSpinner.getValue();
+            rrValueLabel.setText(String.format("1:%.1f", (double) tp / sl));
+        });
+        tpTicksSpinner.addChangeListener(e -> {
+            int sl = (Integer) slTicksSpinner.getValue();
+            int tp = (Integer) tpTicksSpinner.getValue();
+            rrValueLabel.setText(String.format("1:%.1f", (double) tp / sl));
+        });
+
         // Notifications section
-        gbc.gridx = 0; gbc.gridy = 40; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 48; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Notifications", gbc);
 
-        gbc.gridx = 0; gbc.gridy = 41; gbc.gridwidth = 1;
+        gbc.gridx = 0; gbc.gridy = 49; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Event Notifications:"), gbc);
         gbc.gridx = 1;
         JCheckBox eventNotifCheckBox = new JCheckBox();
@@ -1261,7 +1401,7 @@ public class OrderFlowStrategyEnhanced implements
         eventNotifCheckBox.addActionListener(e -> enableEventNotifications = eventNotifCheckBox.isSelected());
         settingsPanel.add(eventNotifCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 42;
+        gbc.gridx = 0; gbc.gridy = 50;
         settingsPanel.add(new JLabel("AI Notifications:"), gbc);
         gbc.gridx = 1;
         JCheckBox aiNotifCheckBox = new JCheckBox();
@@ -1270,7 +1410,7 @@ public class OrderFlowStrategyEnhanced implements
         aiNotifCheckBox.addActionListener(e -> enableAINotifications = aiNotifCheckBox.isSelected());
         settingsPanel.add(aiNotifCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 43;
+        gbc.gridx = 0; gbc.gridy = 51;
         settingsPanel.add(new JLabel("Periodic Updates:"), gbc);
         gbc.gridx = 1;
         JCheckBox periodicNotifCheckBox = new JCheckBox();
@@ -1286,7 +1426,7 @@ public class OrderFlowStrategyEnhanced implements
         });
         settingsPanel.add(periodicNotifCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 44;
+        gbc.gridx = 0; gbc.gridy = 52;
         settingsPanel.add(new JLabel("Update Interval (min):"), gbc);
         gbc.gridx = 1;
         JSpinner periodicIntervalSpinner = new JSpinner(new SpinnerNumberModel(periodicUpdateIntervalMinutes.intValue(), 5, 60, 5));
@@ -1301,13 +1441,13 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(periodicIntervalSpinner, gbc);
 
         // Apply button
-        gbc.gridx = 0; gbc.gridy = 45; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 53; gbc.gridwidth = 2;
         JButton applyButton = new JButton("Apply Settings");
         applyButton.addActionListener(e -> applySettings());
         settingsPanel.add(applyButton, gbc);
 
         // ========== TEST SL/TP LINES BUTTON ==========
-        gbc.gridx = 0; gbc.gridy = 46; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 54; gbc.gridwidth = 2;
         gbc.anchor = GridBagConstraints.CENTER;
         JButton testLinesButton = new JButton("TEST SL/TP LINES");
         testLinesButton.setToolTipText("Click to test SL/TP line drawing independently of AI/signals");
@@ -1320,7 +1460,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(testLinesButton, gbc);
 
         // Clear lines button
-        gbc.gridy = 47;
+        gbc.gridy = 55;
         JButton clearLinesButton = new JButton("Clear Lines");
         clearLinesButton.setToolTipText("Clear the test SL/TP lines");
         clearLinesButton.setOpaque(true);
@@ -1330,7 +1470,7 @@ public class OrderFlowStrategyEnhanced implements
         gbc.anchor = GridBagConstraints.WEST;  // Reset anchor
 
         // Version label (bottom right)
-        gbc.gridx = 1; gbc.gridy = 47; gbc.gridwidth = 1;
+        gbc.gridx = 1; gbc.gridy = 56; gbc.gridwidth = 1;
         gbc.anchor = GridBagConstraints.EAST;
         gbc.weightx = 1.0;
         JLabel versionLabel = new JLabel("Qid v2.1 - AI Trading with Memory");
@@ -2568,6 +2708,15 @@ public class OrderFlowStrategyEnhanced implements
                 () -> absorptionMinSize  // absorptionMinSize
             );
 
+            // Set up trade logging and session state persistence
+            if (tradeLogger != null) {
+                aiOrderManager.setTradeLogger(tradeLogger);
+            }
+            if (sessionStateManager != null) {
+                aiOrderManager.setSessionStateManager(sessionStateManager);
+            }
+            aiOrderManager.setTickValue(tickValue);
+
             log("✅ AI Trading System initialized");
             log("   Mode: " + aiMode);
             log("   Confluence Threshold: " + confluenceThreshold);
@@ -3103,6 +3252,9 @@ public class OrderFlowStrategyEnhanced implements
                 return false;
             }
         });
+
+        // Trading memory path - allows AI tools to access trade history
+        aiToolsProvider.setTradingMemoryPath(tradingMemoryDir);
     }
 
     /**
@@ -3245,6 +3397,14 @@ public class OrderFlowStrategyEnhanced implements
         settings.aiMode = aiMode;
         settings.confluenceThreshold = confluenceThreshold;
         settings.aiAuthToken = aiAuthToken;
+        // Position sizing settings
+        settings.accountSize = accountSize;
+        settings.riskPerTradePercent = riskPerTradePercent;
+        settings.tickValue = tickValue;
+        settings.autoCalculatePositionSize = autoCalculatePositionSize;
+        settings.fixedPositionSize = fixedPositionSize;
+        settings.stopLossTicks = stopLossTicks;
+        settings.takeProfitTicks = takeProfitTicks;
 
         saveSettings();
         log("✅ Settings applied and saved");
@@ -4111,13 +4271,13 @@ public class OrderFlowStrategyEnhanced implements
 
         // ========== ACCOUNT CONTEXT ==========
         signal.account = new SignalData.AccountContext();
-        signal.account.accountSize = 10000.0;
-        signal.account.currentBalance = 10000.0 + (aiOrderManager != null ? aiOrderManager.getDailyPnl() : 0);
+        signal.account.accountSize = accountSize;
+        signal.account.currentBalance = accountSize + (aiOrderManager != null ? aiOrderManager.getDailyPnl() : 0);
         signal.account.dailyPnl = aiOrderManager != null ? aiOrderManager.getDailyPnl() : 0;
         signal.account.tradesToday = aiOrderManager != null ? aiOrderManager.getActivePositionCount() : 0;
         signal.account.maxContracts = maxPosition;
         signal.account.maxTradesPerDay = maxPosition;
-        signal.account.riskPerTradePercent = 1.0;
+        signal.account.riskPerTradePercent = riskPerTradePercent;
 
         // ========== PERFORMANCE HISTORY (simplified) ==========
         signal.performance = new SignalData.PerformanceHistory();
@@ -4126,19 +4286,29 @@ public class OrderFlowStrategyEnhanced implements
 
         // ========== RISK MANAGEMENT ==========
         signal.risk = new SignalData.RiskManagement();
-        int stopLossTicks = 20;  // 20 ticks = $250 for ES
-        int takeProfitTicks = 40;  // 40 ticks = $500 for ES (1:2 ratio)
         signal.risk.stopLossTicks = stopLossTicks;
         signal.risk.stopLossPrice = isBid ? price - stopLossTicks : price + stopLossTicks;
-        signal.risk.stopLossValue = stopLossTicks * 12.5;  // ES futures
+        signal.risk.stopLossValue = stopLossTicks * tickValue;
         signal.risk.takeProfitTicks = takeProfitTicks;
         signal.risk.takeProfitPrice = isBid ? price + takeProfitTicks : price - takeProfitTicks;
-        signal.risk.takeProfitValue = takeProfitTicks * 12.5;
+        signal.risk.takeProfitValue = takeProfitTicks * tickValue;
         signal.risk.breakEvenTicks = 3;
         signal.risk.breakEvenPrice = isBid ? price + 3 : price - 3;
-        signal.risk.riskRewardRatio = "1:2";
-        signal.risk.positionSizeContracts = 1;
-        signal.risk.totalRiskPercent = 1.5;
+        double rrRatio = (double) takeProfitTicks / stopLossTicks;
+        signal.risk.riskRewardRatio = String.format("1:%.1f", rrRatio);
+
+        // Calculate position size: fixed or auto from risk %
+        int positionSize;
+        if (autoCalculatePositionSize) {
+            // Auto-calculate: (Account * Risk%) / StopLossValue
+            double riskDollars = accountSize * (riskPerTradePercent / 100.0);
+            positionSize = (int) Math.max(1, Math.floor(riskDollars / signal.risk.stopLossValue));
+            positionSize = Math.min(positionSize, maxPosition);  // Cap at max position
+        } else {
+            positionSize = fixedPositionSize;
+        }
+        signal.risk.positionSizeContracts = positionSize;
+        signal.risk.totalRiskPercent = (positionSize * signal.risk.stopLossValue / accountSize) * 100;
 
         // ========== THRESHOLD CONTEXT (for AI Adaptive Control) ==========
         signal.thresholds = new SignalData.ThresholdContext();

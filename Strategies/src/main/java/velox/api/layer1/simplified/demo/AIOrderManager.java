@@ -1,5 +1,8 @@
 package velox.api.layer1.simplified.demo;
 
+import velox.api.layer1.simplified.demo.storage.TradeLogger;
+import velox.api.layer1.simplified.demo.storage.SessionStateManager;
+
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -24,6 +27,7 @@ public class AIOrderManager {
     public int breakEvenTicks = 3;
     public int trailAmountTicks = 2;
     private double pips = 1.0;  // Tick size - set from signal during executeEntry
+    private double tickValue = 12.50;  // Dollar value per tick (ES futures default)
 
     // Risk limits
     public int maxPositions = 1;
@@ -32,7 +36,7 @@ public class AIOrderManager {
     // Signal staleness protection (configurable)
     // Note: Threshold must account for AI response time (can be 60+ seconds with retries)
     public long maxSignalAgeMs = 180_000;  // 3 minutes - allows for AI response delays
-    public int maxPriceSlippageTicks = 20; // Skip if price moved > 20 ticks (reasonable for ES)
+    public int maxPriceSlippageTicks = 50; // Skip if price moved > 50 ticks
     private Supplier<Integer> currentPriceSupplier;  // Supplies current price in tick units
 
     // Suppliers for historical context (set from strategy)
@@ -49,6 +53,10 @@ public class AIOrderManager {
     private final AtomicInteger totalTrades = new AtomicInteger(0);
     private final AtomicInteger winningTrades = new AtomicInteger(0);
     private double dailyPnl = 0.0;
+
+    // Trade logging and session state
+    private TradeLogger tradeLogger;
+    private SessionStateManager sessionStateManager;
 
     // Unique instance ID for debugging
     private final String instanceId = UUID.randomUUID().toString().substring(0, 8);
@@ -102,6 +110,36 @@ public class AIOrderManager {
         this.icebergMinOrdersSupplier = icebergMinOrdersSupplier;
         this.spoofMinSizeSupplier = spoofMinSizeSupplier;
         this.absorptionMinSizeSupplier = absorptionMinSizeSupplier;
+    }
+
+    /**
+     * Set trade logger for persistent trade history
+     */
+    public void setTradeLogger(TradeLogger tradeLogger) {
+        this.tradeLogger = tradeLogger;
+        fileLog("📝 TradeLogger set: " + (tradeLogger != null ? "ENABLED" : "DISABLED"));
+    }
+
+    /**
+     * Set session state manager for persistent daily stats
+     */
+    public void setSessionStateManager(SessionStateManager sessionStateManager) {
+        this.sessionStateManager = sessionStateManager;
+        // Load persisted stats into memory
+        if (sessionStateManager != null) {
+            SessionStateManager.SessionState state = sessionStateManager.getCurrentState();
+            this.dailyPnl = state.dailyPnl;
+            this.totalTrades.set(state.totalTrades);
+            this.winningTrades.set(state.winningTrades);
+            fileLog("📊 SessionState loaded: " + state);
+        }
+    }
+
+    /**
+     * Set tick value (dollar value per tick)
+     */
+    public void setTickValue(double tickValue) {
+        this.tickValue = tickValue;
     }
 
     /**
@@ -493,8 +531,8 @@ public class AIOrderManager {
                 position.stopLossPrice.set(newStopPriceTicks);
 
                 double lockedProfit = position.isLong ?
-                    (currentPrice - newStopPriceTicks) * 12.5 :
-                    (newStopPriceTicks - currentPrice) * 12.5;
+                    (currentPrice - newStopPriceTicks) * tickValue :
+                    (newStopPriceTicks - currentPrice) * tickValue;
 
                 log("📍 TRAILING STOP (visual only for bracket order):");
                 log("   Position: %s", position.id.substring(0, 8));
@@ -519,8 +557,8 @@ public class AIOrderManager {
                 position.stopLossPrice.set(newStopPriceTicks);  // Keep tick value for internal tracking
 
                 double lockedProfit = position.isLong ?
-                    (currentPrice - newStopPriceTicks) * 12.5 :
-                    (newStopPriceTicks - currentPrice) * 12.5;
+                    (currentPrice - newStopPriceTicks) * tickValue :
+                    (newStopPriceTicks - currentPrice) * tickValue;
 
                 log("📍 TRAILING STOP:");
                 log("   Position: %s", position.id.substring(0, 8));
@@ -569,6 +607,42 @@ public class AIOrderManager {
                 winningTrades.incrementAndGet();
             }
 
+            // Log trade to CSV and update session state
+            if (tradeLogger != null) {
+                try {
+                    int mfeTicks = (int) (position.maxUnrealizedPnl.get() / tickValue);
+                    int maeTicks = (int) (position.maxAdverseExcursion.get() / tickValue);
+                    double aiConfidence = position.aiDecision != null ? position.aiDecision.confidence : 0.0;
+                    int signalScore = position.originalSignal != null ? position.originalSignal.score : 0;
+
+                    TradeLogger.TradeRecord record = tradeLogger.createRecord(
+                        position.id,
+                        position.symbol,
+                        position.isLong,
+                        position.entryPrice,
+                        exitPrice,
+                        position.quantity,
+                        position.stopLossPrice.get(),
+                        position.takeProfitPrice.get(),
+                        (int) (position.getTimeInPosition() / 1000),
+                        signalScore,
+                        position.entrySlippage,
+                        reason,
+                        mfeTicks,
+                        maeTicks,
+                        aiConfidence
+                    );
+                    tradeLogger.logTrade(record);
+                } catch (Exception e) {
+                    fileLog("⚠️ Failed to log trade: " + e.getMessage());
+                }
+            }
+
+            // Update session state manager
+            if (sessionStateManager != null) {
+                sessionStateManager.updateAfterTrade(pnl, pnl > 0);
+            }
+
             // Place AI exit marker on chart
             if (markerCallback != null) {
                 boolean isWin = exitPrice != ((position.isLong ? position.stopLossPrice.get() : position.stopLossPrice.get()));
@@ -579,7 +653,6 @@ public class AIOrderManager {
             int slTicks = Math.abs(position.stopLossPrice.get() - position.entryPrice);
             int tpTicks = Math.abs(position.takeProfitPrice.get() - position.entryPrice);
             double rrRatio = slTicks > 0 ? (double) tpTicks / slTicks : 0;
-            double tickValue = 12.5; // ES futures: $12.50 per tick
             double slDollars = slTicks * tickValue * position.quantity;
             double tpDollars = tpTicks * tickValue * position.quantity;
 

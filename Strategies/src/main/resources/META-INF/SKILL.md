@@ -674,6 +674,139 @@ Signal: Iceberg, score 72
 - `AIThresholdService.java` - Claude API integration
 - `TradingMemoryService.java` - Memory search (Phase 1+)
 - `TranscriptWriter.java` - Session logging (Phase 4)
+- `TradeLogger.java` - Trade history logging (CSV)
+- `SessionStateManager.java` - Daily stats persistence (JSON)
+
+---
+
+## Trade History & Performance Data
+
+### Data Locations
+
+All trading data is stored in the Bookmap data directory:
+
+| Platform | Path |
+|----------|------|
+| **macOS** | `~/Library/Application Support/Bookmap/trading-memory/` |
+| **Windows** | `C:\Bookmap\trading-memory\` or `~\Bookmap\trading-memory\` |
+| **Linux** | `~/.bookmap/trading-memory/` |
+
+### Files
+
+| File | Format | Purpose |
+|------|--------|---------|
+| `trade-history.csv` | CSV | Complete record of all closed trades |
+| `session-state.json` | JSON | Daily statistics (persists across restarts) |
+
+### Trade History CSV Format
+
+```csv
+timestamp,trade_id,symbol,direction,entry_price,exit_price,quantity,
+stop_loss,take_profit,pnl_ticks,pnl_dollars,outcome,duration_seconds,
+signal_score,entry_slippage,exit_reason,sl_ticks,tp_ticks,rr_ratio,
+mfe_ticks,mae_ticks,ai_confidence
+```
+
+**Field Definitions:**
+- `pnl_ticks` - Profit/loss in ticks (positive = win)
+- `pnl_dollars` - Profit/loss in dollars
+- `outcome` - "WIN" or "LOSS"
+- `mfe_ticks` - Max Favorable Excursion (best tick profit during trade)
+- `mae_ticks` - Max Adverse Excursion (worst tick loss during trade)
+- `rr_ratio` - Risk:Reward ratio (TP ticks / SL ticks)
+- `ai_confidence` - AI confidence level (0.0-1.0)
+
+### Session State JSON Format
+
+```json
+{
+  "date": "2026-02-14",
+  "dailyPnl": -1112.50,
+  "totalTrades": 15,
+  "winningTrades": 11,
+  "losingTrades": 4,
+  "maxDrawdown": 1525.00,
+  "peakPnl": 412.50,
+  "lastUpdated": "2026-02-14T14:04:27Z"
+}
+```
+
+### Querying Trade History
+
+**View recent trades:**
+```bash
+# macOS/Linux
+tail -20 ~/Library/Application\ Support/Bookmap/trading-memory/trade-history.csv
+
+# Windows PowerShell
+Get-Content C:\Bookmap\trading-memory\trade-history.csv -Tail 20
+```
+
+**Calculate win rate:**
+```bash
+# macOS/Linux
+grep -v "timestamp" ~/Library/Application\ Support/Bookmap/trading-memory/trade-history.csv | \
+  awk -F',' '{print $12}' | sort | uniq -c
+
+# Output example:
+#   11 WIN
+#    4 LOSS
+```
+
+**Calculate total P&L:**
+```bash
+# macOS/Linux
+grep -v "timestamp" ~/Library/Application\ Support/Bookmap/trading-memory/trade-history.csv | \
+  awk -F',' '{sum += $11} END {print "Total P&L: $"sum}'
+```
+
+**Find trades with high MFE but loss (potential improvement):**
+```bash
+# Trades where MFE > 10 ticks but still lost
+awk -F',' 'NR>1 && $12=="LOSS" && $20>10 {print $1, $4, $11, "MFE="$20}' trade-history.csv
+```
+
+### Use Cases
+
+1. **Daily Performance Review**
+   - Check `session-state.json` for daily summary
+   - Review individual trades in `trade-history.csv`
+
+2. **Strategy Optimization**
+   - Analyze win rate by time of day
+   - Identify patterns in high-MFE trades
+   - Compare R:R ratios of wins vs losses
+
+3. **AI Learning Input**
+   - Feed trade outcomes to memory system
+   - Generate lessons from losing trades
+   - Identify best-performing setup types
+
+4. **Risk Analysis**
+   - Track max drawdown over time
+   - Analyze MAE patterns for stop placement
+   - Review entry slippage impact
+
+### Python Analysis Example
+
+```python
+import pandas as pd
+
+# Load trade history
+df = pd.read_csv('~/Library/Application Support/Bookmap/trading-memory/trade-history.csv')
+
+# Calculate metrics
+win_rate = (df['outcome'] == 'WIN').mean() * 100
+avg_win = df[df['outcome'] == 'WIN']['pnl_dollars'].mean()
+avg_loss = df[df['outcome'] == 'LOSS']['pnl_dollars'].mean()
+profit_factor = abs(df[df['pnl_dollars'] > 0]['pnl_dollars'].sum() /
+                    df[df['pnl_dollars'] < 0]['pnl_dollars'].sum())
+
+print(f"Win Rate: {win_rate:.1f}%")
+print(f"Avg Win: ${avg_win:.2f}")
+print(f"Avg Loss: ${avg_loss:.2f}")
+print(f"Profit Factor: {profit_factor:.2f}")
+```
 
 ### External
 
