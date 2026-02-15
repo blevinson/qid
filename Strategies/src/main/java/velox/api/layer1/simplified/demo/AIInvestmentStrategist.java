@@ -288,7 +288,7 @@ public class AIInvestmentStrategist {
                 KEY LEVELS: %s
                 %s
                 Decide TAKE or SKIP. Respond with JSON only.
-                {"action":"TAKE"|"SKIP","confidence":0.0-1.0,"reasoning":"brief","plan":{"orderType":"BUY"|"SELL","entryPrice":%.2f,"stopLossPrice":N,"takeProfitPrice":N}}
+                {"action":"TAKE"|"SKIP","confidence":0.0-1.0,"reasoning":"brief","plan":{"orderType":"BUY"|"SELL","executionType":"MARKET"|"STOP_MARKET"|"LIMIT","entryPrice":%.2f,"triggerPrice":N,"stopLossPrice":N,"takeProfitPrice":N,"executionReasoning":"why this order type"}}
                 """,
                 sessionAnalysisSection,
                 signal.direction, signal.detection.type, actualPrice, signal.score,
@@ -349,7 +349,7 @@ public class AIInvestmentStrategist {
             %s
             %s
 
-            JSON response: {"action":"TAKE"|"SKIP","confidence":0.0-1.0,"reasoning":"brief","plan":{"orderType":"BUY"|"SELL","entryPrice":%.2f,"stopLossPrice":N,"takeProfitPrice":N}}
+            JSON response: {"action":"TAKE"|"SKIP","confidence":0.0-1.0,"reasoning":"brief","plan":{"orderType":"BUY"|"SELL","executionType":"MARKET"|"STOP_MARKET"|"LIMIT","entryPrice":%.2f,"triggerPrice":N,"stopLossPrice":N,"takeProfitPrice":N,"executionReasoning":"why this order type"}}
             """,
             devModeContext, sessionContextStr,
             signal.direction, signal.detection.type, actualPrice, signal.score,
@@ -455,6 +455,28 @@ public class AIInvestmentStrategist {
                    - Win/loss outcomes
                    - Lessons learned
 
+                4. Order Execution Type Selection
+                   Choose the best execution type based on market context:
+
+                   MARKET - Use when:
+                   - Strong momentum with trend confirmation
+                   - Time-sensitive opportunity (absorption completing)
+                   - Price already at optimal entry level
+
+                   STOP_MARKET - Use when:
+                   - Breakout setup near resistance/support
+                   - Want confirmation of direction before entry
+                   - Signal detected but price hasn't confirmed yet
+                   - DOM shows significant level nearby to trigger above/below
+
+                   LIMIT - Use when:
+                   - Reversal signal, expecting pullback
+                   - Price extended and likely to retrace
+                   - Want better entry price than current
+
+                   For STOP_MARKET: triggerPrice should be above current for LONG, below for SHORT
+                   For LIMIT: triggerPrice should be below current for LONG, above for SHORT
+
                 Respond ONLY with valid JSON:
                 """,
                 threshold,
@@ -462,11 +484,18 @@ public class AIInvestmentStrategist {
                 threshold, strongThreshold,
                 threshold);
         } else {
-            // COMPACT mode - minimal system prompt
+            // COMPACT mode - minimal system prompt with order type guidance
             systemPrompt = String.format("""
                 You are Qid, an AI trading strategist. Decide TAKE or SKIP.
                 Threshold: %d | Strong: %d+ | Moderate: %d-%d
-                Respond ONLY with JSON: {"action":"TAKE"|"SKIP","confidence":0.0-1.0,"reasoning":"brief","plan":{"orderType":"BUY"|"SELL","entryPrice":%.2f,"stopLossPrice":N,"takeProfitPrice":N}}
+
+                ORDER EXECUTION TYPES:
+                - MARKET: Immediate execution (strong momentum, time-sensitive)
+                - STOP_MARKET: Wait for breakout confirmation (near resistance/support)
+                - LIMIT: Wait for better price (reversal, pullback expected)
+
+                Respond ONLY with JSON:
+                {"action":"TAKE"|"SKIP","confidence":0.0-1.0,"reasoning":"brief","plan":{"orderType":"BUY"|"SELL","executionType":"MARKET"|"STOP_MARKET"|"LIMIT","entryPrice":%.2f,"triggerPrice":N,"stopLossPrice":N,"takeProfitPrice":N,"executionReasoning":"why this order type"}}
                 """,
                 threshold, strongThreshold, threshold, strongThreshold, signal.price * signal.pips);
         }
@@ -558,6 +587,21 @@ public class AIInvestmentStrategist {
                 plan.contracts = planJson.has("contracts") && !planJson.get("contracts").isJsonNull() ?
                     planJson.get("contracts").getAsInt() : 1;
 
+                // Parse NEW order execution type fields
+                if (planJson.has("executionType") && !planJson.get("executionType").isJsonNull()) {
+                    plan.executionType = OrderExecutionType.fromString(planJson.get("executionType").getAsString());
+                }
+                if (planJson.has("triggerPrice") && !planJson.get("triggerPrice").isJsonNull()) {
+                    plan.triggerPrice = planJson.get("triggerPrice").getAsInt();
+                }
+                if (planJson.has("executionReasoning") && !planJson.get("executionReasoning").isJsonNull()) {
+                    plan.executionReasoning = planJson.get("executionReasoning").getAsString();
+                }
+                // Also check for "notes" field as fallback for reasoning
+                if (plan.executionReasoning == null && planJson.has("notes") && !planJson.get("notes").isJsonNull()) {
+                    plan.executionReasoning = planJson.get("notes").getAsString();
+                }
+
                 decision.plan = plan;
             } else if (decision.shouldTake) {
                 // Create default plan if taking but no plan provided
@@ -632,8 +676,13 @@ public class AIInvestmentStrategist {
         log("AI DECISION: " + decisionType + " | Confidence: " + String.format("%.0f%%", decision.confidence * 100));
         log("Reasoning: " + decision.reasoning);
         if (decision.shouldTake && decision.plan != null) {
-            log("Plan: " + decision.plan.orderType + " @ " + decision.plan.entryPrice +
+            log("Plan: " + decision.plan.orderType + " | ExecType: " + decision.plan.executionType +
+                " @ " + decision.plan.entryPrice +
+                (decision.plan.triggerPrice != null ? " (trigger: " + decision.plan.triggerPrice + ")" : "") +
                 " | SL: " + decision.plan.stopLossPrice + " | TP: " + decision.plan.takeProfitPrice);
+            if (decision.plan.executionReasoning != null) {
+                log("Exec Reasoning: " + decision.plan.executionReasoning);
+            }
         }
         // Log threshold adjustments if any
         if (decision.thresholdAdjustment != null && decision.thresholdAdjustment.hasAdjustments()) {
@@ -784,20 +833,56 @@ public class AIInvestmentStrategist {
     }
 
     /**
+     * Order Execution Type enum
+     * Defines how an order should be executed
+     */
+    public enum OrderExecutionType {
+        /** Execute immediately at market price */
+        MARKET("MARKET", "Immediate execution at market price"),
+
+        /** Wait for price to reach trigger, then execute as market order */
+        STOP_MARKET("STOP_MARKET", "Triggers market order when price reaches trigger level"),
+
+        /** Place limit order at trigger price, wait for fill */
+        LIMIT("LIMIT", "Limit order at specified price, waits for better entry");
+
+        private final String value;
+        private final String description;
+
+        OrderExecutionType(String value, String description) {
+            this.value = value;
+            this.description = description;
+        }
+
+        public String getValue() { return value; }
+        public String getDescription() { return description; }
+
+        public static OrderExecutionType fromString(String text) {
+            if (text == null) return MARKET;  // Default
+            for (OrderExecutionType type : values()) {
+                if (type.value.equalsIgnoreCase(text)) {
+                    return type;
+                }
+            }
+            return MARKET;  // Default fallback
+        }
+    }
+
+    /**
      * Trade Plan data class
      * Contains strategic order placement details
      */
     public static class TradePlan {
-        /** Order type: "BUY_STOP", "SELL_STOP", "BUY_LIMIT", "SELL_LIMIT" */
+        /** Order type: "BUY_STOP", "SELL_STOP", "BUY_LIMIT", "SELL_LIMIT" (legacy - direction only) */
         public String orderType;
 
-        /** Entry price for the order */
+        /** Entry price for the order (in ticks) */
         public int entryPrice;
 
-        /** Stop loss price */
+        /** Stop loss price (in ticks) */
         public int stopLossPrice;
 
-        /** Take profit price */
+        /** Take profit price (in ticks) */
         public int takeProfitPrice;
 
         /** Number of contracts (optional, defaults to 1) */
@@ -805,5 +890,41 @@ public class AIInvestmentStrategist {
 
         /** Additional reasoning or notes */
         public String notes;
+
+        // ========== NEW FIELDS FOR ORDER TYPE SELECTION ==========
+
+        /** How to execute the order: MARKET, STOP_MARKET, or LIMIT */
+        public OrderExecutionType executionType = OrderExecutionType.MARKET;
+
+        /** Trigger price for STOP_MARKET or LIMIT orders (in ticks) */
+        public Integer triggerPrice;
+
+        /** AI's reasoning for choosing this execution type */
+        public String executionReasoning;
+
+        /**
+         * Get the effective trigger price (for STOP_MARKET and LIMIT orders)
+         * Returns entryPrice if triggerPrice is not set
+         */
+        public int getEffectiveTriggerPrice() {
+            return triggerPrice != null ? triggerPrice : entryPrice;
+        }
+
+        /**
+         * Check if this plan uses a pending order type (requires wait for fill)
+         */
+        public boolean isPendingOrderType() {
+            return executionType == OrderExecutionType.STOP_MARKET ||
+                   executionType == OrderExecutionType.LIMIT;
+        }
+
+        @Override
+        public String toString() {
+            return String.format("TradePlan{type=%s, execType=%s, entry=%d, trigger=%s, sl=%d, tp=%d, contracts=%d, reason=%s}",
+                orderType, executionType, entryPrice,
+                triggerPrice != null ? triggerPrice : "N/A",
+                stopLossPrice, takeProfitPrice, contracts,
+                executionReasoning != null ? executionReasoning : notes);
+        }
     }
 }

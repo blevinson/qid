@@ -210,11 +210,12 @@ public class AIOrderManager {
      */
     public String executeEntry(AIIntegrationLayer.AIDecision decision, SignalData signal) {
         // FILE LOG for debugging - include instance ID
-        fileLog("🔥 executeEntry[" + instanceId + "] CALLED: isLong=%s, price=%d, SL=%d, TP=%d, hasCallback=%s".formatted(
-            decision.isLong, signal.price, decision.stopLoss, decision.takeProfit, markerCallback != null));
+        fileLog("🔥 executeEntry[" + instanceId + "] CALLED: isLong=%s, price=%d, SL=%d, TP=%d, execType=%s, hasCallback=%s".formatted(
+            decision.isLong, signal.price, decision.stopLoss, decision.takeProfit,
+            decision.executionType, markerCallback != null));
 
-        log("🔥 executeEntry[" + instanceId + "] CALLED: isLong=%s, price=%d, SL=%d, TP=%d".formatted(
-            decision.isLong, signal.price, decision.stopLoss, decision.takeProfit));
+        log("🔥 executeEntry[" + instanceId + "] CALLED: isLong=%s, price=%d, SL=%d, TP=%d, execType=%s".formatted(
+            decision.isLong, signal.price, decision.stopLoss, decision.takeProfit, decision.executionType));
         try {
             // Check signal staleness
             String stalenessReason = checkSignalStaleness(signal);
@@ -256,6 +257,10 @@ public class AIOrderManager {
 
             // Create position ID
             String positionId = UUID.randomUUID().toString();
+
+            // Determine execution type
+            String execType = decision.executionType != null ? decision.executionType : "MARKET";
+            int triggerPrice = decision.triggerPrice != null ? decision.triggerPrice : signal.price;
 
             // Calculate break-even level (in tick units)
             int breakEvenTrigger = decision.isLong ?
@@ -309,47 +314,94 @@ public class AIOrderManager {
                 absorptionMinSize
             );
 
-            // Place bracket order with native SL/TP (Bookmap managed)
-            // Offsets are in TICKS (price levels) - distance from entry price
-            this.pips = signal.pips;  // Store for later use
+            // Store pips for later use
+            this.pips = signal.pips;
 
             // Calculate offsets in ticks
             int slOffsetTicks = Math.abs(signal.price - decision.stopLoss);
             int tpOffsetTicks = Math.abs(decision.takeProfit - signal.price);
 
-            log("📊 Bracket order offsets (ticks): SL=%d, TP=%d", slOffsetTicks, tpOffsetTicks);
-            log("📊 Entry signal: %d ticks, SL target: %d ticks, TP target: %d ticks", signal.price, decision.stopLoss, decision.takeProfit);
-            log("📊 Actual prices: Entry=%.2f, SL=%.2f, TP=%.2f",
-                signal.price * signal.pips, decision.stopLoss * signal.pips, decision.takeProfit * signal.pips);
-            log("⚠️ NOTE: Market order may fill at different price - Bookmap applies offsets from FILL price");
-            fileLog("📝 NATIVE BRACKET: signal_entry=" + signal.price + "ticks SL_target=" + decision.stopLoss + "ticks TP_target=" + decision.takeProfit + "ticks");
-            fileLog("📝 Offsets sent to Bookmap: SL_offset=" + slOffsetTicks + "ticks TP_offset=" + tpOffsetTicks + "ticks");
-            fileLog("📝 Actual prices: Entry=" + (signal.price * signal.pips) + " SL=" + (decision.stopLoss * signal.pips) + " TP=" + (decision.takeProfit * signal.pips));
-
             OrderExecutor.OrderSide entrySide = decision.isLong ?
                 OrderExecutor.OrderSide.BUY : OrderExecutor.OrderSide.SELL;
 
-            // Use bracket order - single order with native SL/TP managed by Bookmap
-            String entryOrderId = orderExecutor.placeBracketOrder(
-                OrderExecutor.OrderType.MARKET,
-                entrySide,
-                Double.NaN,  // Market order - no price needed
-                positionSize,
-                slOffsetTicks,   // Stop loss offset in ticks
-                tpOffsetTicks    // Take profit offset in ticks
-            );
+            String entryOrderId;
+
+            // ========== ORDER TYPE SELECTION ==========
+            if ("STOP_MARKET".equalsIgnoreCase(execType)) {
+                // STOP_MARKET: Place stop order at trigger price, executes as market when triggered
+                log("📊 STOP_MARKET order: trigger=%d ticks (%.2f)", triggerPrice, triggerPrice * signal.pips);
+                log("📊 SL/TP will be placed AFTER fill (pending order tracking)");
+                fileLog("📝 STOP_MARKET: trigger=" + triggerPrice + " SL=" + decision.stopLoss + " TP=" + decision.takeProfit);
+
+                entryOrderId = orderExecutor.placeEntry(
+                    OrderExecutor.OrderType.STOP_MARKET,
+                    entrySide,
+                    triggerPrice * signal.pips,  // Trigger price as actual price
+                    positionSize
+                );
+
+                if (entryOrderId != null) {
+                    // Track pending order for SL/TP placement after fill
+                    position.pendingSLTP.set(true);
+                    position.pendingTriggerPrice.set(triggerPrice);
+                    log("📥 Stop market order placed: %s (waiting for trigger at %d)", entryOrderId, triggerPrice);
+                }
+
+            } else if ("LIMIT".equalsIgnoreCase(execType)) {
+                // LIMIT: Place limit order at trigger price
+                log("📊 LIMIT order: price=%d ticks (%.2f)", triggerPrice, triggerPrice * signal.pips);
+                log("📊 SL/TP will be placed AFTER fill (pending order tracking)");
+                fileLog("📝 LIMIT: price=" + triggerPrice + " SL=" + decision.stopLoss + " TP=" + decision.takeProfit);
+
+                entryOrderId = orderExecutor.placeEntry(
+                    OrderExecutor.OrderType.LIMIT,
+                    entrySide,
+                    triggerPrice * signal.pips,  // Limit price as actual price
+                    positionSize
+                );
+
+                if (entryOrderId != null) {
+                    // Track pending order for SL/TP placement after fill
+                    position.pendingSLTP.set(true);
+                    position.pendingTriggerPrice.set(triggerPrice);
+                    log("📥 Limit order placed: %s (waiting for fill at %d)", entryOrderId, triggerPrice);
+                }
+
+            } else {
+                // MARKET (default): Use bracket order with native SL/TP
+                log("📊 MARKET order with bracket SL/TP");
+                log("📊 Bracket order offsets (ticks): SL=%d, TP=%d", slOffsetTicks, tpOffsetTicks);
+                log("📊 Entry signal: %d ticks, SL target: %d ticks, TP target: %d ticks", signal.price, decision.stopLoss, decision.takeProfit);
+                log("📊 Actual prices: Entry=%.2f, SL=%.2f, TP=%.2f",
+                    signal.price * signal.pips, decision.stopLoss * signal.pips, decision.takeProfit * signal.pips);
+                log("⚠️ NOTE: Market order may fill at different price - Bookmap applies offsets from FILL price");
+                fileLog("📝 NATIVE BRACKET: signal_entry=" + signal.price + "ticks SL_target=" + decision.stopLoss + "ticks TP_target=" + decision.takeProfit + "ticks");
+                fileLog("📝 Offsets sent to Bookmap: SL_offset=" + slOffsetTicks + "ticks TP_offset=" + tpOffsetTicks + "ticks");
+
+                entryOrderId = orderExecutor.placeBracketOrder(
+                    OrderExecutor.OrderType.MARKET,
+                    entrySide,
+                    Double.NaN,  // Market order - no price needed
+                    positionSize,
+                    slOffsetTicks,   // Stop loss offset in ticks
+                    tpOffsetTicks    // Take profit offset in ticks
+                );
+
+                // For bracket orders, SL/TP are managed by Bookmap
+                position.pendingSLTP.set(false);
+            }
 
             if (entryOrderId == null) {
-                log("❌ BRACKET ORDER FAILED!");
-                fileLog("❌ BRACKET ORDER FAILED!");
+                log("❌ ORDER FAILED!");
+                fileLog("❌ ORDER FAILED!");
                 return null;
             }
 
-            log("📥 Bracket order ID: %s (Bookmap manages SL/TP)", entryOrderId);
-            fileLog("✅ BRACKET ORDER PLACED: " + entryOrderId);
+            log("📥 Order ID: %s (execType: %s)", entryOrderId, execType);
+            fileLog("✅ ORDER PLACED: " + entryOrderId + " (" + execType + ")");
 
             position.entryOrderId.set(entryOrderId);
-            // SL/TP order IDs are managed by Bookmap, not tracked separately
+            // SL/TP order IDs are managed by Bookmap (for bracket orders) or pending (for stop/limit)
             position.stopLossOrderId.set(entryOrderId + "-SL");  // Placeholder for tracking
             position.takeProfitOrderId.set(entryOrderId + "-TP");
 
@@ -382,11 +434,18 @@ public class AIOrderManager {
 
             log("🤖 AI ENTRY ORDER PLACED:");
             log("   Position ID: %s", positionId.substring(0, 8));
+            log("   Execution Type: %s", execType);
+            if (!"MARKET".equalsIgnoreCase(execType) && decision.triggerPrice != null) {
+                log("   Trigger Price: %d (%.2f)", decision.triggerPrice, decision.triggerPrice * signal.pips);
+            }
             log("   %s %d contract(s) @ %d", decision.isLong ? "LONG" : "SHORT", positionSize, signal.price);
             log("   Stop Loss: %d (-$%.0f)", decision.stopLoss, signal.risk.stopLossValue);
             log("   Take Profit: %d (+$%.0f)", decision.takeProfit, signal.risk.takeProfitValue);
             log("   Break-even: %d (%d ticks profit)", breakEvenStop, breakEvenTicks);
             log("   Reasoning: %s", decision.reasoning);
+            if (decision.executionReasoning != null) {
+                log("   Exec Reasoning: %s", decision.executionReasoning);
+            }
 
             return positionId;
 

@@ -224,6 +224,16 @@ public class OrderFlowStrategyEnhanced implements
     @Parameter(name = "Dev Mode")
     private Boolean devMode = false;  // When true, AI is more permissive for testing
 
+    // ========== ORDER EXECUTION TYPE PARAMETERS ==========
+    @Parameter(name = "Allow AI Order Type Selection")
+    private Boolean allowAIOrderTypeSelection = true;  // When true, AI can choose MARKET, STOP_MARKET, or LIMIT
+
+    @Parameter(name = "Default Order Type")
+    private String defaultOrderType = "MARKET";  // MARKET, STOP_MARKET, or LIMIT - used when AI doesn't specify
+
+    @Parameter(name = "Log Order Type Reasoning")
+    private Boolean logOrderTypeReasoning = true;  // When true, log AI's reasoning for order type choice
+
     @Parameter(name = "Confluence Threshold")
     private Integer confluenceThreshold = 50;
 
@@ -296,6 +306,10 @@ public class OrderFlowStrategyEnhanced implements
         public Integer replayStartHour = 9;   // Hour (24h) when replay data starts (9 = 9:00 AM)
         public Integer replayStartMinute = 30; // Minute when replay data starts (30 = :30)
         public Boolean devMode = false;  // Dev mode for permissive AI testing
+        // Order execution type settings
+        public Boolean allowAIOrderTypeSelection = true;  // AI can choose MARKET, STOP_MARKET, LIMIT
+        public String defaultOrderType = "MARKET";  // Default when AI doesn't specify
+        public Boolean logOrderTypeReasoning = true;  // Log AI's reasoning for order type
         public String aiPromptMode = "COMPACT";  // FULL or COMPACT prompts
         public Integer maxSlippageTicks = 50;  // Max price slippage before rejecting signal
         // Position sizing settings
@@ -1296,7 +1310,69 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(promptModeCombo, gbc);
         // Note: aiPromptMode is synced from settings during initialize(), no need to sync again here
 
+        // ========== ORDER EXECUTION TYPE SETTINGS ==========
+        // Allow AI to choose order type
         gbc.gridx = 0; gbc.gridy = 22;
+        JLabel aiOrderTypeLabel = new JLabel("AI Chooses Order Type:");
+        aiOrderTypeLabel.setToolTipText("<html>When enabled, AI selects MARKET, STOP_MARKET, or LIMIT based on market context.<br>MARKET: Immediate execution<br>STOP_MARKET: Wait for breakout confirmation<br>LIMIT: Wait for better entry price</html>");
+        settingsPanel.add(aiOrderTypeLabel, gbc);
+        gbc.gridx = 1;
+        JCheckBox aiOrderTypeCheckBox = new JCheckBox();
+        aiOrderTypeCheckBox.setSelected(settings.allowAIOrderTypeSelection != null ? settings.allowAIOrderTypeSelection : allowAIOrderTypeSelection);
+        aiOrderTypeCheckBox.setToolTipText("<html>ON: AI decides order type based on market context<br>OFF: Always use default order type</html>");
+        aiOrderTypeCheckBox.addActionListener(e -> {
+            allowAIOrderTypeSelection = aiOrderTypeCheckBox.isSelected();
+            settings.allowAIOrderTypeSelection = allowAIOrderTypeSelection;
+            log("📊 AI Order Type Selection: " + (allowAIOrderTypeSelection ? "ENABLED" : "DISABLED"));
+            saveSettings();
+        });
+        settingsPanel.add(aiOrderTypeCheckBox, gbc);
+        if (settings.allowAIOrderTypeSelection != null) {
+            allowAIOrderTypeSelection = settings.allowAIOrderTypeSelection;
+        }
+
+        // Default Order Type dropdown
+        gbc.gridx = 0; gbc.gridy = 23;
+        JLabel defaultOrderTypeLabel = new JLabel("Default Order Type:");
+        defaultOrderTypeLabel.setToolTipText("<html>Order type used when AI doesn't specify or AI selection is disabled.<br>MARKET: Execute immediately<br>STOP_MARKET: Wait for price trigger<br>LIMIT: Place limit order</html>");
+        settingsPanel.add(defaultOrderTypeLabel, gbc);
+        gbc.gridx = 1;
+        JComboBox<String> defaultOrderTypeCombo = new JComboBox<>(new String[]{"MARKET", "STOP_MARKET", "LIMIT"});
+        defaultOrderTypeCombo.setSelectedItem(settings.defaultOrderType != null ? settings.defaultOrderType : defaultOrderType);
+        defaultOrderTypeCombo.setToolTipText("<html>Default execution type when AI doesn't choose</html>");
+        defaultOrderTypeCombo.addActionListener(e -> {
+            defaultOrderType = (String) defaultOrderTypeCombo.getSelectedItem();
+            settings.defaultOrderType = defaultOrderType;
+            log("📊 Default Order Type: " + defaultOrderType);
+            saveSettings();
+        });
+        settingsPanel.add(defaultOrderTypeCombo, gbc);
+        if (settings.defaultOrderType != null) {
+            defaultOrderType = settings.defaultOrderType;
+        }
+
+        // Log Order Type Reasoning checkbox
+        gbc.gridx = 0; gbc.gridy = 24;
+        JLabel logReasoningLabel = new JLabel("Log Order Type Reasoning:");
+        logReasoningLabel.setToolTipText("Show AI's reasoning for order type selection in logs");
+        settingsPanel.add(logReasoningLabel, gbc);
+        gbc.gridx = 1;
+        JCheckBox logReasoningCheckBox = new JCheckBox();
+        logReasoningCheckBox.setSelected(settings.logOrderTypeReasoning != null ? settings.logOrderTypeReasoning : logOrderTypeReasoning);
+        logReasoningCheckBox.addActionListener(e -> {
+            logOrderTypeReasoning = logReasoningCheckBox.isSelected();
+            settings.logOrderTypeReasoning = logOrderTypeReasoning;
+            log("📝 Log Order Type Reasoning: " + (logOrderTypeReasoning ? "ENABLED" : "DISABLED"));
+            saveSettings();
+        });
+        settingsPanel.add(logReasoningCheckBox, gbc);
+        if (settings.logOrderTypeReasoning != null) {
+            logOrderTypeReasoning = settings.logOrderTypeReasoning;
+        }
+
+        // ========== END ORDER EXECUTION TYPE SETTINGS ==========
+
+        gbc.gridx = 0; gbc.gridy = 25;
         JLabel confThreshLabel = new JLabel("Confluence Threshold:");
         confThreshLabel.setToolTipText("<html>Minimum score for AI to consider executing a trade.<br>Higher = more conservative (fewer trades)<br>Lower = more aggressive (more trades)</html>");
         settingsPanel.add(confThreshLabel, gbc);
@@ -1311,7 +1387,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(aiConfluenceThresholdLabel, gbc);
 
         // AI Managed Weights toggle
-        gbc.gridx = 0; gbc.gridy = 23; gbc.gridwidth = 1;
+        gbc.gridx = 0; gbc.gridy = 26; gbc.gridwidth = 1;
         JLabel aiManagedLabel = new JLabel("AI Managed Weights:");
         aiManagedLabel.setToolTipText("When enabled, AI can adjust confluence weights automatically");
         settingsPanel.add(aiManagedLabel, gbc);
@@ -1326,7 +1402,7 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(aiManagedWeightsCheckBox, gbc);
 
         // Auto Phase Analysis toggle
-        gbc.gridx = 0; gbc.gridy = 24;
+        gbc.gridx = 0; gbc.gridy = 27;
         JLabel autoPhaseLabel = new JLabel("Auto Phase Analysis:");
         autoPhaseLabel.setToolTipText("Automatically run session analysis at phase transitions (pre-market, morning, lunch, etc.)");
         settingsPanel.add(autoPhaseLabel, gbc);
@@ -1341,18 +1417,18 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(autoPhaseCheckBox, gbc);
 
         // Confluence Weights section (collapsible-style)
-        gbc.gridx = 0; gbc.gridy = 25; gbc.gridwidth = 3;
+        gbc.gridx = 0; gbc.gridy = 28; gbc.gridwidth = 3;
         addSeparator(settingsPanel, "Confluence Weights (Advanced)", gbc);
 
         // Column headers for weights
-        gbc.gridy = 26; gbc.gridwidth = 1;
+        gbc.gridy = 29; gbc.gridwidth = 1;
         gbc.gridx = 1;
         settingsPanel.add(new JLabel("Base"), gbc);
         gbc.gridx = 2;
         settingsPanel.add(new JLabel("AI Current"), gbc);
 
         // Weight controls - key weights with AI Current column
-        gbc.gridx = 0; gbc.gridy = 27; gbc.gridwidth = 1;
+        gbc.gridx = 0; gbc.gridy = 30; gbc.gridwidth = 1;
         JLabel icebergMaxLabel = new JLabel("Iceberg Max (20-60):");
         icebergMaxLabel.setToolTipText("<html>Maximum points from iceberg detection.<br>Higher = more weight on iceberg signals<br>Lower = icebergs contribute less to score</html>");
         settingsPanel.add(icebergMaxLabel, gbc);
@@ -4728,6 +4804,19 @@ public class OrderFlowStrategyEnhanced implements
                                         aiDecision.direction = isLong ? "LONG" : "SHORT";
                                         aiDecision.stopLoss = stopLossPrice;
                                         aiDecision.takeProfit = takeProfitPrice;
+
+                                        // NEW: Copy execution type from TradePlan
+                                        if (decision.plan != null) {
+                                            aiDecision.executionType = decision.plan.executionType != null
+                                                ? decision.plan.executionType.getValue()
+                                                : "MARKET";
+                                            aiDecision.triggerPrice = decision.plan.triggerPrice;
+                                            aiDecision.executionReasoning = decision.plan.executionReasoning;
+                                            log("📊 Execution type: %s, trigger: %s, reason: %s".formatted(
+                                                aiDecision.executionType,
+                                                aiDecision.triggerPrice != null ? aiDecision.triggerPrice : "N/A",
+                                                aiDecision.executionReasoning != null ? aiDecision.executionReasoning : "N/A"));
+                                        }
 
                                         // Check mode: SEMI_AUTO requires approval, FULL_AUTO executes immediately
                                         if ("SEMI_AUTO".equals(aiMode)) {
