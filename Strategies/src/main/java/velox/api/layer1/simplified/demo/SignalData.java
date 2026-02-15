@@ -35,6 +35,275 @@ public class SignalData {
     // Risk management
     public RiskManagement risk;
 
+    // ========== R:R QUALITY ASSESSMENT ==========
+    // Instead of filtering out poor R:R, we assess and expose it to AI
+    // The AI can then make informed decisions with full context
+    public RrQuality rrQuality;
+
+    /**
+     * Comprehensive R:R Quality Assessment
+     *
+     * Philosophy: Rather than filtering signals with poor R:R, we expose the full
+     * quality assessment to the AI so it can make nuanced decisions:
+     *
+     * - A 90/100 signal with marginal R:R might be worth taking with smaller size
+     * - A 50/100 signal with excellent R:R might be worth a full position
+     * - The AI can consider confluence + R:R together instead of hard cutoffs
+     */
+    public static class RrQuality {
+        // ========== CORE METRICS ==========
+        public double rrRatio;              // Actual R:R (e.g., 1.4)
+        public double minRequired;          // Minimum threshold (e.g., 1.5)
+        public boolean meetsMinimum;        // Does it meet the threshold?
+
+        // ========== QUALITY RATING ==========
+        public String qualityLevel;         // "EXCELLENT", "GOOD", "ACCEPTABLE", "MARGINAL", "POOR"
+        public int qualityScore;            // -15 to +15 (adjustment to signal score)
+        public String qualityEmoji;         // Visual indicator for logs
+
+        // ========== SL/TP BREAKDOWN ==========
+        public int slTicks;                 // Stop loss distance
+        public int tpTicks;                 // Take profit distance
+        public String slSource;             // "ATR", "DOM_SUPPORT", "MEMORY", "FIXED"
+        public String tpSource;             // "ATR", "DOM_RESISTANCE", "MEMORY", "FIXED"
+
+        // ========== WHY R:R MIGHT BE SUBOPTIMAL ==========
+        public String issueType;            // "NONE", "WIDE_SL", "NEARBY_TARGET", "HIGH_VOLATILITY", "NO_DOM_LEVEL"
+        public String issueDetails;         // Human-readable explanation
+
+        // ========== IMPROVEMENT SUGGESTIONS ==========
+        public boolean canBeImproved;       // Is there a way to get better R:R?
+        public int suggestedSlTicks;        // Alternative SL (if available)
+        public int suggestedTpTicks;        // Alternative TP (if available)
+        public double potentialRR;          // R:R if suggestions applied
+
+        // ========== POSITION SIZING RECOMMENDATION ==========
+        public String sizingRecommendation; // "FULL", "REDUCED_75", "REDUCED_50", "REDUCED_25", "AVOID"
+        public double suggestedRiskPercent; // Recommended risk % (relative to baseline)
+
+        // ========== AI DECISION CONTEXT ==========
+        public String aiGuidance;           // Guidance for AI decision-making
+
+        /**
+         * Create an R:R quality assessment
+         */
+        public static RrQuality assess(double rrRatio, double minRequired,
+                                       int slTicks, int tpTicks,
+                                       String slSource, String tpSource,
+                                       String issueType, String issueDetails,
+                                       boolean canBeImproved, int suggestedSl, int suggestedTp) {
+            RrQuality quality = new RrQuality();
+            quality.rrRatio = rrRatio;
+            quality.minRequired = minRequired;
+            quality.meetsMinimum = rrRatio >= minRequired;
+
+            quality.slTicks = slTicks;
+            quality.tpTicks = tpTicks;
+            quality.slSource = slSource;
+            quality.tpSource = tpSource;
+
+            quality.issueType = issueType;
+            quality.issueDetails = issueDetails;
+
+            quality.canBeImproved = canBeImproved;
+            quality.suggestedSlTicks = suggestedSl;
+            quality.suggestedTpTicks = suggestedTp;
+            quality.potentialRR = canBeImproved && suggestedSl > 0 ?
+                (double) suggestedTp / suggestedSl : rrRatio;
+
+            // Determine quality level and score
+            if (rrRatio >= 3.0) {
+                quality.qualityLevel = "EXCELLENT";
+                quality.qualityScore = 15;
+                quality.qualityEmoji = "🌟";
+            } else if (rrRatio >= 2.0) {
+                quality.qualityLevel = "GOOD";
+                quality.qualityScore = 10;
+                quality.qualityEmoji = "✅";
+            } else if (rrRatio >= minRequired) {
+                quality.qualityLevel = "ACCEPTABLE";
+                quality.qualityScore = 5;
+                quality.qualityEmoji = "👍";
+            } else if (rrRatio >= minRequired * 0.8) {
+                quality.qualityLevel = "MARGINAL";
+                quality.qualityScore = -5;
+                quality.qualityEmoji = "⚠️";
+            } else if (rrRatio >= 1.0) {
+                quality.qualityLevel = "POOR";
+                quality.qualityScore = -10;
+                quality.qualityEmoji = "❌";
+            } else {
+                quality.qualityLevel = "VERY_POOR";
+                quality.qualityScore = -15;
+                quality.qualityEmoji = "🚫";
+            }
+
+            // Position sizing recommendation
+            if (rrRatio >= minRequired * 1.5) {
+                quality.sizingRecommendation = "FULL";
+                quality.suggestedRiskPercent = 1.0;
+            } else if (rrRatio >= minRequired) {
+                quality.sizingRecommendation = "FULL";
+                quality.suggestedRiskPercent = 1.0;
+            } else if (rrRatio >= minRequired * 0.8) {
+                quality.sizingRecommendation = "REDUCED_75";
+                quality.suggestedRiskPercent = 0.75;
+            } else if (rrRatio >= minRequired * 0.6) {
+                quality.sizingRecommendation = "REDUCED_50";
+                quality.suggestedRiskPercent = 0.5;
+            } else if (rrRatio >= 1.0) {
+                quality.sizingRecommendation = "REDUCED_25";
+                quality.suggestedRiskPercent = 0.25;
+            } else {
+                quality.sizingRecommendation = "AVOID";
+                quality.suggestedRiskPercent = 0.0;
+            }
+
+            // Generate AI guidance
+            quality.aiGuidance = generateAiGuidance(quality);
+
+            return quality;
+        }
+
+        private static String generateAiGuidance(RrQuality q) {
+            StringBuilder sb = new StringBuilder();
+
+            if (q.meetsMinimum) {
+                sb.append(String.format("R:R of 1:%.1f meets minimum requirement of 1:%.1f. ",
+                    q.rrRatio, q.minRequired));
+
+                if (q.qualityLevel.equals("EXCELLENT") || q.qualityLevel.equals("GOOD")) {
+                    sb.append("This is a favorable setup. ");
+                }
+            } else {
+                sb.append(String.format("R:R of 1:%.1f is below minimum of 1:%.1f. ",
+                    q.rrRatio, q.minRequired));
+
+                if (q.canBeImproved) {
+                    sb.append(String.format("Could improve to 1:%.1f with SL=%d, TP=%d. ",
+                        q.potentialRR, q.suggestedSlTicks, q.suggestedTpTicks));
+                }
+
+                sb.append(String.format("Consider %s position sizing. ", q.sizingRecommendation));
+            }
+
+            if (!q.issueType.equals("NONE")) {
+                sb.append("Issue: ").append(q.issueDetails).append(". ");
+            }
+
+            return sb.toString();
+        }
+
+        /**
+         * Format for AI prompt
+         */
+        public String toAIString() {
+            StringBuilder sb = new StringBuilder();
+            sb.append("═══ R:R QUALITY ASSESSMENT ═══\n");
+            sb.append(String.format("%s %s (1:%.1f vs min 1:%.1f)\n",
+                qualityEmoji, qualityLevel, rrRatio, minRequired));
+            sb.append(String.format("  SL: %d ticks (%s) | TP: %d ticks (%s)\n",
+                slTicks, slSource, tpTicks, tpSource));
+            sb.append(String.format("  Score Impact: %+d | Sizing: %s\n",
+                qualityScore, sizingRecommendation));
+
+            if (!issueType.equals("NONE")) {
+                sb.append(String.format("  ⚠️ Issue: %s\n", issueDetails));
+            }
+
+            if (canBeImproved) {
+                sb.append(String.format("  💡 Could improve to 1:%.1f (SL=%d, TP=%d)\n",
+                    potentialRR, suggestedSlTicks, suggestedTpTicks));
+            }
+
+            sb.append("  AI Guidance: ").append(aiGuidance).append("\n");
+            sb.append("═══════════════════════════════\n");
+            return sb.toString();
+        }
+
+        /**
+         * Quick summary for logs
+         */
+        public String getSummary() {
+            return String.format("%s R:R 1:%.1f (%s) - %s",
+                qualityEmoji, rrRatio, qualityLevel, sizingRecommendation);
+        }
+    }
+
+    // ========== CARMINE ROSATO ORDER FLOW DATA ==========
+    public OrderFlowContext orderFlow;
+
+    public static class OrderFlowContext {
+        // Per-price delta and Big Fish levels
+        public boolean hasBigFishNearby;
+        public int bigFishPrice;
+        public long bigFishDelta;
+        public boolean bigFishIsBuyer;
+        public boolean bigFishDefending;
+        public String bigFishSignal;
+
+        // Volume tails
+        public boolean hasUpperTail;
+        public boolean hasLowerTail;
+        public int upperTailLength;
+        public int lowerTailLength;
+        public String tailBias;
+        public String tailReasoning;
+
+        // Tape speed
+        public double tradesPerSecond;
+        public double volumePerSecond;
+        public String speedLevel;
+        public String dominantSide;
+        public boolean isHighSpeed;
+        public boolean isExhaustion;
+        public String tapeInterpretation;
+
+        // Stop hunts
+        public boolean recentStopHunt;
+        public String stopHuntSignal;
+        public int stopHuntStrength;
+        public String stopHuntLevelType;
+        public int stopHuntLevelPrice;
+
+        /**
+         * Format for AI prompt
+         */
+        public String toAIString() {
+            StringBuilder sb = new StringBuilder();
+            sb.append("═══ ORDER FLOW ANALYSIS ═══\n");
+
+            // Big Fish
+            if (hasBigFishNearby) {
+                sb.append(String.format("🐋 Big Fish: %s @ %d (delta: %+d)%s\n",
+                    bigFishIsBuyer ? "BUYER" : "SELLER", bigFishPrice, bigFishDelta,
+                    bigFishDefending ? " DEFENDING" : ""));
+            }
+
+            // Volume Tails
+            if (hasUpperTail || hasLowerTail) {
+                sb.append(String.format("📊 Volume Tails: Upper=%b(%d) Lower=%b(%d) → %s\n",
+                    hasUpperTail, upperTailLength, hasLowerTail, lowerTailLength, tailBias));
+            }
+
+            // Tape Speed
+            sb.append(String.format("⚡ Tape Speed: %.1f t/s (%s) - %s dominant\n",
+                tradesPerSecond, speedLevel, dominantSide));
+            if (isHighSpeed) {
+                sb.append(String.format("   ⚠️ HIGH SPEED: %s\n", tapeInterpretation));
+            }
+
+            // Stop Hunts
+            if (recentStopHunt) {
+                sb.append(String.format("🎯 Stop Hunt: %s at %s @ %d (strength: %d/10)\n",
+                    stopHuntSignal, stopHuntLevelType, stopHuntLevelPrice, stopHuntStrength));
+            }
+
+            sb.append("═══════════════════════════\n");
+            return sb.toString();
+        }
+    }
+
     public static class ScoreBreakdown {
         // Iceberg detection
         public int icebergPoints;
@@ -233,6 +502,9 @@ public class SignalData {
         public String riskRewardRatio;
         public int positionSizeContracts;
         public double totalRiskPercent;
+
+        // Smart SL/TP metadata
+        public String slTpReasoning;  // Explanation of how SL/TP were calculated
     }
 
     // ========== THRESHOLD CONTEXT FOR AI ADAPTIVE CONTROL ==========
@@ -378,6 +650,16 @@ public class SignalData {
             sb.append(String.format("├─ Break-even: %d (+%d ticks)\n",
                 risk.breakEvenPrice, risk.breakEvenTicks));
             sb.append(String.format("└─ R:R Ratio: %s\n", risk.riskRewardRatio));
+        }
+
+        // R:R Quality Assessment (replaces rejection filtering)
+        if (rrQuality != null) {
+            sb.append("\n").append(rrQuality.toAIString());
+        }
+
+        // Order Flow Analysis
+        if (orderFlow != null) {
+            sb.append("\n").append(orderFlow.toAIString());
         }
 
         sb.append("═══════════════════════════════════════════════════════════════\n");

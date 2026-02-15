@@ -138,7 +138,65 @@ public class OrderFlowStrategyEnhanced implements
     private Double dailyLossLimit = 500.0;
 
     @Parameter(name = "Max Slippage (ticks)")
-    private Integer maxSlippageTicks = 20;  // Skip if price moved > 20 ticks
+    private Integer maxSlippageTicks = 50;  // Skip if price moved > 50 ticks
+
+    // ========== POSITION SIZING PARAMETERS ==========
+    @Parameter(name = "Account Size ($)")
+    private Double accountSize = 10000.0;
+
+    @Parameter(name = "Risk Per Trade (%)")
+    private Double riskPerTradePercent = 1.0;  // 1% of account per trade
+
+    @Parameter(name = "Tick Value ($)")
+    private Double tickValue = 12.50;  // ES futures: $12.50 per tick
+
+    @Parameter(name = "Auto-Calculate Position Size")
+    private Boolean autoCalculatePositionSize = false;  // If true, calculate from risk %
+
+    @Parameter(name = "Fixed Position Size")
+    private Integer fixedPositionSize = 1;  // Contracts per trade (used if auto-calc is off)
+
+    @Parameter(name = "Stop Loss Ticks")
+    private Integer stopLossTicks = 20;  // Distance from entry to SL in ticks
+
+    @Parameter(name = "Take Profit Ticks")
+    private Integer takeProfitTicks = 40;  // Distance from entry to TP in ticks
+
+    @Parameter(name = "Use Smart SL/TP")
+    private Boolean useSmartSlTp = true;  // Use ATR + DOM levels for SL/TP
+
+    @Parameter(name = "ATR SL Multiplier")
+    private Double atrSlMultiplier = 1.5;  // SL = ATR × multiplier (in ticks)
+
+    @Parameter(name = "ATR TP Multiplier")
+    private Double atrTpMultiplier = 3.0;  // TP = ATR × multiplier (in ticks)
+
+    @Parameter(name = "Min R:R Ratio")
+    private Double minRRRatio = 1.5;  // Minimum risk:reward ratio (e.g., 1.5 means 1:1.5)
+
+    @Parameter(name = "Max SL Ticks")
+    private Integer maxSlTicks = 50;  // Cap SL to prevent runaway risk
+
+    @Parameter(name = "Max TP Ticks")
+    private Integer maxTpTicks = 150;  // Cap TP to realistic targets
+
+    // ========== DOM QUALITY THRESHOLDS ==========
+    @Parameter(name = "Min DOM Volume for SL/TP")
+    private Integer minDomVolumeForSlTp = 100;  // Only use DOM level if volume >= this
+
+    @Parameter(name = "DOM Level Priority")
+    private Boolean prioritizeDomOverAtr = true;  // DOM levels take priority over ATR
+
+    // ========== SESSION-AWARE ATR SCALING ==========
+    @Parameter(name = "Session-Aware ATR Scaling")
+    private Boolean sessionAwareAtrScaling = true;  // Adjust ATR multipliers by session phase
+
+    // ========== MEMORY-DRIVEN SL/TP ==========
+    @Parameter(name = "Use Trade Memory for SL/TP")
+    private Boolean useTradeMemoryForSlTp = true;  // Use recent trade reversal levels
+
+    @Parameter(name = "Memory Lookback (trades)")
+    private Integer memoryLookbackTrades = 20;  // How many recent trades to analyze
 
     // ========== SAFETY PARAMETERS ==========
     @Parameter(name = "Simulation Mode Only")
@@ -215,6 +273,27 @@ public class OrderFlowStrategyEnhanced implements
         public Integer replayStartHour = 9;   // Hour (24h) when replay data starts (9 = 9:00 AM)
         public Integer replayStartMinute = 30; // Minute when replay data starts (30 = :30)
         public Boolean devMode = false;  // Dev mode for permissive AI testing
+        public String aiPromptMode = "COMPACT";  // FULL or COMPACT prompts
+        public Integer maxSlippageTicks = 50;  // Max price slippage before rejecting signal
+        // Position sizing settings
+        public Double accountSize = 10000.0;
+        public Double riskPerTradePercent = 1.0;
+        public Double tickValue = 12.50;
+        public Boolean autoCalculatePositionSize = false;
+        public Integer fixedPositionSize = 1;
+        public Integer stopLossTicks = 20;
+        public Integer takeProfitTicks = 40;
+        public Boolean useSmartSlTp = true;
+        public Double atrSlMultiplier = 1.5;
+        public Double atrTpMultiplier = 3.0;
+        public Double minRRRatio = 1.5;
+        public Integer maxSlTicks = 50;
+        public Integer maxTpTicks = 150;
+        public Integer minDomVolumeForSlTp = 100;
+        public Boolean prioritizeDomOverAtr = true;
+        public Boolean sessionAwareAtrScaling = true;
+        public Boolean useTradeMemoryForSlTp = true;
+        public Integer memoryLookbackTrades = 20;
     }
 
     private Settings settings;
@@ -263,6 +342,11 @@ public class OrderFlowStrategyEnhanced implements
     // Unified Session Transcript - shared by AI chat and AI Investment Strategist
     private velox.api.layer1.simplified.demo.storage.TranscriptWriter transcriptWriter;
 
+    // Trade logging and session state persistence
+    private velox.api.layer1.simplified.demo.storage.TradeLogger tradeLogger;
+    private velox.api.layer1.simplified.demo.storage.SessionStateManager sessionStateManager;
+    private java.nio.file.Path tradingMemoryDir;  // Path to trading-memory directory
+
     // Session Context - tracks trading session state for AI
     private SessionContext sessionContext;
 
@@ -282,6 +366,16 @@ public class OrderFlowStrategyEnhanced implements
     private final VWAPCalculator vwapCalculator = new VWAPCalculator();
     private final ATRCalculator atrCalculator = new ATRCalculator(14);
     private final DOMAnalyzer domAnalyzer = new DOMAnalyzer(50, 100);  // 50 tick lookback, 100 min wall size
+
+    // ========== CARMINE ROSATO ORDER FLOW TOOLS ==========
+    // Per-price delta tracking (Big Fish levels, institutional interest)
+    private final PriceDeltaTracker priceDeltaTracker = new PriceDeltaTracker();
+    // Volume tail detection (reversal signals from volume profile extremes)
+    private final VolumeTailDetector volumeTailDetector = new VolumeTailDetector();
+    // Tape speed measurement (urgency detection, exhaustion patterns)
+    private final TapeSpeedTracker tapeSpeedTracker = new TapeSpeedTracker();
+    // Stop hunt detection (liquidity grabs at key levels)
+    private final StopHuntDetector stopHuntDetector = new StopHuntDetector();
 
     // Tracking for EMAs and VWAP
     private double currentHigh = Double.NaN;
@@ -322,7 +416,6 @@ public class OrderFlowStrategyEnhanced implements
     private JLabel avgOrderCountLabel;
     private JLabel avgOrderSizeLabel;
     private JLabel currentThresholdLabel;
-    private JTextArea aiInsightsArea;
     private JButton exportButton;
 
     // AI Threshold UI Components
@@ -345,6 +438,9 @@ public class OrderFlowStrategyEnhanced implements
     private JLabel aiVwapDivergeLabel;
 
     // AI Threshold Labels (for Signal Thresholds section)
+    private JLabel aiMinConfluenceLabel;
+    private JLabel aiConfluenceThresholdLabel;
+    private JLabel aiThresholdMultLabel;
     private JLabel aiIcebergMinOrdersLabel;
     private JLabel aiSpoofMinSizeLabel;
     private JLabel aiAbsorptionMinSizeLabel;
@@ -481,6 +577,27 @@ public class OrderFlowStrategyEnhanced implements
         aiMode = settings.aiMode;
         confluenceThreshold = settings.confluenceThreshold;
         aiAuthToken = settings.aiAuthToken;
+        // Position sizing settings
+        accountSize = settings.accountSize;
+        riskPerTradePercent = settings.riskPerTradePercent;
+        tickValue = settings.tickValue;
+        autoCalculatePositionSize = settings.autoCalculatePositionSize;
+        fixedPositionSize = settings.fixedPositionSize;
+        stopLossTicks = settings.stopLossTicks;
+        takeProfitTicks = settings.takeProfitTicks;
+        // Smart SL/TP settings
+        useSmartSlTp = settings.useSmartSlTp;
+        atrSlMultiplier = settings.atrSlMultiplier;
+        atrTpMultiplier = settings.atrTpMultiplier;
+        minRRRatio = settings.minRRRatio;
+        maxSlTicks = settings.maxSlTicks;
+        maxTpTicks = settings.maxTpTicks;
+        // DOM quality and memory settings
+        minDomVolumeForSlTp = settings.minDomVolumeForSlTp;
+        prioritizeDomOverAtr = settings.prioritizeDomOverAtr;
+        sessionAwareAtrScaling = settings.sessionAwareAtrScaling;
+        useTradeMemoryForSlTp = settings.useTradeMemoryForSlTp;
+        memoryLookbackTrades = settings.memoryLookbackTrades;
 
         // Create detection MARKER indicators (Layer 1)
         // These will use custom icons instead of continuous lines
@@ -575,6 +692,9 @@ public class OrderFlowStrategyEnhanced implements
                     log("📁 Using Bookmap memory directory: " + memoryDir);
                 }
 
+                // Store for AI tools access
+                tradingMemoryDir = memoryDir;
+
                 // Import TradingMemoryService
                 velox.api.layer1.simplified.demo.storage.TradingMemoryService service =
                     new velox.api.layer1.simplified.demo.storage.TradingMemoryService(
@@ -589,6 +709,14 @@ public class OrderFlowStrategyEnhanced implements
                 memoryService = service;
                 log("✅ Memory Service initialized: " + service.getIndexedFileCount() + " files, " +
                     service.getIndexedChunkCount() + " chunks");
+
+                // Initialize Trade Logger for persistent trade history
+                tradeLogger = new velox.api.layer1.simplified.demo.storage.TradeLogger(memoryDir);
+                log("✅ Trade Logger initialized: " + memoryDir.resolve("trade-history.csv"));
+
+                // Initialize Session State Manager for daily stat persistence
+                sessionStateManager = new velox.api.layer1.simplified.demo.storage.SessionStateManager(memoryDir);
+                log("✅ Session State Manager initialized: " + sessionStateManager.getCurrentState());
 
                 // Initialize Session Context
                 sessionContext = new SessionContext();
@@ -859,24 +987,30 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(new JLabel("AI Current"), gbc);
 
         gbc.gridx = 0; gbc.gridy = 3;
-        settingsPanel.add(new JLabel("Min Confluence Score:"), gbc);
+        JLabel minConfLabel = new JLabel("Min Confluence Score:");
+        minConfLabel.setToolTipText("<html>Minimum total score required to generate a signal.<br>Score is sum of all confluence factors (iceberg, CVD, EMA, VWAP).<br><br>• 30-40 = More signals, lower quality<br>• 50-60 = Balanced (recommended)<br>• 70+ = Fewer signals, higher quality</html>");
+        settingsPanel.add(minConfLabel, gbc);
         gbc.gridx = 1;
         minConfluenceSpinner = new JSpinner(new SpinnerNumberModel(minConfluenceScore.intValue(), 0, 150, 5));
+        minConfluenceSpinner.setToolTipText("Total confluence points needed (default: 40)");
         minConfluenceSpinner.addChangeListener(e -> updateMinConfluence());
         settingsPanel.add(minConfluenceSpinner, gbc);
         gbc.gridx = 2;
-        JLabel aiMinConfluenceLabel = new JLabel(String.valueOf(minConfluenceScore));
+        aiMinConfluenceLabel = new JLabel(String.valueOf(minConfluenceScore));
         aiMinConfluenceLabel.setForeground(new java.awt.Color(100, 100, 255));
         settingsPanel.add(aiMinConfluenceLabel, gbc);
 
         gbc.gridx = 0; gbc.gridy = 4;
-        settingsPanel.add(new JLabel("Threshold Multiplier:"), gbc);
+        JLabel threshMultLabel = new JLabel("Threshold Multiplier:");
+        threshMultLabel.setToolTipText("<html>Scales all detection thresholds based on market volatility.<br><br>• 1.5-2.0 = Lower thresholds (more sensitive)<br>• 2.5-3.0 = Normal (recommended)<br>• 3.5-5.0 = Higher thresholds (less sensitive)</html>");
+        settingsPanel.add(threshMultLabel, gbc);
         gbc.gridx = 1;
         thresholdMultSpinner = new JSpinner(new SpinnerNumberModel(thresholdMultiplier.doubleValue(), 1.5, 5.0, 0.5));
+        thresholdMultSpinner.setToolTipText("Multiplier for adaptive thresholds (default: 2.5)");
         thresholdMultSpinner.addChangeListener(e -> updateThresholdMultiplier());
         settingsPanel.add(thresholdMultSpinner, gbc);
         gbc.gridx = 2;
-        JLabel aiThresholdMultLabel = new JLabel(String.format("%.1f", thresholdMultiplier));
+        aiThresholdMultLabel = new JLabel(String.format("%.1f", thresholdMultiplier));
         aiThresholdMultLabel.setForeground(new java.awt.Color(100, 100, 255));
         settingsPanel.add(aiThresholdMultLabel, gbc);
 
@@ -949,19 +1083,21 @@ public class OrderFlowStrategyEnhanced implements
         gbc.fill = GridBagConstraints.NONE;  // Reset fill
 
         gbc.gridx = 0; gbc.gridy = 11; gbc.gridwidth = 1;
-        settingsPanel.add(new JLabel("Use AI Adaptive:"), gbc);
+        JLabel useAiAdaptiveLabel = new JLabel("Use AI Adaptive:");
+        useAiAdaptiveLabel.setToolTipText("Enable AI to automatically adjust thresholds based on market conditions");
+        settingsPanel.add(useAiAdaptiveLabel, gbc);
         gbc.gridx = 1;
         aiAdaptiveModeCheckBox = new JCheckBox();
         aiAdaptiveModeCheckBox.setSelected(useAIAdaptiveThresholds);
-        aiAdaptiveModeCheckBox.setToolTipText("When enabled, AI analyzes market conditions and optimizes thresholds automatically");
+        aiAdaptiveModeCheckBox.setToolTipText("<html>When enabled, AI analyzes market conditions and optimizes thresholds automatically.<br>Adjusts: Min Confluence, Threshold Multiplier, Detection thresholds</html>");
         aiAdaptiveModeCheckBox.addActionListener(e -> updateAIAdaptiveMode());
         settingsPanel.add(aiAdaptiveModeCheckBox, gbc);
 
         gbc.gridx = 0; gbc.gridy = 12; gbc.gridwidth = 2;
         settingsPanel.add(new JLabel("AI Status:"), gbc);
         gbc.gridy = 13;
-        aiStatusIndicator = new JLabel("🔴 AI Disabled");
-        aiStatusIndicator.setForeground(Color.GRAY);
+        aiStatusIndicator = new JLabel(enableAITrading ? "🟢 AI Trading Active" : "🔴 AI Disabled");
+        aiStatusIndicator.setForeground(enableAITrading ? new Color(0, 150, 0) : Color.GRAY);
         settingsPanel.add(aiStatusIndicator, gbc);
 
         gbc.gridy = 14; gbc.gridwidth = 1;
@@ -983,13 +1119,25 @@ public class OrderFlowStrategyEnhanced implements
         addSeparator(settingsPanel, "AI Investment Strategist (Qid v2.0)", gbc);
 
         gbc.gridy = 18; gbc.gridwidth = 1;
-        settingsPanel.add(new JLabel("Enable AI Trading:"), gbc);
+        JLabel enableAiTradingLabel = new JLabel("Enable AI Trading:");
+        enableAiTradingLabel.setToolTipText("Enable Qid AI to evaluate signals and manage trades");
+        settingsPanel.add(enableAiTradingLabel, gbc);
         gbc.gridx = 1;
         JCheckBox enableAITradingCheckBox = new JCheckBox();
         enableAITradingCheckBox.setSelected(enableAITrading);
+        enableAITradingCheckBox.setToolTipText("<html>Enable AI (Qid) to evaluate trading signals and manage positions.<br>Requires AI Auth Token to be configured.</html>");
         enableAITradingCheckBox.addActionListener(e -> {
             enableAITrading = enableAITradingCheckBox.isSelected();
             log("🤖 AI Trading " + (enableAITrading ? "ENABLED" : "DISABLED"));
+
+            // Update status indicator
+            if (enableAITrading) {
+                aiStatusIndicator.setText("🟢 AI Trading Active");
+                aiStatusIndicator.setForeground(new Color(0, 150, 0));
+            } else {
+                aiStatusIndicator.setText("🔴 AI Disabled");
+                aiStatusIndicator.setForeground(Color.GRAY);
+            }
 
             // Initialize AI components if enabling and not already initialized
             if (enableAITrading && aiOrderManager == null) {
@@ -999,11 +1147,14 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(enableAITradingCheckBox, gbc);
 
         gbc.gridx = 0; gbc.gridy = 19;
-        settingsPanel.add(new JLabel("AI Mode:"), gbc);
+        JLabel aiModeLabel = new JLabel("AI Mode:");
+        aiModeLabel.setToolTipText("<html>AI trading autonomy level:<br>• MANUAL: AI only suggests, you execute<br>• SEMI_AUTO: AI executes approved signals<br>• FULL_AUTO: AI manages all trading</html>");
+        settingsPanel.add(aiModeLabel, gbc);
         gbc.gridx = 1;
         String[] aiModes = {"MANUAL", "SEMI_AUTO", "FULL_AUTO"};
         JComboBox<String> aiModeComboBox = new JComboBox<>(aiModes);
         aiModeComboBox.setSelectedItem(aiMode);
+        aiModeComboBox.setToolTipText("<html>MANUAL: AI suggests trades, you decide<br>SEMI_AUTO: AI executes above threshold<br>FULL_AUTO: AI manages everything</html>");
         aiModeComboBox.addActionListener(e -> {
             aiMode = (String) aiModeComboBox.getSelectedItem();
             log("🔄 AI Mode: " + aiMode);
@@ -1012,11 +1163,13 @@ public class OrderFlowStrategyEnhanced implements
 
         // Dev Mode checkbox - for testing with permissive AI
         gbc.gridx = 0; gbc.gridy = 20;
-        settingsPanel.add(new JLabel("Dev Mode:"), gbc);
+        JLabel devModeLabel = new JLabel("Dev Mode:");
+        devModeLabel.setToolTipText("Testing mode with more permissive AI decisions");
+        settingsPanel.add(devModeLabel, gbc);
         gbc.gridx = 1;
         JCheckBox devModeCheckBox = new JCheckBox();
         devModeCheckBox.setSelected(settings.devMode != null ? settings.devMode : devMode);
-        devModeCheckBox.setToolTipText("In Dev Mode, AI is more permissive for testing execution flow");
+        devModeCheckBox.setToolTipText("<html>In Dev Mode, AI is more permissive for testing execution flow.<br>Use for testing only - not for live trading!</html>");
         devModeCheckBox.addActionListener(e -> {
             devMode = devModeCheckBox.isSelected();
             settings.devMode = devMode;
@@ -1031,28 +1184,44 @@ public class OrderFlowStrategyEnhanced implements
 
         // AI Prompt Mode (FULL/COMPACT)
         gbc.gridx = 0; gbc.gridy = 21;
-        settingsPanel.add(new JLabel("Prompt Mode:"), gbc);
+        JLabel promptModeLabel = new JLabel("Prompt Mode:");
+        promptModeLabel.setToolTipText("AI prompt verbosity - affects speed and token usage");
+        settingsPanel.add(promptModeLabel, gbc);
         gbc.gridx = 1;
         JComboBox<String> promptModeCombo = new JComboBox<>(new String[]{"COMPACT", "FULL"});
-        promptModeCombo.setSelectedItem(aiPromptMode);
-        promptModeCombo.setToolTipText("COMPACT: faster, less tokens. FULL: detailed prompts.");
+        promptModeCombo.setSelectedItem(settings.aiPromptMode != null ? settings.aiPromptMode : aiPromptMode);
+        promptModeCombo.setToolTipText("<html>COMPACT: Faster responses, fewer tokens, less context<br>FULL: Detailed prompts with full market context</html>");
         promptModeCombo.addActionListener(e -> {
             aiPromptMode = (String) promptModeCombo.getSelectedItem();
+            settings.aiPromptMode = aiPromptMode;
             if (aiStrategist != null) {
                 aiStrategist.setPromptMode(aiPromptMode);
             }
+            log("🤖 Prompt Mode: " + aiPromptMode);
+            saveSettings();
         });
         settingsPanel.add(promptModeCombo, gbc);
+        // Sync local var with saved setting
+        if (settings.aiPromptMode != null) {
+            aiPromptMode = settings.aiPromptMode;
+        }
 
         gbc.gridx = 0; gbc.gridy = 22;
-        settingsPanel.add(new JLabel("Confluence Threshold:"), gbc);
+        JLabel confThreshLabel = new JLabel("Confluence Threshold:");
+        confThreshLabel.setToolTipText("<html>Minimum score for AI to consider executing a trade.<br>Higher = more conservative (fewer trades)<br>Lower = more aggressive (more trades)</html>");
+        settingsPanel.add(confThreshLabel, gbc);
         gbc.gridx = 1;
-        JSpinner confThresholdSpinner = new JSpinner(new SpinnerNumberModel(confluenceThreshold.intValue(), 0, 135, 5));
+        confThresholdSpinner = new JSpinner(new SpinnerNumberModel(confluenceThreshold.intValue(), 0, 135, 5));
+        confThresholdSpinner.setToolTipText("AI execution threshold (default: 50)");
         confThresholdSpinner.addChangeListener(e -> confluenceThreshold = (Integer) confThresholdSpinner.getValue());
         settingsPanel.add(confThresholdSpinner, gbc);
+        gbc.gridx = 2;
+        aiConfluenceThresholdLabel = new JLabel(String.valueOf(confluenceThreshold));
+        aiConfluenceThresholdLabel.setForeground(new java.awt.Color(100, 100, 255));
+        settingsPanel.add(aiConfluenceThresholdLabel, gbc);
 
         // AI Managed Weights toggle
-        gbc.gridx = 0; gbc.gridy = 23;
+        gbc.gridx = 0; gbc.gridy = 23; gbc.gridwidth = 1;
         JLabel aiManagedLabel = new JLabel("AI Managed Weights:");
         aiManagedLabel.setToolTipText("When enabled, AI can adjust confluence weights automatically");
         settingsPanel.add(aiManagedLabel, gbc);
@@ -1079,10 +1248,13 @@ public class OrderFlowStrategyEnhanced implements
 
         // Weight controls - key weights with AI Current column
         gbc.gridx = 0; gbc.gridy = 26; gbc.gridwidth = 1;
-        settingsPanel.add(new JLabel("Iceberg Max (20-60):"), gbc);
+        JLabel icebergMaxLabel = new JLabel("Iceberg Max (20-60):");
+        icebergMaxLabel.setToolTipText("<html>Maximum points from iceberg detection.<br>Higher = more weight on iceberg signals<br>Lower = icebergs contribute less to score</html>");
+        settingsPanel.add(icebergMaxLabel, gbc);
         gbc.gridx = 1;
         JSpinner icebergMaxSpinner = new JSpinner(new SpinnerNumberModel(
             confluenceWeights.get(ConfluenceWeights.ICEBERG_MAX), 20, 60, 5));
+        icebergMaxSpinner.setToolTipText("Points for strong iceberg detection (default: 40)");
         icebergMaxSpinner.addChangeListener(e -> {
             confluenceWeights.set(ConfluenceWeights.ICEBERG_MAX, (Integer) icebergMaxSpinner.getValue());
             log("Weight: icebergMax = " + confluenceWeights.get(ConfluenceWeights.ICEBERG_MAX));
@@ -1094,10 +1266,13 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(aiIcebergMaxLabel, gbc);
 
         gbc.gridx = 0; gbc.gridy = 27;
-        settingsPanel.add(new JLabel("CVD Align Max (10-40):"), gbc);
+        JLabel cvdAlignLabel = new JLabel("CVD Align Max (10-40):");
+        cvdAlignLabel.setToolTipText("<html>Points when CVD (Cumulative Volume Delta) aligns with signal direction.<br>CVD shows if buyers or sellers are in control.</html>");
+        settingsPanel.add(cvdAlignLabel, gbc);
         gbc.gridx = 1;
         JSpinner cvdAlignSpinner = new JSpinner(new SpinnerNumberModel(
             confluenceWeights.get(ConfluenceWeights.CVD_ALIGN_MAX), 10, 40, 5));
+        cvdAlignSpinner.setToolTipText("Points for CVD confirming direction (default: 25)");
         cvdAlignSpinner.addChangeListener(e -> {
             confluenceWeights.set(ConfluenceWeights.CVD_ALIGN_MAX, (Integer) cvdAlignSpinner.getValue());
             log("Weight: cvdAlignMax = " + confluenceWeights.get(ConfluenceWeights.CVD_ALIGN_MAX));
@@ -1109,10 +1284,13 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(aiCvdAlignLabel, gbc);
 
         gbc.gridx = 0; gbc.gridy = 28;
-        settingsPanel.add(new JLabel("CVD Diverge Penalty (15-50):"), gbc);
+        JLabel cvdDivergeLabel = new JLabel("CVD Diverge Penalty (15-50):");
+        cvdDivergeLabel.setToolTipText("<html>Penalty when CVD diverges from signal direction.<br>Example: Long signal but sellers dominate = penalty<br>Higher = stronger filter against diverging signals</html>");
+        settingsPanel.add(cvdDivergeLabel, gbc);
         gbc.gridx = 1;
         JSpinner cvdDivergeSpinner = new JSpinner(new SpinnerNumberModel(
             confluenceWeights.get(ConfluenceWeights.CVD_DIVERGE_PENALTY), 15, 50, 5));
+        cvdDivergeSpinner.setToolTipText("Penalty for CVD against direction (default: 30)");
         cvdDivergeSpinner.addChangeListener(e -> {
             confluenceWeights.set(ConfluenceWeights.CVD_DIVERGE_PENALTY, (Integer) cvdDivergeSpinner.getValue());
             log("Weight: cvdDivergePenalty = " + confluenceWeights.get(ConfluenceWeights.CVD_DIVERGE_PENALTY));
@@ -1124,10 +1302,13 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(aiCvdDivergeLabel, gbc);
 
         gbc.gridx = 0; gbc.gridy = 29;
-        settingsPanel.add(new JLabel("EMA Align Max (10-30):"), gbc);
+        JLabel emaAlignLabel = new JLabel("EMA Align Max (10-30):");
+        emaAlignLabel.setToolTipText("<html>Points when EMAs (9, 21, 50) align with signal direction.<br>More EMAs aligned = more points (up to this max)</html>");
+        settingsPanel.add(emaAlignLabel, gbc);
         gbc.gridx = 1;
         JSpinner emaAlignSpinner = new JSpinner(new SpinnerNumberModel(
             confluenceWeights.get(ConfluenceWeights.EMA_ALIGN_MAX), 10, 30, 5));
+        emaAlignSpinner.setToolTipText("Points for EMA trend alignment (default: 20)");
         emaAlignSpinner.addChangeListener(e -> {
             confluenceWeights.set(ConfluenceWeights.EMA_ALIGN_MAX, (Integer) emaAlignSpinner.getValue());
             log("Weight: emaAlignMax = " + confluenceWeights.get(ConfluenceWeights.EMA_ALIGN_MAX));
@@ -1139,10 +1320,13 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(aiEmaAlignLabel, gbc);
 
         gbc.gridx = 0; gbc.gridy = 30;
-        settingsPanel.add(new JLabel("VWAP Align (5-15):"), gbc);
+        JLabel vwapAlignLabel = new JLabel("VWAP Align (5-15):");
+        vwapAlignLabel.setToolTipText("<html>Points when price is favorably positioned relative to VWAP.<br>Long above VWAP or Short below VWAP = bonus</html>");
+        settingsPanel.add(vwapAlignLabel, gbc);
         gbc.gridx = 1;
         JSpinner vwapAlignSpinner = new JSpinner(new SpinnerNumberModel(
             confluenceWeights.get(ConfluenceWeights.VWAP_ALIGN), 5, 15, 1));
+        vwapAlignSpinner.setToolTipText("Points for VWAP alignment (default: 10)");
         vwapAlignSpinner.addChangeListener(e -> {
             confluenceWeights.set(ConfluenceWeights.VWAP_ALIGN, (Integer) vwapAlignSpinner.getValue());
             log("Weight: vwapAlign = " + confluenceWeights.get(ConfluenceWeights.VWAP_ALIGN));
@@ -1154,10 +1338,13 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(aiVwapAlignLabel, gbc);
 
         gbc.gridx = 0; gbc.gridy = 31;
-        settingsPanel.add(new JLabel("VWAP Diverge (2-10):"), gbc);
+        JLabel vwapDivergeLabel = new JLabel("VWAP Diverge (2-10):");
+        vwapDivergeLabel.setToolTipText("<html>Penalty when price is unfavorably positioned relative to VWAP.<br>Long below VWAP or Short above VWAP = penalty</html>");
+        settingsPanel.add(vwapDivergeLabel, gbc);
         gbc.gridx = 1;
         JSpinner vwapDivergeSpinner = new JSpinner(new SpinnerNumberModel(
             confluenceWeights.get(ConfluenceWeights.VWAP_DIVERGE), 2, 10, 1));
+        vwapDivergeSpinner.setToolTipText("Penalty for VWAP divergence (default: 5)");
         vwapDivergeSpinner.addChangeListener(e -> {
             confluenceWeights.set(ConfluenceWeights.VWAP_DIVERGE, (Integer) vwapDivergeSpinner.getValue());
             log("Weight: vwapDiverge = " + confluenceWeights.get(ConfluenceWeights.VWAP_DIVERGE));
@@ -1192,34 +1379,47 @@ public class OrderFlowStrategyEnhanced implements
         slippageLabel.setToolTipText("Reject signal if price moved more than this many ticks");
         settingsPanel.add(slippageLabel, gbc);
         gbc.gridx = 1;
-        JSpinner slippageSpinner = new JSpinner(new SpinnerNumberModel(maxSlippageTicks.intValue(), 5, 100, 5));
-        slippageSpinner.setToolTipText("Higher = allow more price movement (default: 20)");
+        int savedSlippage = settings.maxSlippageTicks != null ? settings.maxSlippageTicks : maxSlippageTicks;
+        JSpinner slippageSpinner = new JSpinner(new SpinnerNumberModel(savedSlippage, 5, 100, 5));
+        slippageSpinner.setToolTipText("Higher = allow more price movement (default: 50)");
         slippageSpinner.addChangeListener(e -> {
             maxSlippageTicks = (Integer) slippageSpinner.getValue();
+            settings.maxSlippageTicks = maxSlippageTicks;
             if (aiOrderManager != null) {
                 aiOrderManager.maxPriceSlippageTicks = maxSlippageTicks;
             }
             log("📏 Max Slippage: " + maxSlippageTicks + " ticks");
+            saveSettings();
         });
         settingsPanel.add(slippageSpinner, gbc);
+        // Sync local var with saved setting
+        if (settings.maxSlippageTicks != null) {
+            maxSlippageTicks = settings.maxSlippageTicks;
+        }
 
         // Safety Controls section
         gbc.gridx = 0; gbc.gridy = 34; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Safety Controls", gbc);
 
         gbc.gridx = 0; gbc.gridy = 35; gbc.gridwidth = 1;
-        settingsPanel.add(new JLabel("Simulation Mode Only:"), gbc);
+        JLabel simModeLabel = new JLabel("Simulation Mode Only:");
+        simModeLabel.setToolTipText("When enabled, no real orders are sent to exchange");
+        settingsPanel.add(simModeLabel, gbc);
         gbc.gridx = 1;
         simModeCheckBox = new JCheckBox();
         simModeCheckBox.setSelected(simModeOnly);
+        simModeCheckBox.setToolTipText("<html>SAFETY: When enabled, strategy simulates trades without real orders.<br>Enable for testing, disable for live trading.</html>");
         simModeCheckBox.addActionListener(e -> updateSimMode());
         settingsPanel.add(simModeCheckBox, gbc);
 
         gbc.gridx = 0; gbc.gridy = 36;
-        settingsPanel.add(new JLabel("Enable Auto-Execution:"), gbc);
+        JLabel autoExecLabel = new JLabel("Enable Auto-Execution:");
+        autoExecLabel.setToolTipText("When enabled, signals automatically execute without confirmation");
+        settingsPanel.add(autoExecLabel, gbc);
         gbc.gridx = 1;
         autoExecCheckBox = new JCheckBox();
         autoExecCheckBox.setSelected(autoExecution);
+        autoExecCheckBox.setToolTipText("<html>When enabled, signals that pass thresholds are executed automatically.<br>When disabled, signals are logged but not executed.</html>");
         autoExecCheckBox.addActionListener(e -> updateAutoExecution());
         settingsPanel.add(autoExecCheckBox, gbc);
 
@@ -1228,47 +1428,307 @@ public class OrderFlowStrategyEnhanced implements
         addSeparator(settingsPanel, "Risk Management", gbc);
 
         gbc.gridx = 0; gbc.gridy = 38; gbc.gridwidth = 1;
-        settingsPanel.add(new JLabel("Max Position:"), gbc);
+        JLabel maxPosLabel = new JLabel("Max Position:");
+        maxPosLabel.setToolTipText("<html>Maximum number of contracts/shares allowed at once.<br>Limits exposure in the market.</html>");
+        settingsPanel.add(maxPosLabel, gbc);
         gbc.gridx = 1;
         JSpinner maxPosSpinner = new JSpinner(new SpinnerNumberModel(maxPosition.intValue(), 1, 10, 1));
+        maxPosSpinner.setToolTipText("Maximum position size in contracts (default: 3)");
         maxPosSpinner.addChangeListener(e -> maxPosition = (Integer) maxPosSpinner.getValue());
         settingsPanel.add(maxPosSpinner, gbc);
 
         gbc.gridx = 0; gbc.gridy = 39;
-        settingsPanel.add(new JLabel("Daily Loss Limit ($):"), gbc);
+        JLabel lossLimitLabel = new JLabel("Daily Loss Limit ($):");
+        lossLimitLabel.setToolTipText("<html>Maximum loss allowed per day.<br>Trading stops when this limit is reached.<br>Critical risk management control!</html>");
+        settingsPanel.add(lossLimitLabel, gbc);
         gbc.gridx = 1;
         JSpinner lossLimitSpinner = new JSpinner(new SpinnerNumberModel(dailyLossLimit.doubleValue(), 100.0, 5000.0, 100.0));
+        lossLimitSpinner.setToolTipText("Stop trading if daily losses exceed this (default: $500)");
         lossLimitSpinner.addChangeListener(e -> dailyLossLimit = (Double) lossLimitSpinner.getValue());
         settingsPanel.add(lossLimitSpinner, gbc);
 
+        // Position Sizing (within Risk Management)
+        gbc.gridx = 0; gbc.gridy = 40;
+        JLabel accountSizeLabel = new JLabel("Account Size ($):");
+        accountSizeLabel.setToolTipText("<html>Your trading account balance.<br>Used to calculate position sizes based on risk %.</html>");
+        settingsPanel.add(accountSizeLabel, gbc);
+        gbc.gridx = 1;
+        JSpinner accountSizeSpinner = new JSpinner(new SpinnerNumberModel(accountSize.doubleValue(), 1000.0, 1000000.0, 1000.0));
+        accountSizeSpinner.setToolTipText("Total account balance for risk calculations (default: $25,000)");
+        accountSizeSpinner.addChangeListener(e -> accountSize = (Double) accountSizeSpinner.getValue());
+        settingsPanel.add(accountSizeSpinner, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 41;
+        JLabel riskPerTradeLabel = new JLabel("Risk Per Trade (%):");
+        riskPerTradeLabel.setToolTipText("<html>Percentage of account to risk per trade.<br>• 0.5-1% = Conservative<br>• 1-2% = Moderate (recommended)<br>• 2-5% = Aggressive</html>");
+        settingsPanel.add(riskPerTradeLabel, gbc);
+        gbc.gridx = 1;
+        JSpinner riskPerTradeSpinner = new JSpinner(new SpinnerNumberModel(riskPerTradePercent.doubleValue(), 0.25, 5.0, 0.25));
+        riskPerTradeSpinner.setToolTipText("Percent of account to risk per trade (default: 1.0%)");
+        riskPerTradeSpinner.addChangeListener(e -> riskPerTradePercent = (Double) riskPerTradeSpinner.getValue());
+        settingsPanel.add(riskPerTradeSpinner, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 42;
+        JLabel tickValueLabel = new JLabel("Tick Value ($):");
+        tickValueLabel.setToolTipText("<html>Dollar value per tick movement.<br>Example: ES futures = $12.50 per tick<br>Used for P&L and risk calculations.</html>");
+        settingsPanel.add(tickValueLabel, gbc);
+        gbc.gridx = 1;
+        JSpinner tickValueSpinner = new JSpinner(new SpinnerNumberModel(tickValue.doubleValue(), 0.01, 100.0, 0.01));
+        tickValueSpinner.setToolTipText("Dollar value of 1 tick movement (default: $12.50)");
+        tickValueSpinner.addChangeListener(e -> tickValue = (Double) tickValueSpinner.getValue());
+        settingsPanel.add(tickValueSpinner, gbc);
+
+        // Fixed position size (declared first so checkbox can reference it)
+        gbc.gridx = 0; gbc.gridy = 43;
+        JLabel fixedPosLabel = new JLabel("Fixed Position Size:");
+        fixedPosLabel.setToolTipText("<html>Number of contracts when NOT auto-calculating.<br>Used when Auto-Calculate Size is disabled.</html>");
+        settingsPanel.add(fixedPosLabel, gbc);
+        gbc.gridx = 1;
+        JSpinner fixedPosSizeSpinner = new JSpinner(new SpinnerNumberModel(fixedPositionSize.intValue(), 1, 50, 1));
+        fixedPosSizeSpinner.setToolTipText("<html>Contracts per trade (used when Auto-Calculate is off)<br>Example: 1 contract per trade</html>");
+        fixedPosSizeSpinner.addChangeListener(e -> fixedPositionSize = (Integer) fixedPosSizeSpinner.getValue());
+        settingsPanel.add(fixedPosSizeSpinner, gbc);
+
+        // Auto-calculate checkbox (after spinner so it can enable/disable it)
+        gbc.gridx = 0; gbc.gridy = 44;
+        JLabel autoCalcLabel = new JLabel("Auto-Calculate Size:");
+        autoCalcLabel.setToolTipText("<html>When enabled, position size is calculated from:<br>Account Size × Risk % ÷ (Stop Loss × Tick Value)</html>");
+        settingsPanel.add(autoCalcLabel, gbc);
+        gbc.gridx = 1;
+        JCheckBox autoCalcCheckBox = new JCheckBox();
+        autoCalcCheckBox.setSelected(autoCalculatePositionSize);
+        autoCalcCheckBox.setToolTipText("<html>ON: Size = Account × Risk% ÷ (SL ticks × Tick Value)<br>OFF: Use Fixed Position Size spinner above</html>");
+        autoCalcCheckBox.addActionListener(e -> {
+            autoCalculatePositionSize = autoCalcCheckBox.isSelected();
+            fixedPosSizeSpinner.setEnabled(!autoCalculatePositionSize);
+        });
+        settingsPanel.add(autoCalcCheckBox, gbc);
+
+        // Set initial state of spinner based on auto-calc setting
+        fixedPosSizeSpinner.setEnabled(!autoCalculatePositionSize);
+
+        // Stop Loss Ticks
+        gbc.gridx = 0; gbc.gridy = 45;
+        JLabel slTicksLabel = new JLabel("Stop Loss (ticks):");
+        slTicksLabel.setToolTipText("<html>Fixed stop loss distance from entry price.<br>Used when Smart SL/TP is disabled.</html>");
+        settingsPanel.add(slTicksLabel, gbc);
+        gbc.gridx = 1;
+        JSpinner slTicksSpinner = new JSpinner(new SpinnerNumberModel(stopLossTicks.intValue(), 1, 200, 1));
+        slTicksSpinner.setToolTipText("<html>Distance from entry to stop loss in ticks<br>Used with fixed SL/TP mode (Smart SL/TP off)</html>");
+        slTicksSpinner.addChangeListener(e -> stopLossTicks = (Integer) slTicksSpinner.getValue());
+        settingsPanel.add(slTicksSpinner, gbc);
+
+        // Take Profit Ticks
+        gbc.gridx = 0; gbc.gridy = 46;
+        JLabel tpTicksLabel = new JLabel("Take Profit (ticks):");
+        tpTicksLabel.setToolTipText("<html>Fixed take profit distance from entry price.<br>Used when Smart SL/TP is disabled.</html>");
+        settingsPanel.add(tpTicksLabel, gbc);
+        gbc.gridx = 1;
+        JSpinner tpTicksSpinner = new JSpinner(new SpinnerNumberModel(takeProfitTicks.intValue(), 1, 500, 1));
+        tpTicksSpinner.setToolTipText("<html>Distance from entry to take profit in ticks<br>Used with fixed SL/TP mode (Smart SL/TP off)</html>");
+        tpTicksSpinner.addChangeListener(e -> takeProfitTicks = (Integer) tpTicksSpinner.getValue());
+        settingsPanel.add(tpTicksSpinner, gbc);
+
+        // R:R display label (calculated)
+        gbc.gridx = 0; gbc.gridy = 47;
+        JLabel rrLabel = new JLabel("R:R Ratio:");
+        rrLabel.setToolTipText("<html>Calculated from Stop Loss and Take Profit ticks.<br>Formula: TP ticks ÷ SL ticks<br>Example: TP=30, SL=10 → R:R = 1:3.0</html>");
+        settingsPanel.add(rrLabel, gbc);
+        gbc.gridx = 1;
+        JLabel rrValueLabel = new JLabel(String.format("1:%.1f", (double) takeProfitTicks / stopLossTicks));
+        rrValueLabel.setFont(new Font("SansSerif", Font.BOLD, 12));
+        rrValueLabel.setToolTipText("<html>This is the actual R:R from your fixed SL/TP settings.<br>Changes when you adjust Stop Loss or Take Profit spinners above.</html>");
+        settingsPanel.add(rrValueLabel, gbc);
+
+        // Update R:R label when SL/TP changes
+        slTicksSpinner.addChangeListener(e -> {
+            int sl = (Integer) slTicksSpinner.getValue();
+            int tp = (Integer) tpTicksSpinner.getValue();
+            rrValueLabel.setText(String.format("1:%.1f", (double) tp / sl));
+        });
+        tpTicksSpinner.addChangeListener(e -> {
+            int sl = (Integer) slTicksSpinner.getValue();
+            int tp = (Integer) tpTicksSpinner.getValue();
+            rrValueLabel.setText(String.format("1:%.1f", (double) tp / sl));
+        });
+
+        // ========== SMART SL/TP SECTION ==========
+        gbc.gridx = 0; gbc.gridy = 48; gbc.gridwidth = 2;
+        addSeparator(settingsPanel, "Smart SL/TP (ATR + DOM)", gbc);
+
+        // Use Smart SL/TP checkbox
+        gbc.gridx = 0; gbc.gridy = 49; gbc.gridwidth = 1;
+        JLabel smartSlTpLabel = new JLabel("Use Smart SL/TP:");
+        smartSlTpLabel.setToolTipText("<html>When enabled, uses dynamic SL/TP based on:<br>• ATR (Average True Range) for volatility<br>• DOM support/resistance levels<br>• Trade memory from past performance</html>");
+        settingsPanel.add(smartSlTpLabel, gbc);
+        gbc.gridx = 1;
+        JCheckBox smartSlTpCheckBox = new JCheckBox();
+        smartSlTpCheckBox.setSelected(useSmartSlTp);
+        smartSlTpCheckBox.setToolTipText("<html>ON: SL/TP calculated from market conditions (recommended)<br>OFF: Use fixed SL/TP ticks from settings above</html>");
+        smartSlTpCheckBox.addActionListener(e -> useSmartSlTp = smartSlTpCheckBox.isSelected());
+        settingsPanel.add(smartSlTpCheckBox, gbc);
+
+        // ATR SL Multiplier
+        gbc.gridx = 0; gbc.gridy = 50;
+        JLabel atrSlLabel = new JLabel("ATR SL Multiplier:");
+        atrSlLabel.setToolTipText("<html>Stop Loss distance based on ATR volatility.<br>Higher = wider stop (more room)<br>Lower = tighter stop (less risk but more stops)</html>");
+        settingsPanel.add(atrSlLabel, gbc);
+        gbc.gridx = 1;
+        JSpinner atrSlSpinner = new JSpinner(new SpinnerNumberModel(atrSlMultiplier.doubleValue(), 0.5, 5.0, 0.1));
+        atrSlSpinner.setToolTipText("<html>SL = ATR × this value (in ticks)<br>1.5 = SL is 1.5× the average range<br>Higher for volatile markets</html>");
+        atrSlSpinner.setEditor(new JSpinner.NumberEditor(atrSlSpinner, "0.0"));
+        atrSlSpinner.addChangeListener(e -> atrSlMultiplier = (Double) atrSlSpinner.getValue());
+        settingsPanel.add(atrSlSpinner, gbc);
+
+        // ATR TP Multiplier
+        gbc.gridx = 0; gbc.gridy = 51;
+        JLabel atrTpLabel = new JLabel("ATR TP Multiplier:");
+        atrTpLabel.setToolTipText("<html>Take Profit distance based on ATR volatility.<br>Should be higher than SL multiplier for positive R:R</html>");
+        settingsPanel.add(atrTpLabel, gbc);
+        gbc.gridx = 1;
+        JSpinner atrTpSpinner = new JSpinner(new SpinnerNumberModel(atrTpMultiplier.doubleValue(), 1.0, 10.0, 0.5));
+        atrTpSpinner.setToolTipText("<html>TP = ATR × this value (in ticks)<br>3.0 = TP is 3× the average range<br>With SL=1.5, gives R:R of 1:2.0</html>");
+        atrTpSpinner.setEditor(new JSpinner.NumberEditor(atrTpSpinner, "0.0"));
+        atrTpSpinner.addChangeListener(e -> atrTpMultiplier = (Double) atrTpSpinner.getValue());
+        settingsPanel.add(atrTpSpinner, gbc);
+
+        // Min R:R Ratio - displayed as "1:[spinner]"
+        gbc.gridx = 0; gbc.gridy = 52;
+        JLabel minRRPrefixLabel = new JLabel("Min R:R 1:");
+        minRRPrefixLabel.setFont(new Font("SansSerif", Font.BOLD, 12));
+        minRRPrefixLabel.setToolTipText("<html><b>Minimum Risk:Reward ratio required</b><br><br>Signals with R:R below this threshold will be flagged as poor quality.<br><br>• 1:1.5 = Risk $1 to make $1.50 (break-even long term)<br>• 1:2.0 = Risk $1 to make $2.00 (recommended)<br>• 1:3.0 = Risk $1 to make $3.00 (conservative)</html>");
+        settingsPanel.add(minRRPrefixLabel, gbc);
+        gbc.gridx = 1;
+        double savedMinRR = settings.minRRRatio != null ? settings.minRRRatio : minRRRatio;
+        JSpinner minRRSpinner = new JSpinner(new SpinnerNumberModel(savedMinRR, 1.0, 5.0, 0.1));
+        minRRSpinner.setEditor(new JSpinner.NumberEditor(minRRSpinner, "0.0"));
+        minRRSpinner.setToolTipText("Minimum R:R ratio required (e.g., 1.5 means minimum 1:1.5 risk-reward)");
+        minRRSpinner.addChangeListener(e -> {
+            minRRRatio = (Double) minRRSpinner.getValue();
+            settings.minRRRatio = minRRRatio;
+            saveSettings();
+            log("📏 Min R:R Ratio: 1:" + minRRRatio);
+        });
+        settingsPanel.add(minRRSpinner, gbc);
+        // Sync local var with saved setting
+        if (settings.minRRRatio != null) {
+            minRRRatio = settings.minRRRatio;
+        }
+
+        // Max SL Ticks
+        gbc.gridx = 0; gbc.gridy = 53;
+        JLabel maxSlLabel = new JLabel("Max SL (ticks):");
+        maxSlLabel.setToolTipText("<html>Maximum stop loss allowed when using Smart SL/TP.<br>Prevents runaway risk from ATR calculations.</html>");
+        settingsPanel.add(maxSlLabel, gbc);
+        gbc.gridx = 1;
+        JSpinner maxSlSpinner = new JSpinner(new SpinnerNumberModel(maxSlTicks.intValue(), 10, 200, 5));
+        maxSlSpinner.setToolTipText("<html>Cap for Smart SL - won't exceed this<br>Prevents excessive risk in volatile markets</html>");
+        maxSlSpinner.addChangeListener(e -> maxSlTicks = (Integer) maxSlSpinner.getValue());
+        settingsPanel.add(maxSlSpinner, gbc);
+
+        // Max TP Ticks
+        gbc.gridx = 0; gbc.gridy = 54;
+        JLabel maxTpLabel = new JLabel("Max TP (ticks):");
+        maxTpLabel.setToolTipText("<html>Maximum take profit allowed when using Smart SL/TP.<br>Keeps targets realistic.</html>");
+        settingsPanel.add(maxTpLabel, gbc);
+        gbc.gridx = 1;
+        JSpinner maxTpSpinner = new JSpinner(new SpinnerNumberModel(maxTpTicks.intValue(), 20, 500, 10));
+        maxTpSpinner.setToolTipText("<html>Cap for Smart TP - won't exceed this<br>Keeps profit targets achievable</html>");
+        maxTpSpinner.addChangeListener(e -> maxTpTicks = (Integer) maxTpSpinner.getValue());
+        settingsPanel.add(maxTpSpinner, gbc);
+
+        // Min DOM Volume for SL/TP
+        gbc.gridx = 0; gbc.gridy = 55;
+        JLabel minDomVolLabel = new JLabel("Min DOM Volume:");
+        minDomVolLabel.setToolTipText("<html>Minimum volume at DOM level to use for SL/TP.<br>Filters out weak support/resistance levels.</html>");
+        settingsPanel.add(minDomVolLabel, gbc);
+        gbc.gridx = 1;
+        JSpinner minDomVolSpinner = new JSpinner(new SpinnerNumberModel(minDomVolumeForSlTp.intValue(), 10, 1000, 10));
+        minDomVolSpinner.setToolTipText("<html>Only use DOM levels with this minimum volume<br>Higher = fewer but stronger levels</html>");
+        minDomVolSpinner.addChangeListener(e -> minDomVolumeForSlTp = (Integer) minDomVolSpinner.getValue());
+        settingsPanel.add(minDomVolSpinner, gbc);
+
+        // DOM Level Priority
+        gbc.gridx = 0; gbc.gridy = 56;
+        JLabel domPriorityLabel = new JLabel("DOM Priority:");
+        domPriorityLabel.setToolTipText("<html>When enabled, DOM levels take priority over ATR for SL/TP.<br>Uses actual support/resistance instead of volatility.</html>");
+        settingsPanel.add(domPriorityLabel, gbc);
+        gbc.gridx = 1;
+        JCheckBox domPriorityCheckBox = new JCheckBox();
+        domPriorityCheckBox.setSelected(prioritizeDomOverAtr);
+        domPriorityCheckBox.setToolTipText("<html>ON: Use DOM support/resistance first<br>OFF: Use ATR-based calculation first</html>");
+        domPriorityCheckBox.addActionListener(e -> prioritizeDomOverAtr = domPriorityCheckBox.isSelected());
+        settingsPanel.add(domPriorityCheckBox, gbc);
+
+        // Session-Aware ATR Scaling
+        gbc.gridx = 0; gbc.gridy = 57;
+        JLabel sessionAtrLabel = new JLabel("Session-Aware ATR:");
+        sessionAtrLabel.setToolTipText("<html>Adjust ATR multipliers based on trading session.<br>Opening = wider, Lunch = tighter, Close = wider</html>");
+        settingsPanel.add(sessionAtrLabel, gbc);
+        gbc.gridx = 1;
+        JCheckBox sessionAtrCheckBox = new JCheckBox();
+        sessionAtrCheckBox.setSelected(sessionAwareAtrScaling);
+        sessionAtrCheckBox.setToolTipText("<html>ON: ATR scales with session volatility<br>Opening/Close: wider stops, Lunch: tighter stops</html>");
+        sessionAtrCheckBox.addActionListener(e -> sessionAwareAtrScaling = sessionAtrCheckBox.isSelected());
+        settingsPanel.add(sessionAtrCheckBox, gbc);
+
+        // Use Trade Memory for SL/TP
+        gbc.gridx = 0; gbc.gridy = 58;
+        JLabel tradeMemoryLabel = new JLabel("Use Trade Memory:");
+        tradeMemoryLabel.setToolTipText("<html>Use past trade MFE/MAE to optimize SL/TP.<br>MFE = Max Favorable Excursion (best price)<br>MAE = Max Adverse Excursion (worst price)</html>");
+        settingsPanel.add(tradeMemoryLabel, gbc);
+        gbc.gridx = 1;
+        JCheckBox tradeMemoryCheckBox = new JCheckBox();
+        tradeMemoryCheckBox.setSelected(useTradeMemoryForSlTp);
+        tradeMemoryCheckBox.setToolTipText("<html>ON: Learn from past trades to improve SL/TP<br>Uses MAE for SL, MFE for TP from history</html>");
+        tradeMemoryCheckBox.addActionListener(e -> useTradeMemoryForSlTp = tradeMemoryCheckBox.isSelected());
+        settingsPanel.add(tradeMemoryCheckBox, gbc);
+
+        // Memory Lookback
+        gbc.gridx = 0; gbc.gridy = 59;
+        JLabel memoryLookbackLabel = new JLabel("Memory Lookback:");
+        memoryLookbackLabel.setToolTipText("<html>Number of recent trades to analyze for MFE/MAE.<br>Higher = more data but slower adaptation.</html>");
+        settingsPanel.add(memoryLookbackLabel, gbc);
+        gbc.gridx = 1;
+        JSpinner memoryLookbackSpinner = new JSpinner(new SpinnerNumberModel(memoryLookbackTrades.intValue(), 5, 100, 5));
+        memoryLookbackSpinner.setToolTipText("<html>How many past trades to analyze (default: 20)<br>Higher = more stable, Lower = more adaptive</html>");
+        memoryLookbackSpinner.addChangeListener(e -> memoryLookbackTrades = (Integer) memoryLookbackSpinner.getValue());
+        settingsPanel.add(memoryLookbackSpinner, gbc);
+
         // Notifications section
-        gbc.gridx = 0; gbc.gridy = 40; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 60; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Notifications", gbc);
 
-        gbc.gridx = 0; gbc.gridy = 41; gbc.gridwidth = 1;
-        settingsPanel.add(new JLabel("Event Notifications:"), gbc);
+        gbc.gridx = 0; gbc.gridy = 61; gbc.gridwidth = 1;
+        JLabel eventNotifLabel = new JLabel("Event Notifications:");
+        eventNotifLabel.setToolTipText("Show alerts for trades and signal events");
+        settingsPanel.add(eventNotifLabel, gbc);
         gbc.gridx = 1;
         JCheckBox eventNotifCheckBox = new JCheckBox();
         eventNotifCheckBox.setSelected(enableEventNotifications);
-        eventNotifCheckBox.setToolTipText("Show notifications for trades and signals");
+        eventNotifCheckBox.setToolTipText("<html>ON: Get notified of trades, signals, and important events<br>OFF: Silent operation</html>");
         eventNotifCheckBox.addActionListener(e -> enableEventNotifications = eventNotifCheckBox.isSelected());
         settingsPanel.add(eventNotifCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 42;
-        settingsPanel.add(new JLabel("AI Notifications:"), gbc);
+        gbc.gridx = 0; gbc.gridy = 62;
+        JLabel aiNotifLabel = new JLabel("AI Notifications:");
+        aiNotifLabel.setToolTipText("Allow AI to send alerts and recommendations");
+        settingsPanel.add(aiNotifLabel, gbc);
         gbc.gridx = 1;
         JCheckBox aiNotifCheckBox = new JCheckBox();
         aiNotifCheckBox.setSelected(enableAINotifications);
-        aiNotifCheckBox.setToolTipText("Allow AI to push alerts and notifications");
+        aiNotifCheckBox.setToolTipText("<html>ON: AI can push alerts and recommendations<br>OFF: AI operates silently</html>");
         aiNotifCheckBox.addActionListener(e -> enableAINotifications = aiNotifCheckBox.isSelected());
         settingsPanel.add(aiNotifCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 43;
-        settingsPanel.add(new JLabel("Periodic Updates:"), gbc);
+        gbc.gridx = 0; gbc.gridy = 63;
+        JLabel periodicNotifLabel = new JLabel("Periodic Updates:");
+        periodicNotifLabel.setToolTipText("Receive regular status updates from AI");
+        settingsPanel.add(periodicNotifLabel, gbc);
         gbc.gridx = 1;
         JCheckBox periodicNotifCheckBox = new JCheckBox();
         periodicNotifCheckBox.setSelected(enablePeriodicUpdates);
-        periodicNotifCheckBox.setToolTipText("Receive periodic status updates from AI");
+        periodicNotifCheckBox.setToolTipText("<html>ON: AI sends periodic market analysis updates<br>OFF: No scheduled updates</html>");
         periodicNotifCheckBox.addActionListener(e -> {
             enablePeriodicUpdates = periodicNotifCheckBox.isSelected();
             if (enablePeriodicUpdates) {
@@ -1279,11 +1739,13 @@ public class OrderFlowStrategyEnhanced implements
         });
         settingsPanel.add(periodicNotifCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 44;
-        settingsPanel.add(new JLabel("Update Interval (min):"), gbc);
+        gbc.gridx = 0; gbc.gridy = 64;
+        JLabel updateIntervalLabel = new JLabel("Update Interval (min):");
+        updateIntervalLabel.setToolTipText("<html>How often to receive AI status updates.<br>Only applies when Periodic Updates is enabled.</html>");
+        settingsPanel.add(updateIntervalLabel, gbc);
         gbc.gridx = 1;
         JSpinner periodicIntervalSpinner = new JSpinner(new SpinnerNumberModel(periodicUpdateIntervalMinutes.intValue(), 5, 60, 5));
-        periodicIntervalSpinner.setToolTipText("How often to receive periodic updates");
+        periodicIntervalSpinner.setToolTipText("<html>Minutes between AI updates (default: 15)<br>Lower = more frequent updates</html>");
         periodicIntervalSpinner.addChangeListener(e -> {
             periodicUpdateIntervalMinutes = (Integer) periodicIntervalSpinner.getValue();
             if (enablePeriodicUpdates) {
@@ -1294,13 +1756,13 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(periodicIntervalSpinner, gbc);
 
         // Apply button
-        gbc.gridx = 0; gbc.gridy = 45; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 65; gbc.gridwidth = 2;
         JButton applyButton = new JButton("Apply Settings");
         applyButton.addActionListener(e -> applySettings());
         settingsPanel.add(applyButton, gbc);
 
         // ========== TEST SL/TP LINES BUTTON ==========
-        gbc.gridx = 0; gbc.gridy = 46; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 66; gbc.gridwidth = 2;
         gbc.anchor = GridBagConstraints.CENTER;
         JButton testLinesButton = new JButton("TEST SL/TP LINES");
         testLinesButton.setToolTipText("Click to test SL/TP line drawing independently of AI/signals");
@@ -1312,8 +1774,8 @@ public class OrderFlowStrategyEnhanced implements
         });
         settingsPanel.add(testLinesButton, gbc);
 
-        // Clear lines button
-        gbc.gridy = 47;
+        // Clear lines button (on same row as test button, to the right)
+        gbc.gridx = 2; gbc.gridy = 66; gbc.gridwidth = 1;
         JButton clearLinesButton = new JButton("Clear Lines");
         clearLinesButton.setToolTipText("Clear the test SL/TP lines");
         clearLinesButton.setOpaque(true);
@@ -1323,7 +1785,7 @@ public class OrderFlowStrategyEnhanced implements
         gbc.anchor = GridBagConstraints.WEST;  // Reset anchor
 
         // Version label (bottom right)
-        gbc.gridx = 1; gbc.gridy = 47; gbc.gridwidth = 1;
+        gbc.gridx = 1; gbc.gridy = 56; gbc.gridwidth = 1;
         gbc.anchor = GridBagConstraints.EAST;
         gbc.weightx = 1.0;
         JLabel versionLabel = new JLabel("Qid v2.1 - AI Trading with Memory");
@@ -1466,19 +1928,6 @@ public class OrderFlowStrategyEnhanced implements
         currentThresholdLabel = new JLabel("0 orders, 0 size");
         statsPanel.add(currentThresholdLabel, gbc);
         row++;
-
-        // AI Insights
-        gbc.gridx = 0; gbc.gridy = row; gbc.gridwidth = 4;
-        addSeparator(statsPanel, "AI Coach Insights", gbc);
-        row++;
-
-        gbc.gridx = 0; gbc.gridy = row; gbc.gridwidth = 4; gbc.gridheight = 3;
-        aiInsightsArea = new JTextArea(4, 30);
-        aiInsightsArea.setEditable(false);
-        aiInsightsArea.setFont(new Font("Monospaced", Font.PLAIN, 10));
-        JScrollPane scrollPane = new JScrollPane(aiInsightsArea);
-        statsPanel.add(scrollPane, gbc);
-        row += 3;
 
         // Buttons
         gbc.gridx = 0; gbc.gridy = row; gbc.gridwidth = 1; gbc.gridheight = 1;
@@ -1814,15 +2263,24 @@ public class OrderFlowStrategyEnhanced implements
 
             return enhancedPrompt.toString();
         })
-        .thenCompose(enhancedPrompt -> aiThresholdService.chatWithTools(enhancedPrompt))
-        .thenAcceptAsync(response -> {
+        .thenCompose(enhancedPrompt -> aiThresholdService.chatWithTools(enhancedPrompt)
+            .orTimeout(60, java.util.concurrent.TimeUnit.SECONDS))
+        .thenAccept(response -> {
+            log("✅ AI chat response received: " + (response != null ? response.length() + " chars" : "null"));
+
             // Log AI response to unified session transcript
             if (transcriptWriter != null) {
                 transcriptWriter.logMessage("assistant", response);
             }
 
-            // Remove "Thinking..." and add actual response
+            // Update UI on EDT
             SwingUtilities.invokeLater(() -> {
+                // Check if UI still exists
+                if (chatHistoryArea == null || chatHtmlContent == null) {
+                    log("⚠️ Chat UI disposed, skipping update");
+                    return;
+                }
+
                 // Remove last line (Thinking...)
                 String currentText = chatHistoryArea.getText();
                 int lastNewline = currentText.lastIndexOf("AI: Thinking...");
@@ -1834,9 +2292,17 @@ public class OrderFlowStrategyEnhanced implements
                 // Add AI response
                 appendChatMessage("AI", response);
             });
-        }, SwingUtilities::invokeLater)
+        })
         .exceptionally(ex -> {
+            log("❌ AI chat error: " + ex.getMessage());
+            ex.printStackTrace();
+
             SwingUtilities.invokeLater(() -> {
+                // Check if UI still exists
+                if (chatHistoryArea == null || chatHtmlContent == null) {
+                    return;
+                }
+
                 // Remove "Thinking..."
                 String currentText = chatHistoryArea.getText();
                 int lastNewline = currentText.lastIndexOf("AI: Thinking...");
@@ -2561,6 +3027,15 @@ public class OrderFlowStrategyEnhanced implements
                 () -> absorptionMinSize  // absorptionMinSize
             );
 
+            // Set up trade logging and session state persistence
+            if (tradeLogger != null) {
+                aiOrderManager.setTradeLogger(tradeLogger);
+            }
+            if (sessionStateManager != null) {
+                aiOrderManager.setSessionStateManager(sessionStateManager);
+            }
+            aiOrderManager.setTickValue(tickValue);
+
             log("✅ AI Trading System initialized");
             log("   Mode: " + aiMode);
             log("   Confluence Threshold: " + confluenceThreshold);
@@ -2639,6 +3114,15 @@ public class OrderFlowStrategyEnhanced implements
                 aiVwapDivergeLabel.setText(String.valueOf(confluenceWeights.get(ConfluenceWeights.VWAP_DIVERGE)));
             }
             // Signal thresholds
+            if (aiMinConfluenceLabel != null) {
+                aiMinConfluenceLabel.setText(String.valueOf(minConfluenceScore));
+            }
+            if (aiConfluenceThresholdLabel != null) {
+                aiConfluenceThresholdLabel.setText(String.valueOf(confluenceThreshold));
+            }
+            if (aiThresholdMultLabel != null) {
+                aiThresholdMultLabel.setText(String.format("%.1f", thresholdMultiplier));
+            }
             if (aiIcebergMinOrdersLabel != null) {
                 aiIcebergMinOrdersLabel.setText(String.valueOf(icebergMinOrders));
             }
@@ -2664,16 +3148,22 @@ public class OrderFlowStrategyEnhanced implements
         }
 
         if (selected) {
-            aiStatusIndicator.setText("🟢 AI Active");
-            aiStatusIndicator.setForeground(new Color(0, 150, 0));
+            // Only update status if AI Trading is not enabled
+            if (!enableAITrading) {
+                aiStatusIndicator.setText("🟢 AI Adaptive Active");
+                aiStatusIndicator.setForeground(new Color(0, 150, 0));
+            }
             log("🤖 AI Adaptive Mode: ENABLED");
             log("   AI will analyze market conditions and optimize thresholds");
 
             // Trigger initial calculation
             triggerAIReevaluation();
         } else {
-            aiStatusIndicator.setText("🔴 AI Disabled");
-            aiStatusIndicator.setForeground(Color.GRAY);
+            // Only update status if AI Trading is not enabled
+            if (!enableAITrading) {
+                aiStatusIndicator.setText("🔴 AI Disabled");
+                aiStatusIndicator.setForeground(Color.GRAY);
+            }
             log("🎛️ AI Adaptive Mode: DISABLED (using manual settings)");
         }
     }
@@ -3087,6 +3577,9 @@ public class OrderFlowStrategyEnhanced implements
                 return false;
             }
         });
+
+        // Trading memory path - allows AI tools to access trade history
+        aiToolsProvider.setTradingMemoryPath(tradingMemoryDir);
     }
 
     /**
@@ -3229,6 +3722,27 @@ public class OrderFlowStrategyEnhanced implements
         settings.aiMode = aiMode;
         settings.confluenceThreshold = confluenceThreshold;
         settings.aiAuthToken = aiAuthToken;
+        // Position sizing settings
+        settings.accountSize = accountSize;
+        settings.riskPerTradePercent = riskPerTradePercent;
+        settings.tickValue = tickValue;
+        settings.autoCalculatePositionSize = autoCalculatePositionSize;
+        settings.fixedPositionSize = fixedPositionSize;
+        settings.stopLossTicks = stopLossTicks;
+        settings.takeProfitTicks = takeProfitTicks;
+        // Smart SL/TP settings
+        settings.useSmartSlTp = useSmartSlTp;
+        settings.atrSlMultiplier = atrSlMultiplier;
+        settings.atrTpMultiplier = atrTpMultiplier;
+        settings.minRRRatio = minRRRatio;
+        settings.maxSlTicks = maxSlTicks;
+        settings.maxTpTicks = maxTpTicks;
+        // DOM quality and memory settings
+        settings.minDomVolumeForSlTp = minDomVolumeForSlTp;
+        settings.prioritizeDomOverAtr = prioritizeDomOverAtr;
+        settings.sessionAwareAtrScaling = sessionAwareAtrScaling;
+        settings.useTradeMemoryForSlTp = useTradeMemoryForSlTp;
+        settings.memoryLookbackTrades = memoryLookbackTrades;
 
         saveSettings();
         log("✅ Settings applied and saved");
@@ -3589,6 +4103,23 @@ public class OrderFlowStrategyEnhanced implements
                             // Create SignalData for AI evaluation
                             SignalData signalData = createSignalData(isBid, price, totalSize);
 
+                            // ========== R:R QUALITY LOGGING (NO FILTERING) ==========
+                            // We no longer filter out signals with poor R:R.
+                            // Instead, we expose the R:R quality assessment to the AI
+                            // so it can make informed decisions with full context.
+                            // The AI sees: confluence score + R:R quality + order flow + market context
+
+                            if (signalData.rrQuality != null) {
+                                log("📊 R:R QUALITY: " + signalData.rrQuality.getSummary());
+                                log(String.format("   Signal: %s @ %d (Score: %d, SL=%d, TP=%d)",
+                                    signalData.direction, price, signalData.score,
+                                    signalData.risk.stopLossTicks, signalData.risk.takeProfitTicks));
+                                fileLog("📊 R:R QUALITY: " + signalData.rrQuality.getSummary() +
+                                    " | " + signalData.risk.slTpReasoning);
+                                // Note: We don't place a marker here - if AI skips due to poor R:R,
+                                // that skip will get its own white dot via AIOrderManager
+                            }
+
                             // Log timestamp info for debugging replay mode
                             java.time.ZoneId etZone = java.time.ZoneId.of("America/New_York");
                             java.time.ZonedDateTime dataTime = java.time.Instant.ofEpochMilli(currentDataTimestampMs).atZone(etZone);
@@ -3802,6 +4333,334 @@ public class OrderFlowStrategyEnhanced implements
                 }
             }
         }
+    }
+
+    /**
+     * Smart SL/TP calculation result
+     */
+    private static class SmartSlTpResult {
+        int slTicks;
+        int tpTicks;
+        int slPrice;
+        int tpPrice;
+        double rrRatio;
+        boolean isGoodRR;
+        String reasoning;
+
+        // ========== R:R QUALITY FIELDS ==========
+        // Instead of rejection, we capture quality details for AI decision-making
+        String slSource;              // "ATR", "DOM_SUPPORT", "MEMORY", "FIXED"
+        String tpSource;              // "ATR", "DOM_RESISTANCE", "MEMORY", "FIXED"
+        String issueType;             // "NONE", "WIDE_SL", "NEARBY_TARGET", "HIGH_VOLATILITY", "NO_DOM_LEVEL"
+        String issueDetails;          // Human-readable explanation
+        boolean canBeImproved;        // Is there a way to get better R:R?
+        int suggestedSlTicks;         // Alternative SL (if available)
+        int suggestedTpTicks;         // Alternative TP (if available)
+
+        SmartSlTpResult(int slTicks, int tpTicks, int entryPrice, boolean isLong) {
+            this.slTicks = slTicks;
+            this.tpTicks = tpTicks;
+            this.slPrice = isLong ? entryPrice - slTicks : entryPrice + slTicks;
+            this.tpPrice = isLong ? entryPrice + tpTicks : entryPrice - tpTicks;
+            this.rrRatio = slTicks > 0 ? (double) tpTicks / slTicks : 0;
+            this.isGoodRR = rrRatio >= 1.0;
+
+            // Default values for R:R quality fields
+            this.slSource = "FIXED";
+            this.tpSource = "FIXED";
+            this.issueType = "NONE";
+            this.issueDetails = "";
+            this.canBeImproved = false;
+            this.suggestedSlTicks = 0;
+            this.suggestedTpTicks = 0;
+        }
+    }
+
+    /**
+     * Calculate smart SL/TP based on ATR, DOM levels, memory, and R:R requirements
+     *
+     * Priority: Memory (trade history) > DOM levels > ATR > Fixed ticks
+     *
+     * @param isBid true for LONG, false for SHORT
+     * @param entryPrice entry price in ticks
+     * @return SmartSlTpResult with calculated SL/TP and R:R analysis
+     */
+    private SmartSlTpResult calculateSmartSlTp(boolean isBid, int entryPrice) {
+        int slTicks;
+        int tpTicks;
+        StringBuilder reasoning = new StringBuilder();
+
+        // ========== 1. GET ATR (with session-aware scaling) ==========
+        double atr = 0;
+        int atrTicks = 0;
+        double atrSlMult = atrSlMultiplier;
+        double atrTpMult = atrTpMultiplier;
+
+        if (atrCalculator.isInitialized()) {
+            atr = atrCalculator.getATR();
+            atrTicks = (int) Math.round(atr / pips);
+
+            // Session-aware ATR scaling
+            if (sessionAwareAtrScaling && sessionContext != null) {
+                SessionContext.SessionPhase phase = sessionContext.getCurrentPhase();
+                if (phase == SessionContext.SessionPhase.OPENING_BELL) {
+                    // Opening range (first 30 min): higher volatility, wider stops
+                    atrSlMult *= 1.3;  // 30% wider SL
+                    atrTpMult *= 1.2;  // 20% wider TP
+                    reasoning.append("OPENING(scaled)");
+                } else if (phase == SessionContext.SessionPhase.LUNCH_HOUR) {
+                    // Lunch lull: lower volatility, tighter stops
+                    atrSlMult *= 0.8;  // 20% tighter SL
+                    atrTpMult *= 0.8;  // 20% tighter TP
+                    reasoning.append("LUNCH(scaled)");
+                } else if (phase == SessionContext.SessionPhase.CLOSING_BELL) {
+                    // Close: higher volatility
+                    atrSlMult *= 1.2;
+                    atrTpMult *= 1.3;
+                    reasoning.append("CLOSE(scaled)");
+                } else {
+                    reasoning.append("RTH");
+                }
+            }
+            reasoning.append(String.format(" ATR=%.2f (%d ticks)", atr, atrTicks));
+        }
+
+        // ========== 2. GET DOM SUPPORT/RESISTANCE (with quality check) ==========
+        DOMAnalyzer.DOMLevel support = domAnalyzer.getNearestSupport();
+        DOMAnalyzer.DOMLevel resistance = domAnalyzer.getNearestResistance();
+
+        int supportDistance = 0;
+        int resistanceDistance = 0;
+        long supportVolume = 0;
+        long resistanceVolume = 0;
+
+        if (support != null && support.volume >= minDomVolumeForSlTp) {
+            supportDistance = Math.abs(entryPrice - support.price);
+            supportVolume = support.volume;
+            reasoning.append(String.format(", Support@%d (%d ticks, vol=%d)", support.price, supportDistance, supportVolume));
+        } else if (support != null) {
+            reasoning.append(String.format(", Support@%d (vol=%d < %d, IGNORED)", support.price, support.volume, minDomVolumeForSlTp));
+        }
+
+        if (resistance != null && resistance.volume >= minDomVolumeForSlTp) {
+            resistanceDistance = Math.abs(entryPrice - resistance.price);
+            resistanceVolume = resistance.volume;
+            reasoning.append(String.format(", Resistance@%d (%d ticks, vol=%d)", resistance.price, resistanceDistance, resistanceVolume));
+        } else if (resistance != null) {
+            reasoning.append(String.format(", Resistance@%d (vol=%d < %d, IGNORED)", resistance.price, resistance.volume, minDomVolumeForSlTp));
+        }
+
+        // ========== 3. GET MEMORY-DRIVEN LEVELS (from trade history) ==========
+        int memorySlDistance = 0;
+        int memoryTpDistance = 0;
+        String memoryInfo = "";
+
+        if (useTradeMemoryForSlTp && tradeLogger != null) {
+            try {
+                // Analyze recent trades for reversal levels
+                var recentTrades = tradeLogger.getRecentTrades(memoryLookbackTrades);
+                if (recentTrades != null && !recentTrades.isEmpty()) {
+                    // Find where price reversed (MFE/MAE levels)
+                    int avgMfe = 0;
+                    int avgMae = 0;
+                    int count = 0;
+
+                    for (var trade : recentTrades) {
+                        if (trade.mfeTicks > 0) {
+                            avgMfe += trade.mfeTicks;
+                            avgMae += trade.maeTicks;
+                            count++;
+                        }
+                    }
+
+                    if (count > 0) {
+                        avgMfe /= count;
+                        avgMae /= count;
+                        // Use average favorable excursion as TP hint
+                        // Use average adverse excursion as SL hint
+                        memoryTpDistance = (int) (avgMfe * 0.8);  // 80% of average MFE
+                        memorySlDistance = (int) (avgMae * 1.2);  // 120% of average MAE (be safer)
+                        memoryInfo = String.format(", Memory(MFE=%d, MAE=%d)", avgMfe, avgMae);
+                        reasoning.append(memoryInfo);
+                    }
+                }
+            } catch (Exception e) {
+                // Ignore memory errors, fall back to other methods
+            }
+        }
+
+        // ========== CALCULATE STOP LOSS ==========
+        // Declare variables at method level for use in R:R quality assessment
+        int atrSl = 0;
+        int domSl = 0;
+        int atrTp = 0;
+        int domTp = 0;
+
+        if (useSmartSlTp) {
+            atrSl = (int) Math.round(atrTicks * atrSlMult);
+            domSl = 0;
+
+            if (isBid) {
+                // LONG: SL below entry, look for support below
+                domSl = supportDistance > 0 ? supportDistance + 2 : 0;
+            } else {
+                // SHORT: SL above entry, look for resistance above
+                domSl = resistanceDistance > 0 ? resistanceDistance + 2 : 0;
+            }
+
+            // Collect all valid SL candidates
+            java.util.List<Integer> slCandidates = new java.util.ArrayList<>();
+            slCandidates.add(stopLossTicks);  // Always include fixed
+            if (atrSl > 0) slCandidates.add(atrSl);
+            if (domSl > 0) slCandidates.add(domSl);
+            if (memorySlDistance > 0) slCandidates.add(memorySlDistance);
+
+            // Priority logic for SL selection
+            if (prioritizeDomOverAtr && domSl > 0 && supportVolume >= minDomVolumeForSlTp) {
+                // DOM priority: use DOM level if it's significant
+                slTicks = Math.max(stopLossTicks, domSl);
+                reasoning.append(String.format(", SL: DOM-priority=%d", slTicks));
+            } else {
+                // Default: use widest (safest) SL
+                slTicks = slCandidates.stream().max(Integer::compare).orElse(stopLossTicks);
+                reasoning.append(String.format(", SL: max-of-all=%d", slTicks));
+            }
+
+            // Cap at maximum
+            slTicks = Math.min(slTicks, maxSlTicks);
+        } else {
+            slTicks = stopLossTicks;
+            reasoning.append(String.format(", Fixed SL=%d", slTicks));
+        }
+
+        // ========== CALCULATE TAKE PROFIT ==========
+        if (useSmartSlTp) {
+            atrTp = (int) Math.round(atrTicks * atrTpMult);
+            domTp = 0;
+
+            if (isBid) {
+                // LONG: TP above entry, look for resistance above
+                domTp = resistanceDistance > 0 ? Math.max(0, resistanceDistance - 2) : 0;
+            } else {
+                // SHORT: TP below entry, look for support below
+                domTp = supportDistance > 0 ? Math.max(0, supportDistance - 2) : 0;
+            }
+
+            // Collect all valid TP candidates
+            java.util.List<Integer> tpCandidates = new java.util.ArrayList<>();
+            tpCandidates.add(takeProfitTicks);  // Always include fixed
+            if (atrTp > 0) tpCandidates.add(atrTp);
+            if (domTp > 0 && domTp >= slTicks) tpCandidates.add(domTp);  // DOM TP must be >= SL
+            if (memoryTpDistance > 0 && memoryTpDistance >= slTicks) tpCandidates.add(memoryTpDistance);
+
+            // Priority logic for TP selection
+            if (prioritizeDomOverAtr && domTp > 0 && domTp >= slTicks && resistanceVolume >= minDomVolumeForSlTp) {
+                // DOM priority: target the DOM level if it gives decent R:R
+                double domRR = (double) domTp / slTicks;
+                if (domRR >= minRRRatio * 0.8) {  // Allow 20% tolerance for DOM levels
+                    tpTicks = domTp;
+                    reasoning.append(String.format(", TP: DOM-priority=%d (R:R 1:%.1f)", domTp, domRR));
+                } else {
+                    tpTicks = Math.max(takeProfitTicks, atrTp);
+                    reasoning.append(String.format(", TP: ATR=%d (DOM=%d, R:R too low)", atrTp, domTp));
+                }
+            } else {
+                // Default: use closest valid TP (but ensure minimum R:R)
+                final int finalSlTicks = slTicks;  // For lambda
+                final double minTpRequired = finalSlTicks * minRRRatio * 0.8;
+                tpTicks = tpCandidates.stream()
+                    .filter(tp -> tp >= minTpRequired)  // Allow 20% tolerance
+                    .min(Integer::compare)
+                    .orElse(atrTp > 0 ? atrTp : takeProfitTicks);
+                reasoning.append(String.format(", TP: closest-valid=%d", tpTicks));
+            }
+
+            // Ensure minimum R:R ratio
+            double actualRR = (double) tpTicks / slTicks;
+            if (actualRR < minRRRatio) {
+                // Adjust TP to meet minimum R:R
+                tpTicks = (int) Math.ceil(slTicks * minRRRatio);
+                reasoning.append(String.format(", adjusted to min-RR=%d", tpTicks));
+            }
+
+            // Cap at maximum
+            tpTicks = Math.min(tpTicks, maxTpTicks);
+        } else {
+            tpTicks = takeProfitTicks;
+            reasoning.append(String.format(", Fixed TP=%d", tpTicks));
+        }
+
+        // Create result
+        SmartSlTpResult result = new SmartSlTpResult(slTicks, tpTicks, entryPrice, isBid);
+        result.reasoning = reasoning.toString();
+
+        // ========== R:R QUALITY ASSESSMENT ==========
+        // Instead of rejecting, we capture quality details for AI decision-making
+
+        // Track SL/TP sources (set based on what was actually used)
+        if (useSmartSlTp) {
+            // Determine SL source
+            if (memorySlDistance > 0 && memorySlDistance <= slTicks + 2) {
+                result.slSource = "MEMORY";
+            } else if (domSl > 0 && supportVolume >= minDomVolumeForSlTp) {
+                result.slSource = "DOM_SUPPORT";
+            } else if (atrSl > 0) {
+                result.slSource = "ATR";
+            } else {
+                result.slSource = "FIXED";
+            }
+
+            // Determine TP source
+            if (prioritizeDomOverAtr && domTp > 0 && domTp >= slTicks && resistanceVolume >= minDomVolumeForSlTp) {
+                result.tpSource = "DOM_RESISTANCE";
+            } else if (memoryTpDistance > 0 && memoryTpDistance >= slTicks) {
+                result.tpSource = "MEMORY";
+            } else if (atrTp > 0) {
+                result.tpSource = "ATR";
+            } else {
+                result.tpSource = "FIXED";
+            }
+        }
+
+        // Identify issues and potential improvements
+        if (result.rrRatio < minRRRatio) {
+            result.issueType = "POOR_RR";
+            result.issueDetails = String.format(
+                "R:R ratio 1:%.1f is below minimum 1:%.1f (SL=%d, TP=%d)",
+                result.rrRatio, minRRRatio, slTicks, tpTicks);
+
+            // Check if we can improve by adjusting SL/TP
+            // Suggest tighter SL if DOM level is closer
+            if (domSl > 0 && domSl < slTicks && supportVolume >= minDomVolumeForSlTp) {
+                result.canBeImproved = true;
+                result.suggestedSlTicks = domSl;
+                result.suggestedTpTicks = tpTicks;  // Keep same TP
+            }
+            // Suggest wider TP if there's room
+            else if (domTp > tpTicks && resistanceVolume >= minDomVolumeForSlTp) {
+                result.canBeImproved = true;
+                result.suggestedSlTicks = slTicks;  // Keep same SL
+                result.suggestedTpTicks = domTp;
+            }
+        } else if (slTicks > maxSlTicks) {
+            result.issueType = "WIDE_SL";
+            result.issueDetails = String.format(
+                "Stop loss %d ticks exceeds maximum %d (high volatility)",
+                slTicks, maxSlTicks);
+
+            // Can improve if there's a closer DOM level
+            if (domSl > 0 && domSl <= maxSlTicks && supportVolume >= minDomVolumeForSlTp) {
+                result.canBeImproved = true;
+                result.suggestedSlTicks = domSl;
+                result.suggestedTpTicks = tpTicks;
+            }
+        } else {
+            result.isGoodRR = true;
+            result.issueType = "NONE";
+            result.issueDetails = "R:R meets requirements";
+        }
+
+        return result;
     }
 
     /**
@@ -4095,34 +4954,65 @@ public class OrderFlowStrategyEnhanced implements
 
         // ========== ACCOUNT CONTEXT ==========
         signal.account = new SignalData.AccountContext();
-        signal.account.accountSize = 10000.0;
-        signal.account.currentBalance = 10000.0 + (aiOrderManager != null ? aiOrderManager.getDailyPnl() : 0);
+        signal.account.accountSize = accountSize;
+        signal.account.currentBalance = accountSize + (aiOrderManager != null ? aiOrderManager.getDailyPnl() : 0);
         signal.account.dailyPnl = aiOrderManager != null ? aiOrderManager.getDailyPnl() : 0;
         signal.account.tradesToday = aiOrderManager != null ? aiOrderManager.getActivePositionCount() : 0;
         signal.account.maxContracts = maxPosition;
         signal.account.maxTradesPerDay = maxPosition;
-        signal.account.riskPerTradePercent = 1.0;
+        signal.account.riskPerTradePercent = riskPerTradePercent;
 
         // ========== PERFORMANCE HISTORY (simplified) ==========
         signal.performance = new SignalData.PerformanceHistory();
         signal.performance.totalTrades = 0;
         signal.performance.winRate = 0;
 
-        // ========== RISK MANAGEMENT ==========
+        // ========== RISK MANAGEMENT (Smart SL/TP) ==========
         signal.risk = new SignalData.RiskManagement();
-        int stopLossTicks = 20;  // 20 ticks = $250 for ES
-        int takeProfitTicks = 40;  // 40 ticks = $500 for ES (1:2 ratio)
-        signal.risk.stopLossTicks = stopLossTicks;
-        signal.risk.stopLossPrice = isBid ? price - stopLossTicks : price + stopLossTicks;
-        signal.risk.stopLossValue = stopLossTicks * 12.5;  // ES futures
-        signal.risk.takeProfitTicks = takeProfitTicks;
-        signal.risk.takeProfitPrice = isBid ? price + takeProfitTicks : price - takeProfitTicks;
-        signal.risk.takeProfitValue = takeProfitTicks * 12.5;
+
+        // Calculate smart SL/TP using ATR and DOM levels
+        SmartSlTpResult slTp = calculateSmartSlTp(isBid, price);
+
+        // ========== R:R QUALITY ASSESSMENT ==========
+        // Create comprehensive R:R quality assessment instead of simple rejection
+        signal.rrQuality = SignalData.RrQuality.assess(
+            slTp.rrRatio,
+            minRRRatio,
+            slTp.slTicks,
+            slTp.tpTicks,
+            slTp.slSource,
+            slTp.tpSource,
+            slTp.issueType,
+            slTp.issueDetails,
+            slTp.canBeImproved,
+            slTp.suggestedSlTicks,
+            slTp.suggestedTpTicks
+        );
+
+        // Use calculated values
+        signal.risk.stopLossTicks = slTp.slTicks;
+        signal.risk.stopLossPrice = slTp.slPrice;
+        signal.risk.stopLossValue = slTp.slTicks * tickValue;
+        signal.risk.takeProfitTicks = slTp.tpTicks;
+        signal.risk.takeProfitPrice = slTp.tpPrice;
+        signal.risk.takeProfitValue = slTp.tpTicks * tickValue;
         signal.risk.breakEvenTicks = 3;
         signal.risk.breakEvenPrice = isBid ? price + 3 : price - 3;
-        signal.risk.riskRewardRatio = "1:2";
-        signal.risk.positionSizeContracts = 1;
-        signal.risk.totalRiskPercent = 1.5;
+        signal.risk.riskRewardRatio = String.format("1:%.1f", slTp.rrRatio);
+        signal.risk.slTpReasoning = slTp.reasoning;
+
+        // Calculate position size: fixed or auto from risk %
+        int positionSize;
+        if (autoCalculatePositionSize) {
+            // Auto-calculate: (Account * Risk%) / StopLossValue
+            double riskDollars = accountSize * (riskPerTradePercent / 100.0);
+            positionSize = (int) Math.max(1, Math.floor(riskDollars / signal.risk.stopLossValue));
+            positionSize = Math.min(positionSize, maxPosition);  // Cap at max position
+        } else {
+            positionSize = fixedPositionSize;
+        }
+        signal.risk.positionSizeContracts = positionSize;
+        signal.risk.totalRiskPercent = (positionSize * signal.risk.stopLossValue / accountSize) * 100;
 
         // ========== THRESHOLD CONTEXT (for AI Adaptive Control) ==========
         signal.thresholds = new SignalData.ThresholdContext();
@@ -4138,8 +5028,66 @@ public class OrderFlowStrategyEnhanced implements
         signal.thresholds.recentWinRate = getRecentWinRate();
         signal.thresholds.isHighVolatility = isHighVolatility();
 
+        // ========== ORDER FLOW CONTEXT (Carmine Rosato Methodology) ==========
+        signal.orderFlow = new SignalData.OrderFlowContext();
+
+        // 1. Big Fish Analysis
+        PriceDeltaTracker.FishAnalysis fishAnalysis = priceDeltaTracker.analyzeForBigFish(price, 10);
+        signal.orderFlow.hasBigFishNearby = fishAnalysis.hasBigFishNearby;
+        if (fishAnalysis.nearestBigFish != null) {
+            signal.orderFlow.bigFishPrice = fishAnalysis.nearestBigFish.price;
+            signal.orderFlow.bigFishDelta = fishAnalysis.nearestBigFish.delta;
+            signal.orderFlow.bigFishIsBuyer = fishAnalysis.nearestBigFish.isBuyer;
+        }
+        signal.orderFlow.bigFishDefending = fishAnalysis.isDefending;
+        signal.orderFlow.bigFishSignal = fishAnalysis.signal;
+
+        // 2. Volume Tail Analysis
+        VolumeTailDetector.VolumeTailAnalysis tailAnalysis = volumeTailDetector.analyzeTails();
+        signal.orderFlow.hasUpperTail = tailAnalysis.hasUpperTail;
+        signal.orderFlow.hasLowerTail = tailAnalysis.hasLowerTail;
+        signal.orderFlow.upperTailLength = tailAnalysis.upperTailLength;
+        signal.orderFlow.lowerTailLength = tailAnalysis.lowerTailLength;
+        signal.orderFlow.tailBias = tailAnalysis.bias;
+        signal.orderFlow.tailReasoning = tailAnalysis.reasoning;
+
+        // 3. Tape Speed Analysis
+        TapeSpeedTracker.TapeSpeedAnalysis tapeAnalysis = tapeSpeedTracker.analyze();
+        signal.orderFlow.tradesPerSecond = tapeAnalysis.tradesPerSecond;
+        signal.orderFlow.volumePerSecond = tapeAnalysis.volumePerSecond;
+        signal.orderFlow.speedLevel = tapeAnalysis.speedLevel;
+        signal.orderFlow.dominantSide = tapeAnalysis.dominantSide;
+        signal.orderFlow.isHighSpeed = tapeAnalysis.isHighSpeed;
+        signal.orderFlow.isExhaustion = tapeAnalysis.isExhaustion;
+        signal.orderFlow.tapeInterpretation = tapeAnalysis.interpretation;
+
+        // 4. Stop Hunt Analysis
+        StopHuntDetector.StopHuntAnalysis huntAnalysis = stopHuntDetector.analyze();
+        signal.orderFlow.recentStopHunt = huntAnalysis.recentStopHunt;
+        signal.orderFlow.stopHuntSignal = huntAnalysis.huntSignal;
+        signal.orderFlow.stopHuntStrength = huntAnalysis.signalStrength;
+        if (huntAnalysis.mostRecentHunt != null) {
+            signal.orderFlow.stopHuntLevelType = huntAnalysis.mostRecentHunt.levelType;
+            signal.orderFlow.stopHuntLevelPrice = huntAnalysis.mostRecentHunt.levelPrice;
+        }
+
         // ========== CALCULATE FINAL SCORE ==========
         signal.score = calculateConfluenceScore(isBid, price, totalSize);
+
+        // ========== APPLY R:R QUALITY SCORE ADJUSTMENT ==========
+        // The R:R quality assessment modifies the final score
+        // This replaces hard filtering with soft scoring
+        if (signal.rrQuality != null) {
+            int rrAdjustment = signal.rrQuality.qualityScore;
+            signal.score += rrAdjustment;
+
+            // Log the adjustment
+            if (rrAdjustment != 0) {
+                fileLog(String.format("📊 R:R Score Adjustment: %+d (R:R %.1f, %s)",
+                    rrAdjustment, signal.rrQuality.rrRatio, signal.rrQuality.qualityLevel));
+            }
+        }
+
         signal.threshold = confluenceThreshold;
         signal.thresholdPassed = signal.score >= confluenceThreshold;
 
@@ -4306,6 +5254,43 @@ public class OrderFlowStrategyEnhanced implements
         int domMax = w.get(ConfluenceWeights.DOM_MAX);
         score += Math.max(-domMax, Math.min(domMax, domAdjustment));
 
+        // ========== CARMINE ROSATO ORDER FLOW CONFLUENCE ==========
+
+        // 1. Big Fish Defense Detection
+        // Check if price is near a Big Fish level and they're defending
+        PriceDeltaTracker.FishAnalysis fishAnalysis = priceDeltaTracker.analyzeForBigFish(price, 10);
+        if (fishAnalysis.isDefending) {
+            if ((fishAnalysis.signal.contains("BUY") && isBid) ||
+                (fishAnalysis.signal.contains("SELL") && !isBid)) {
+                score += 15;  // Big Fish defending in our direction
+            } else {
+                score -= 10;  // Big Fish defending against our direction
+            }
+        }
+
+        // 2. Volume Tail Analysis
+        // Check for volume tails indicating potential reversals
+        VolumeTailDetector.VolumeTailAnalysis tailAnalysis = volumeTailDetector.analyzeTails();
+        if (tailAnalysis.hasAnyTail()) {
+            if ((tailAnalysis.bias.equals("BULLISH") && isBid) ||
+                (tailAnalysis.bias.equals("BEARISH") && !isBid)) {
+                score += 10;  // Tail supports our direction
+            } else if (tailAnalysis.hasBothTails()) {
+                // Both tails = consolidation, be cautious
+                score -= 5;
+            }
+        }
+
+        // 3. Tape Speed Analysis
+        // Check for urgency, exhaustion, or low conviction
+        int tapeSpeedAdjustment = tapeSpeedTracker.getSpeedScoreAdjustment(isBid);
+        score += tapeSpeedAdjustment;
+
+        // 4. Stop Hunt Detection
+        // Check for recent stop hunts that could signal reversals
+        int stopHuntAdjustment = stopHuntDetector.getStopHuntScoreAdjustment(isBid);
+        score += stopHuntAdjustment;
+
         // ========== FINAL SCORE CLAMP ==========
         score = Math.max(-50, score);
 
@@ -4363,6 +5348,32 @@ public class OrderFlowStrategyEnhanced implements
             atrCalculator.update(currentHigh, currentLow, price);
         }
         previousClose = price;  // Will be updated on next trade
+
+        // ========== CARMINE ROSATO ORDER FLOW TOOLS UPDATE ==========
+        // Determine aggressor side from trade info
+        boolean isAggressorBuy = tradeInfo == null ? true : !tradeInfo.isBidAggressor;
+        int tradePrice = (int) price;
+        int tradeSize = size;
+
+        // Update per-price delta tracker (Big Fish levels)
+        priceDeltaTracker.recordTrade(tradePrice, tradeSize, isAggressorBuy);
+
+        // Update volume tail detector
+        volumeTailDetector.recordVolume(tradePrice, tradeSize);
+
+        // Update tape speed tracker
+        tapeSpeedTracker.recordTrade(tradePrice, tradeSize, isAggressorBuy);
+
+        // Update stop hunt detector with key levels
+        if (vwapCalculator.isInitialized()) {
+            stopHuntDetector.updateKeyLevels(
+                (int) vwapCalculator.getVWAP(),
+                volumeTailDetector.getRangeHigh(),
+                volumeTailDetector.getRangeLow(),
+                0  // Session open not tracked yet
+            );
+        }
+        stopHuntDetector.recordTrade(tradePrice, tradeSize, isAggressorBuy);
 
         // ========== PERFORMANCE TRACKING: CHECK SIGNAL OUTCOMES ==========
         checkSignalOutcomes((int)price);
@@ -5105,6 +6116,47 @@ public class OrderFlowStrategyEnhanced implements
         // Delegate to order executor if available
         if (orderExecutor != null && orderExecutor instanceof BookmapOrderExecutor) {
             // Execution tracking is handled internally by executor
+        }
+
+        // Check if this is a bracket order SL/TP execution
+        if (aiOrderManager != null) {
+            int fillPrice = (int) executionInfo.price;
+            checkBracketOrderFill(executionInfo.orderId, fillPrice);
+        }
+    }
+
+    /**
+     * Check if a filled order is a bracket order SL/TP and trigger exit marker
+     */
+    private void checkBracketOrderFill(String orderId, int fillPrice) {
+        // AIOrderManager tracks positions with SL/TP order IDs like "entryId-SL" and "entryId-TP"
+        // When Bookmap fills these, we need to trigger the exit marker
+        if (aiOrderManager == null) return;
+
+        // Check active positions for matching order IDs
+        for (var position : aiOrderManager.getActivePositions().values()) {
+            if (position.isClosed.get()) continue;
+
+            String slOrderId = position.stopLossOrderId.get();
+            String tpOrderId = position.takeProfitOrderId.get();
+
+            // Check if this order ID matches or looks like a SL/TP bracket order
+            boolean isSL = orderId.equals(slOrderId) || (slOrderId != null && orderId.contains(slOrderId)) || orderId.endsWith("-SL");
+            boolean isTP = orderId.equals(tpOrderId) || (tpOrderId != null && orderId.contains(tpOrderId)) || orderId.endsWith("-TP");
+
+            if (isSL) {
+                // Stop loss filled
+                log("🛑 BRACKET SL FILLED: " + orderId + " @ " + fillPrice);
+                aiOrderManager.closePosition(position.id, fillPrice, "Stop Loss Hit", orderId);
+                return;
+            }
+
+            if (isTP) {
+                // Take profit filled
+                log("💎 BRACKET TP FILLED: " + orderId + " @ " + fillPrice);
+                aiOrderManager.closePosition(position.id, fillPrice, "Take Profit Hit", orderId);
+                return;
+            }
         }
     }
 }
