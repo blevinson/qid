@@ -1199,13 +1199,13 @@ public class OrderFlowStrategyEnhanced implements
         aiReevaluateButton.addActionListener(e -> triggerAIReevaluation());
         settingsPanel.add(aiReevaluateButton, gbc);
 
-        // Pre-market Prep button
+        // Show Analysis button (shows existing or runs new)
         gbc.gridy = 16; gbc.gridwidth = 1;
-        JButton preMarketButton = new JButton("📊 Pre-market Prep");
-        preMarketButton.setToolTipText("Run AI pre-market analysis: sentiment, key levels, trade plan. Saves to memory.");
-        preMarketButton.setEnabled(token != null && !token.isEmpty());
-        preMarketButton.addActionListener(e -> runPreMarketAnalysis());
-        settingsPanel.add(preMarketButton, gbc);
+        JButton analysisButton = new JButton("📊 Show Analysis");
+        analysisButton.setToolTipText("View today's session analysis (or run if not yet generated). Includes pre-market prep and phase updates.");
+        analysisButton.setEnabled(token != null && !token.isEmpty());
+        analysisButton.addActionListener(e -> showOrRunAnalysis());
+        settingsPanel.add(analysisButton, gbc);
 
         // AI Investment Strategist section
         gbc.gridx = 0; gbc.gridy = 17; gbc.gridwidth = 2;
@@ -3469,6 +3469,64 @@ public class OrderFlowStrategyEnhanced implements
                 });
                 return null;
             });
+    }
+
+    /**
+     * Show existing analysis or run new analysis if none exists
+     * This is the main entry point for the "Show Analysis" button
+     */
+    private void showOrRunAnalysis() {
+        // Check if we have session phase analyzer with context
+        if (sessionPhaseAnalyzer != null && sessionPhaseAnalyzer.getContextManager().hasTodaysContext()) {
+            // Show existing analysis
+            log("📊 Showing existing session analysis...");
+            String context = sessionPhaseAnalyzer.getContextManager().getTodaysContext();
+            if (context != null && !context.isEmpty()) {
+                showPreMarketDialog(context);
+            } else {
+                // Fallback to summary if full context is empty
+                String summary = sessionPhaseAnalyzer.getContextManager().getTodaysContextSummary();
+                showPreMarketDialog(summary != null ? summary : "No analysis available.");
+            }
+        } else if (sessionPhaseAnalyzer != null) {
+            // No context exists - run analysis then show it
+            log("📊 No existing analysis found. Running session analysis...");
+            runPreMarketAnalysisWithCallback(() -> {
+                // After analysis completes, show it
+                SwingUtilities.invokeLater(() -> {
+                    String context = sessionPhaseAnalyzer.getContextManager().getTodaysContext();
+                    if (context != null && !context.isEmpty()) {
+                        showPreMarketDialog(context);
+                    }
+                });
+            });
+        } else {
+            // Fallback to old pre-market analyzer if session phase analyzer not available
+            log("📊 Using legacy pre-market analyzer...");
+            runPreMarketAnalysis();
+        }
+    }
+
+    /**
+     * Run pre-market analysis with a callback when complete
+     */
+    private void runPreMarketAnalysisWithCallback(Runnable onComplete) {
+        if (sessionPhaseAnalyzer == null) {
+            log("⚠️ Cannot run analysis: SessionPhaseAnalyzer not initialized");
+            if (onComplete != null) onComplete.run();
+            return;
+        }
+
+        sessionPhaseAnalyzer.runPreMarketAnalysis((analysis, success) -> {
+            if (success) {
+                log("✅ Session analysis complete");
+            } else {
+                log("⚠️ Session analysis failed: " + analysis);
+            }
+            if (onComplete != null) {
+                onComplete.run();
+            }
+        });
     }
 
     /**
