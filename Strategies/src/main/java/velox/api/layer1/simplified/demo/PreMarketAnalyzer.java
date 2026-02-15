@@ -34,7 +34,7 @@ public class PreMarketAnalyzer {
     private final File memoryDir;
     private final TradingMemoryService memoryService;
     private static final String API_URL = "https://zai.cloudtorch.ai/v1/messages";
-    private static final String MODEL = "glm-5";
+    private static final String MODEL = "glm-4.7";
 
     // Market data suppliers (set by parent strategy)
     private Supplier<Double> priceSupplier;
