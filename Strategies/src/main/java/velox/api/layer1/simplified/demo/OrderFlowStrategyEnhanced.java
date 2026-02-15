@@ -4739,10 +4739,12 @@ public class OrderFlowStrategyEnhanced implements
         signal.direction = isBid ? "LONG" : "SHORT";
         signal.price = price;
         signal.pips = pips;
-        signal.timestamp = System.currentTimeMillis();
+        signal.timestamp = currentDataTimestampMs;  // Use Bookmap's data timestamp (replay-safe)
 
-        // Debug: Log signal creation with price info
-        fileLog("📊 createSignalData: price=" + price + " ticks, pips=" + pips + ", lastKnownPrice=" + lastKnownPrice + " ticks");
+        // Debug: Log signal creation with price and time info
+        java.time.ZoneId etZone = java.time.ZoneId.of("America/New_York");
+        java.time.ZonedDateTime dataTime = java.time.Instant.ofEpochMilli(currentDataTimestampMs).atZone(etZone);
+        fileLog("📊 createSignalData: price=" + price + " ticks, pips=" + pips + ", time=" + dataTime.format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss.SSS")) + " ET (dataTs=" + currentDataTimestampMs + ")");
 
         // Debug: Check if pips is 0
         if (pips == 0) {
@@ -4934,7 +4936,8 @@ public class OrderFlowStrategyEnhanced implements
         // ========== MARKET CONTEXT (Enhanced) ==========
         signal.market = new SignalData.MarketContext();
         signal.market.symbol = alias;
-        signal.market.timeOfDay = new SimpleDateFormat("HH:mm").format(new Date());
+        // Use Bookmap's data timestamp for replay mode support (reuse variables from above)
+        signal.market.timeOfDay = dataTime.format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss"));
         signal.market.currentPrice = price;
         signal.market.spreadTicks = 1;
 
