@@ -6209,12 +6209,20 @@ public class OrderFlowStrategyEnhanced implements
 
     @Override
     public void onOrderExecuted(ExecutionInfo executionInfo) {
+        // Log RAW execution info for debugging
+        log("💰 RAW EXECUTION INFO:");
+        log("   orderId: " + executionInfo.orderId);
+        log("   price (raw double): " + executionInfo.price);
+        log("   size: " + executionInfo.size);
+        log("   pips: " + pips);
+
         // CRITICAL: executionInfo.price is already in TICK UNITS (same as onTrade, onBbo)
         // Do NOT divide by pips! Bookmap API returns tick units consistently.
         // Evidence: onTrade comment at line 5369, onBbo receives int prices directly
         int fillPriceTicks = (int) executionInfo.price;
-        log("💰 ORDER EXECUTED: " + executionInfo.orderId + " @ " + executionInfo.price + " ticks (actual: " + (fillPriceTicks * pips) + ")");
-        fileLog("💰 ORDER EXECUTED: orderId=" + executionInfo.orderId + " price=" + executionInfo.price + " ticks (actual=" + (fillPriceTicks * pips) + ", pips=" + pips + ")");
+        double actualPrice = fillPriceTicks * pips;
+        log("💰 ORDER EXECUTED: " + executionInfo.orderId + " @ " + executionInfo.price + " ticks (actual: " + actualPrice + ")");
+        fileLog("💰 ORDER EXECUTED: orderId=" + executionInfo.orderId + " price=" + executionInfo.price + " ticks (actual=" + actualPrice + ", pips=" + pips + ")");
 
         // Delegate to order executor if available
         if (orderExecutor != null && orderExecutor instanceof BookmapOrderExecutor) {
@@ -6248,8 +6256,17 @@ public class OrderFlowStrategyEnhanced implements
             log(String.format("   Signal TP: %d | Actual TP: %d | Diff: %d",
                 signalTpPrice, actualTpPrice, Math.abs(actualTpPrice - signalTpPrice)));
 
+            // BOOKMAP COMPARISON - what Bookmap should show
+            log("📈 BOOKMAP EXPECTED VALUES:");
+            log(String.format("   Entry fill: %.2f (Bookmap should show this)", fillPriceTicks * pips));
+            log(String.format("   Bookmap SL: %.2f = Entry %.2f - %d ticks offset", actualSlPrice * pips, fillPriceTicks * pips, pending.slOffset));
+            log(String.format("   Bookmap TP: %.2f = Entry %.2f + %d ticks offset", actualTpPrice * pips, fillPriceTicks * pips, pending.tpOffset));
+            log(String.format("📍 Our markers will show: SL=%.2f TP=%.2f", actualSlPrice * pips, actualTpPrice * pips));
+
             fileLog("✅ ENTRY FILL: signal=" + pending.signalPrice + " fill=" + fillPriceTicks + " slippage=" + slippageTicks +
                 " SL=" + actualSlPrice + " TP=" + actualTpPrice);
+            fileLog(String.format("📈 BOOKMAP COMPARISON: Entry=%.2f SL=%.2f TP=%.2f (offsets: SL=%d TP=%d ticks)",
+                fillPriceTicks * pips, actualSlPrice * pips, actualTpPrice * pips, pending.slOffset, pending.tpOffset));
 
             // Update chart markers with actual prices
             activeStopLossPrice = actualSlPrice;
