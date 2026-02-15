@@ -1208,10 +1208,10 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(analysisButton, gbc);
 
         // AI Investment Strategist section
-        gbc.gridx = 0; gbc.gridy = 17; gbc.gridwidth = 2;
-        addSeparator(settingsPanel, "AI Investment Strategist (Qid v2.0)", gbc);
+        gbc.gridx = 0; gbc.gridy = 18; gbc.gridwidth = 2;
+        addSeparator(settingsPanel, "AI Investment Strategist (Qid v2.2)", gbc);
 
-        gbc.gridy = 18; gbc.gridwidth = 1;
+        gbc.gridy = 19; gbc.gridwidth = 1;
         JLabel enableAiTradingLabel = new JLabel("Enable AI Trading:");
         enableAiTradingLabel.setToolTipText("Enable Qid AI to evaluate signals and manage trades");
         settingsPanel.add(enableAiTradingLabel, gbc);
@@ -1890,10 +1890,10 @@ public class OrderFlowStrategyEnhanced implements
         gbc.anchor = GridBagConstraints.WEST;  // Reset anchor
 
         // Version label (bottom right)
-        gbc.gridx = 1; gbc.gridy = 56; gbc.gridwidth = 1;
+        gbc.gridx = 1; gbc.gridy = 57; gbc.gridwidth = 1;
         gbc.anchor = GridBagConstraints.EAST;
         gbc.weightx = 1.0;
-        JLabel versionLabel = new JLabel("Qid v2.1 - AI Trading with Memory");
+        JLabel versionLabel = new JLabel("Qid v2.2 - AI Trading with Memory");
         versionLabel.setFont(new Font("Arial", Font.ITALIC, 10));
         versionLabel.setForeground(Color.GRAY);
         settingsPanel.add(versionLabel, gbc);
