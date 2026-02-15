@@ -188,9 +188,12 @@ public class AIInvestmentStrategist {
         }
 
         // Step 3: Ask AI to make decision (include session analysis report)
+        log("📝 Building AI prompt...");
         String prompt = buildAIPrompt(signal, context, sessionContext, sessionAnalysisReport, devMode);
+        log("📝 Prompt built (" + prompt.length() + " chars)");
 
         // Call Claude API
+        log("🌐 Calling Claude API...");
         callClaudeAPI(prompt, callback, signal);
     }
 
