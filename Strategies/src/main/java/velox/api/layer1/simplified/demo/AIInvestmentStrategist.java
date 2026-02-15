@@ -123,6 +123,7 @@ public class AIInvestmentStrategist {
             log("🔧 DEV MODE ENABLED - AI will be permissive for testing");
         }
         double actualPrice = signal.price * signal.pips;  // Convert ticks to actual price
+        log("⏰ TIME: " + signal.market.timeOfDay + " ET");  // Bookmap data timestamp (replay-safe)
         log("SIGNAL: " + signal.direction + " @ " + String.format("%.2f", actualPrice) + " | Score: " + signal.score + "/" + signal.threshold);
         log("CVD: " + signal.market.cvd + " (" + signal.market.cvdTrend + ") | Trend: " + signal.market.trend);
 
