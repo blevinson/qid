@@ -3955,29 +3955,24 @@ public class OrderFlowStrategyEnhanced implements
                             // Create SignalData for AI evaluation
                             SignalData signalData = createSignalData(isBid, price, totalSize);
 
-                            // ========== R:R QUALITY FILTER ==========
-                            // Reject signals with poor R:R before sending to AI
-                            if (signalData.rrRejectionReason != null) {
-                                log("⚠️ R:R FILTER REJECTED: " + signalData.rrRejectionReason);
-                                log(String.format("   Signal: %s @ %d (Score: %d, R:R: %s)",
-                                    signalData.direction, price, signalData.score, signalData.risk.riskRewardRatio));
-                                fileLog("⚠️ R:R REJECTION: " + signalData.rrRejectionReason + " | " + signalData.risk.slTpReasoning);
+                            // ========== R:R QUALITY LOGGING (NO FILTERING) ==========
+                            // We no longer filter out signals with poor R:R.
+                            // Instead, we expose the R:R quality assessment to the AI
+                            // so it can make informed decisions with full context.
+                            // The AI sees: confluence score + R:R quality + order flow + market context
 
-                                // Place rejection marker on chart
+                            if (signalData.rrQuality != null) {
+                                log("📊 R:R QUALITY: " + signalData.rrQuality.getSummary());
+                                log(String.format("   Signal: %s @ %d (Score: %d, SL=%d, TP=%d)",
+                                    signalData.direction, price, signalData.score,
+                                    signalData.risk.stopLossTicks, signalData.risk.takeProfitTicks));
+                                fileLog("📊 R:R QUALITY: " + signalData.rrQuality.getSummary() +
+                                    " | " + signalData.risk.slTpReasoning);
+
+                                // Place quality marker on chart (shows quality level, not just rejection)
                                 onSkipMarker(price, signalData.score,
-                                    "R:R: " + signalData.rrRejectionReason);
-
-                                // Release the AI evaluation lock
-                                aiEvaluationInProgress.set(false);
-                                return;  // Skip this signal
+                                    signalData.rrQuality.qualityEmoji + " " + signalData.rrQuality.qualityLevel);
                             }
-
-                            // Log good R:R
-                            log(String.format("✅ R:R PASSED: %s (SL=%d, TP=%d, R:R=%s)",
-                                signalData.risk.slTpReasoning,
-                                signalData.risk.stopLossTicks,
-                                signalData.risk.takeProfitTicks,
-                                signalData.risk.riskRewardRatio));
 
                             // Log timestamp info for debugging replay mode
                             java.time.ZoneId etZone = java.time.ZoneId.of("America/New_York");
@@ -4205,7 +4200,16 @@ public class OrderFlowStrategyEnhanced implements
         double rrRatio;
         boolean isGoodRR;
         String reasoning;
-        String rejectionReason;  // If null, signal is acceptable
+
+        // ========== R:R QUALITY FIELDS ==========
+        // Instead of rejection, we capture quality details for AI decision-making
+        String slSource;              // "ATR", "DOM_SUPPORT", "MEMORY", "FIXED"
+        String tpSource;              // "ATR", "DOM_RESISTANCE", "MEMORY", "FIXED"
+        String issueType;             // "NONE", "WIDE_SL", "NEARBY_TARGET", "HIGH_VOLATILITY", "NO_DOM_LEVEL"
+        String issueDetails;          // Human-readable explanation
+        boolean canBeImproved;        // Is there a way to get better R:R?
+        int suggestedSlTicks;         // Alternative SL (if available)
+        int suggestedTpTicks;         // Alternative TP (if available)
 
         SmartSlTpResult(int slTicks, int tpTicks, int entryPrice, boolean isLong) {
             this.slTicks = slTicks;
@@ -4214,6 +4218,15 @@ public class OrderFlowStrategyEnhanced implements
             this.tpPrice = isLong ? entryPrice + tpTicks : entryPrice - tpTicks;
             this.rrRatio = slTicks > 0 ? (double) tpTicks / slTicks : 0;
             this.isGoodRR = rrRatio >= 1.0;
+
+            // Default values for R:R quality fields
+            this.slSource = "FIXED";
+            this.tpSource = "FIXED";
+            this.issueType = "NONE";
+            this.issueDetails = "";
+            this.canBeImproved = false;
+            this.suggestedSlTicks = 0;
+            this.suggestedTpTicks = 0;
         }
     }
 
@@ -4331,9 +4344,15 @@ public class OrderFlowStrategyEnhanced implements
         }
 
         // ========== CALCULATE STOP LOSS ==========
+        // Declare variables at method level for use in R:R quality assessment
+        int atrSl = 0;
+        int domSl = 0;
+        int atrTp = 0;
+        int domTp = 0;
+
         if (useSmartSlTp) {
-            int atrSl = (int) Math.round(atrTicks * atrSlMult);
-            int domSl = 0;
+            atrSl = (int) Math.round(atrTicks * atrSlMult);
+            domSl = 0;
 
             if (isBid) {
                 // LONG: SL below entry, look for support below
@@ -4370,8 +4389,8 @@ public class OrderFlowStrategyEnhanced implements
 
         // ========== CALCULATE TAKE PROFIT ==========
         if (useSmartSlTp) {
-            int atrTp = (int) Math.round(atrTicks * atrTpMult);
-            int domTp = 0;
+            atrTp = (int) Math.round(atrTicks * atrTpMult);
+            domTp = 0;
 
             if (isBid) {
                 // LONG: TP above entry, look for resistance above
@@ -4429,17 +4448,70 @@ public class OrderFlowStrategyEnhanced implements
         SmartSlTpResult result = new SmartSlTpResult(slTicks, tpTicks, entryPrice, isBid);
         result.reasoning = reasoning.toString();
 
-        // ========== R:R QUALITY CHECK ==========
+        // ========== R:R QUALITY ASSESSMENT ==========
+        // Instead of rejecting, we capture quality details for AI decision-making
+
+        // Track SL/TP sources (set based on what was actually used)
+        if (useSmartSlTp) {
+            // Determine SL source
+            if (memorySlDistance > 0 && memorySlDistance <= slTicks + 2) {
+                result.slSource = "MEMORY";
+            } else if (domSl > 0 && supportVolume >= minDomVolumeForSlTp) {
+                result.slSource = "DOM_SUPPORT";
+            } else if (atrSl > 0) {
+                result.slSource = "ATR";
+            } else {
+                result.slSource = "FIXED";
+            }
+
+            // Determine TP source
+            if (prioritizeDomOverAtr && domTp > 0 && domTp >= slTicks && resistanceVolume >= minDomVolumeForSlTp) {
+                result.tpSource = "DOM_RESISTANCE";
+            } else if (memoryTpDistance > 0 && memoryTpDistance >= slTicks) {
+                result.tpSource = "MEMORY";
+            } else if (atrTp > 0) {
+                result.tpSource = "ATR";
+            } else {
+                result.tpSource = "FIXED";
+            }
+        }
+
+        // Identify issues and potential improvements
         if (result.rrRatio < minRRRatio) {
-            result.rejectionReason = String.format(
+            result.issueType = "POOR_RR";
+            result.issueDetails = String.format(
                 "R:R ratio 1:%.1f is below minimum 1:%.1f (SL=%d, TP=%d)",
                 result.rrRatio, minRRRatio, slTicks, tpTicks);
+
+            // Check if we can improve by adjusting SL/TP
+            // Suggest tighter SL if DOM level is closer
+            if (domSl > 0 && domSl < slTicks && supportVolume >= minDomVolumeForSlTp) {
+                result.canBeImproved = true;
+                result.suggestedSlTicks = domSl;
+                result.suggestedTpTicks = tpTicks;  // Keep same TP
+            }
+            // Suggest wider TP if there's room
+            else if (domTp > tpTicks && resistanceVolume >= minDomVolumeForSlTp) {
+                result.canBeImproved = true;
+                result.suggestedSlTicks = slTicks;  // Keep same SL
+                result.suggestedTpTicks = domTp;
+            }
         } else if (slTicks > maxSlTicks) {
-            result.rejectionReason = String.format(
-                "Stop loss %d ticks exceeds maximum %d (volatility too high)",
+            result.issueType = "WIDE_SL";
+            result.issueDetails = String.format(
+                "Stop loss %d ticks exceeds maximum %d (high volatility)",
                 slTicks, maxSlTicks);
+
+            // Can improve if there's a closer DOM level
+            if (domSl > 0 && domSl <= maxSlTicks && supportVolume >= minDomVolumeForSlTp) {
+                result.canBeImproved = true;
+                result.suggestedSlTicks = domSl;
+                result.suggestedTpTicks = tpTicks;
+            }
         } else {
             result.isGoodRR = true;
+            result.issueType = "NONE";
+            result.issueDetails = "R:R meets requirements";
         }
 
         return result;
@@ -4755,8 +4827,21 @@ public class OrderFlowStrategyEnhanced implements
         // Calculate smart SL/TP using ATR and DOM levels
         SmartSlTpResult slTp = calculateSmartSlTp(isBid, price);
 
-        // Store rejection reason if R:R is poor (used by signal filtering)
-        signal.rrRejectionReason = slTp.rejectionReason;
+        // ========== R:R QUALITY ASSESSMENT ==========
+        // Create comprehensive R:R quality assessment instead of simple rejection
+        signal.rrQuality = SignalData.RrQuality.assess(
+            slTp.rrRatio,
+            minRRRatio,
+            slTp.slTicks,
+            slTp.tpTicks,
+            slTp.slSource,
+            slTp.tpSource,
+            slTp.issueType,
+            slTp.issueDetails,
+            slTp.canBeImproved,
+            slTp.suggestedSlTicks,
+            slTp.suggestedTpTicks
+        );
 
         // Use calculated values
         signal.risk.stopLossTicks = slTp.slTicks;
@@ -4842,6 +4927,21 @@ public class OrderFlowStrategyEnhanced implements
 
         // ========== CALCULATE FINAL SCORE ==========
         signal.score = calculateConfluenceScore(isBid, price, totalSize);
+
+        // ========== APPLY R:R QUALITY SCORE ADJUSTMENT ==========
+        // The R:R quality assessment modifies the final score
+        // This replaces hard filtering with soft scoring
+        if (signal.rrQuality != null) {
+            int rrAdjustment = signal.rrQuality.qualityScore;
+            signal.score += rrAdjustment;
+
+            // Log the adjustment
+            if (rrAdjustment != 0) {
+                fileLog(String.format("📊 R:R Score Adjustment: %+d (R:R %.1f, %s)",
+                    rrAdjustment, signal.rrQuality.rrRatio, signal.rrQuality.qualityLevel));
+            }
+        }
+
         signal.threshold = confluenceThreshold;
         signal.thresholdPassed = signal.score >= confluenceThreshold;
 
