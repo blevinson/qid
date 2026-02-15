@@ -15,10 +15,10 @@ public class ActivePosition {
 
     // Position details
     public final boolean isLong;
-    public final int entryPrice;
+    public int entryPrice;  // NOT final - updated after order fill with actual price
     public final int quantity;
     public final long entryTime;
-    public final int entrySlippage;  // Ticks of slippage at entry (signal price vs fill price)
+    public int entrySlippage;  // NOT final - updated after order fill. Ticks of slippage at entry (signal price vs fill price)
 
     // Instrument
     public final String symbol;
