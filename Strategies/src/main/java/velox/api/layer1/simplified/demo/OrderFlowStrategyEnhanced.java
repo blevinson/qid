@@ -3116,6 +3116,9 @@ public class OrderFlowStrategyEnhanced implements
             // Set up price supplier for staleness checks
             aiOrderManager.setCurrentPriceSupplier(() -> (int) lastKnownPrice);
 
+            // Set up time supplier for staleness checks (uses Bookmap data time for replay mode support)
+            aiOrderManager.setCurrentTimeSupplier(() -> currentDataTimestampMs);
+
             // Set up context suppliers for historical recording
             aiOrderManager.setContextSuppliers(
                 () -> alias,  // symbol
