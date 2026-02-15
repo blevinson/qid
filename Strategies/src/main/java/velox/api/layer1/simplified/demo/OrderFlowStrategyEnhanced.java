@@ -3133,7 +3133,7 @@ public class OrderFlowStrategyEnhanced implements
             // Initialize Pre-Market Analyzer
             if (preMarketAnalyzer == null && tradingMemoryDir != null) {
                 preMarketAnalyzer = new PreMarketAnalyzer(
-                    aiAuthToken,
+                    getEffectiveApiToken(),
                     tradingMemoryDir.toFile(),
                     (velox.api.layer1.simplified.demo.storage.TradingMemoryService) memoryService
                 );
@@ -3391,9 +3391,10 @@ public class OrderFlowStrategyEnhanced implements
         // Initialize if needed
         if (preMarketAnalyzer == null) {
             // Try to initialize
-            if (tradingMemoryDir != null && aiAuthToken != null && !aiAuthToken.isEmpty()) {
+            String effectiveToken = getEffectiveApiToken();
+            if (tradingMemoryDir != null && effectiveToken != null && !effectiveToken.isEmpty()) {
                 preMarketAnalyzer = new PreMarketAnalyzer(
-                    aiAuthToken,
+                    effectiveToken,
                     tradingMemoryDir.toFile(),
                     (velox.api.layer1.simplified.demo.storage.TradingMemoryService) memoryService
                 );
@@ -6355,13 +6356,15 @@ public class OrderFlowStrategyEnhanced implements
         log("   size: " + executionInfo.size);
         log("   pips: " + pips);
 
-        // CRITICAL: executionInfo.price is already in TICK UNITS (same as onTrade, onBbo)
-        // Do NOT divide by pips! Bookmap API returns tick units consistently.
-        // Evidence: onTrade comment at line 5369, onBbo receives int prices directly
-        int fillPriceTicks = (int) executionInfo.price;
-        double actualPrice = fillPriceTicks * pips;
-        log("💰 ORDER EXECUTED: " + executionInfo.orderId + " @ " + executionInfo.price + " ticks (actual: " + actualPrice + ")");
-        fileLog("💰 ORDER EXECUTED: orderId=" + executionInfo.orderId + " price=" + executionInfo.price + " ticks (actual=" + actualPrice + ", pips=" + pips + ")");
+        // CRITICAL: executionInfo.price is in ACTUAL PRICE units, NOT tick units!
+        // Unlike onBbo which returns ticks, ExecutionInfo.price returns actual prices.
+        // We need to convert to ticks by dividing by pips.
+        // Evidence: Log shows "price=6958.5" but TP/SL tracking shows ~27834 ticks
+        // 6958.5 / 0.25 = 27834 ticks - this matches!
+        double actualPrice = executionInfo.price;
+        int fillPriceTicks = (int) Math.round(actualPrice / pips);
+        log("💰 ORDER EXECUTED: " + executionInfo.orderId + " @ actual=" + actualPrice + " (ticks: " + fillPriceTicks + ")");
+        fileLog("💰 ORDER EXECUTED: orderId=" + executionInfo.orderId + " actualPrice=" + actualPrice + " (ticks=" + fillPriceTicks + ", pips=" + pips + ")");
 
         // Delegate to order executor if available
         if (orderExecutor != null && orderExecutor instanceof BookmapOrderExecutor) {
