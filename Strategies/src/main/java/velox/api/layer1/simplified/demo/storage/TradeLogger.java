@@ -194,6 +194,87 @@ public class TradeLogger {
     }
 
     /**
+     * Get recent trades from the log file
+     * @param count Number of recent trades to retrieve
+     * @return List of TradeRecord objects (most recent first)
+     */
+    public java.util.List<TradeRecord> getRecentTrades(int count) {
+        java.util.List<TradeRecord> trades = new java.util.ArrayList<>();
+
+        if (!logPath.toFile().exists()) {
+            return trades;
+        }
+
+        try {
+            java.util.List<String> lines = java.nio.file.Files.readAllLines(logPath);
+            if (lines.size() <= 1) {
+                return trades;  // Only header or empty
+            }
+
+            // Parse from most recent (skip header)
+            for (int i = lines.size() - 1; i >= 1 && trades.size() < count; i--) {
+                String line = lines.get(i);
+                if (line.trim().isEmpty()) continue;
+
+                try {
+                    TradeRecord record = parseLine(line);
+                    if (record != null) {
+                        trades.add(record);
+                    }
+                } catch (Exception e) {
+                    // Skip malformed lines
+                }
+            }
+        } catch (IOException e) {
+            System.err.println("Failed to read trade history: " + e.getMessage());
+        }
+
+        return trades;
+    }
+
+    /**
+     * Parse a CSV line into a TradeRecord
+     */
+    private TradeRecord parseLine(String line) {
+        String[] parts = line.split(",", -1);
+        if (parts.length < 19) return null;
+
+        TradeRecord record = new TradeRecord();
+        record.timestamp = parts[0];
+        record.tradeId = parts[1];
+        record.symbol = parts[2];
+        record.direction = parts[3];
+        record.entryPrice = Integer.parseInt(parts[4]);
+        record.exitPrice = Integer.parseInt(parts[5]);
+        record.quantity = Integer.parseInt(parts[6]);
+        record.stopLoss = Integer.parseInt(parts[7]);
+        record.takeProfit = Integer.parseInt(parts[8]);
+        record.pnlTicks = Integer.parseInt(parts[9]);
+        record.pnlDollars = Double.parseDouble(parts[10]);
+        record.outcome = parts[11];
+        record.durationSeconds = Integer.parseInt(parts[12]);
+        record.signalScore = Integer.parseInt(parts[13]);
+        record.entrySlippage = Integer.parseInt(parts[14]);
+        record.exitReason = parts[15];
+        record.slTicks = Integer.parseInt(parts[16]);
+        record.tpTicks = Integer.parseInt(parts[17]);
+        record.rrRatio = Double.parseDouble(parts[18]);
+
+        // MFE/MAE may not exist in older logs
+        if (parts.length > 19) {
+            record.mfeTicks = Integer.parseInt(parts[19]);
+        }
+        if (parts.length > 20) {
+            record.maeTicks = Integer.parseInt(parts[20]);
+        }
+        if (parts.length > 21) {
+            record.aiConfidence = Double.parseDouble(parts[21]);
+        }
+
+        return record;
+    }
+
+    /**
      * Close the logger
      */
     public void close() {

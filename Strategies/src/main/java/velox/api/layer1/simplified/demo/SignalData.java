@@ -35,6 +35,9 @@ public class SignalData {
     // Risk management
     public RiskManagement risk;
 
+    // R:R quality check result
+    public String rrRejectionReason;  // If non-null, signal was rejected due to poor R:R
+
     public static class ScoreBreakdown {
         // Iceberg detection
         public int icebergPoints;
@@ -233,6 +236,9 @@ public class SignalData {
         public String riskRewardRatio;
         public int positionSizeContracts;
         public double totalRiskPercent;
+
+        // Smart SL/TP metadata
+        public String slTpReasoning;  // Explanation of how SL/TP were calculated
     }
 
     // ========== THRESHOLD CONTEXT FOR AI ADAPTIVE CONTROL ==========

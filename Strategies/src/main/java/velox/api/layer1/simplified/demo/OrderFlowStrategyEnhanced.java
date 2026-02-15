@@ -162,6 +162,42 @@ public class OrderFlowStrategyEnhanced implements
     @Parameter(name = "Take Profit Ticks")
     private Integer takeProfitTicks = 40;  // Distance from entry to TP in ticks
 
+    @Parameter(name = "Use Smart SL/TP")
+    private Boolean useSmartSlTp = true;  // Use ATR + DOM levels for SL/TP
+
+    @Parameter(name = "ATR SL Multiplier")
+    private Double atrSlMultiplier = 1.5;  // SL = ATR × multiplier (in ticks)
+
+    @Parameter(name = "ATR TP Multiplier")
+    private Double atrTpMultiplier = 3.0;  // TP = ATR × multiplier (in ticks)
+
+    @Parameter(name = "Min R:R Ratio")
+    private Double minRRRatio = 1.5;  // Minimum risk:reward ratio (e.g., 1.5 means 1:1.5)
+
+    @Parameter(name = "Max SL Ticks")
+    private Integer maxSlTicks = 50;  // Cap SL to prevent runaway risk
+
+    @Parameter(name = "Max TP Ticks")
+    private Integer maxTpTicks = 150;  // Cap TP to realistic targets
+
+    // ========== DOM QUALITY THRESHOLDS ==========
+    @Parameter(name = "Min DOM Volume for SL/TP")
+    private Integer minDomVolumeForSlTp = 100;  // Only use DOM level if volume >= this
+
+    @Parameter(name = "DOM Level Priority")
+    private Boolean prioritizeDomOverAtr = true;  // DOM levels take priority over ATR
+
+    // ========== SESSION-AWARE ATR SCALING ==========
+    @Parameter(name = "Session-Aware ATR Scaling")
+    private Boolean sessionAwareAtrScaling = true;  // Adjust ATR multipliers by session phase
+
+    // ========== MEMORY-DRIVEN SL/TP ==========
+    @Parameter(name = "Use Trade Memory for SL/TP")
+    private Boolean useTradeMemoryForSlTp = true;  // Use recent trade reversal levels
+
+    @Parameter(name = "Memory Lookback (trades)")
+    private Integer memoryLookbackTrades = 20;  // How many recent trades to analyze
+
     // ========== SAFETY PARAMETERS ==========
     @Parameter(name = "Simulation Mode Only")
     private Boolean simModeOnly = true;
@@ -245,6 +281,17 @@ public class OrderFlowStrategyEnhanced implements
         public Integer fixedPositionSize = 1;
         public Integer stopLossTicks = 20;
         public Integer takeProfitTicks = 40;
+        public Boolean useSmartSlTp = true;
+        public Double atrSlMultiplier = 1.5;
+        public Double atrTpMultiplier = 3.0;
+        public Double minRRRatio = 1.5;
+        public Integer maxSlTicks = 50;
+        public Integer maxTpTicks = 150;
+        public Integer minDomVolumeForSlTp = 100;
+        public Boolean prioritizeDomOverAtr = true;
+        public Boolean sessionAwareAtrScaling = true;
+        public Boolean useTradeMemoryForSlTp = true;
+        public Integer memoryLookbackTrades = 20;
     }
 
     private Settings settings;
@@ -527,6 +574,19 @@ public class OrderFlowStrategyEnhanced implements
         fixedPositionSize = settings.fixedPositionSize;
         stopLossTicks = settings.stopLossTicks;
         takeProfitTicks = settings.takeProfitTicks;
+        // Smart SL/TP settings
+        useSmartSlTp = settings.useSmartSlTp;
+        atrSlMultiplier = settings.atrSlMultiplier;
+        atrTpMultiplier = settings.atrTpMultiplier;
+        minRRRatio = settings.minRRRatio;
+        maxSlTicks = settings.maxSlTicks;
+        maxTpTicks = settings.maxTpTicks;
+        // DOM quality and memory settings
+        minDomVolumeForSlTp = settings.minDomVolumeForSlTp;
+        prioritizeDomOverAtr = settings.prioritizeDomOverAtr;
+        sessionAwareAtrScaling = settings.sessionAwareAtrScaling;
+        useTradeMemoryForSlTp = settings.useTradeMemoryForSlTp;
+        memoryLookbackTrades = settings.memoryLookbackTrades;
 
         // Create detection MARKER indicators (Layer 1)
         // These will use custom icons instead of continuous lines
@@ -1388,11 +1448,118 @@ public class OrderFlowStrategyEnhanced implements
             rrValueLabel.setText(String.format("1:%.1f", (double) tp / sl));
         });
 
-        // Notifications section
+        // ========== SMART SL/TP SECTION ==========
         gbc.gridx = 0; gbc.gridy = 48; gbc.gridwidth = 2;
+        addSeparator(settingsPanel, "Smart SL/TP (ATR + DOM)", gbc);
+
+        // Use Smart SL/TP checkbox
+        gbc.gridx = 0; gbc.gridy = 49; gbc.gridwidth = 1;
+        settingsPanel.add(new JLabel("Use Smart SL/TP:"), gbc);
+        gbc.gridx = 1;
+        JCheckBox smartSlTpCheckBox = new JCheckBox();
+        smartSlTpCheckBox.setSelected(useSmartSlTp);
+        smartSlTpCheckBox.setToolTipText("Use ATR and DOM levels to calculate SL/TP instead of fixed values");
+        smartSlTpCheckBox.addActionListener(e -> useSmartSlTp = smartSlTpCheckBox.isSelected());
+        settingsPanel.add(smartSlTpCheckBox, gbc);
+
+        // ATR SL Multiplier
+        gbc.gridx = 0; gbc.gridy = 50;
+        settingsPanel.add(new JLabel("ATR SL Multiplier:"), gbc);
+        gbc.gridx = 1;
+        JSpinner atrSlSpinner = new JSpinner(new SpinnerNumberModel(atrSlMultiplier.doubleValue(), 0.5, 5.0, 0.1));
+        atrSlSpinner.setToolTipText("SL = ATR × this multiplier (in ticks)");
+        atrSlSpinner.addChangeListener(e -> atrSlMultiplier = (Double) atrSlSpinner.getValue());
+        settingsPanel.add(atrSlSpinner, gbc);
+
+        // ATR TP Multiplier
+        gbc.gridx = 0; gbc.gridy = 51;
+        settingsPanel.add(new JLabel("ATR TP Multiplier:"), gbc);
+        gbc.gridx = 1;
+        JSpinner atrTpSpinner = new JSpinner(new SpinnerNumberModel(atrTpMultiplier.doubleValue(), 1.0, 10.0, 0.5));
+        atrTpSpinner.setToolTipText("TP = ATR × this multiplier (in ticks)");
+        atrTpSpinner.addChangeListener(e -> atrTpMultiplier = (Double) atrTpSpinner.getValue());
+        settingsPanel.add(atrTpSpinner, gbc);
+
+        // Min R:R Ratio
+        gbc.gridx = 0; gbc.gridy = 52;
+        settingsPanel.add(new JLabel("Min R:R Ratio:"), gbc);
+        gbc.gridx = 1;
+        JSpinner minRRSpinner = new JSpinner(new SpinnerNumberModel(minRRRatio.doubleValue(), 1.0, 5.0, 0.1));
+        minRRSpinner.setToolTipText("Minimum R:R ratio required to generate a signal (e.g., 1.5 = 1:1.5)");
+        minRRSpinner.addChangeListener(e -> minRRRatio = (Double) minRRSpinner.getValue());
+        settingsPanel.add(minRRSpinner, gbc);
+
+        // Max SL Ticks
+        gbc.gridx = 0; gbc.gridy = 53;
+        settingsPanel.add(new JLabel("Max SL (ticks):"), gbc);
+        gbc.gridx = 1;
+        JSpinner maxSlSpinner = new JSpinner(new SpinnerNumberModel(maxSlTicks.intValue(), 10, 200, 5));
+        maxSlSpinner.setToolTipText("Maximum stop loss in ticks (cap to prevent runaway risk)");
+        maxSlSpinner.addChangeListener(e -> maxSlTicks = (Integer) maxSlSpinner.getValue());
+        settingsPanel.add(maxSlSpinner, gbc);
+
+        // Max TP Ticks
+        gbc.gridx = 0; gbc.gridy = 54;
+        settingsPanel.add(new JLabel("Max TP (ticks):"), gbc);
+        gbc.gridx = 1;
+        JSpinner maxTpSpinner = new JSpinner(new SpinnerNumberModel(maxTpTicks.intValue(), 20, 500, 10));
+        maxTpSpinner.setToolTipText("Maximum take profit in ticks (cap to realistic targets)");
+        maxTpSpinner.addChangeListener(e -> maxTpTicks = (Integer) maxTpSpinner.getValue());
+        settingsPanel.add(maxTpSpinner, gbc);
+
+        // Min DOM Volume for SL/TP
+        gbc.gridx = 0; gbc.gridy = 55;
+        settingsPanel.add(new JLabel("Min DOM Volume:"), gbc);
+        gbc.gridx = 1;
+        JSpinner minDomVolSpinner = new JSpinner(new SpinnerNumberModel(minDomVolumeForSlTp.intValue(), 10, 1000, 10));
+        minDomVolSpinner.setToolTipText("Minimum DOM level volume to use for SL/TP (filter out weak levels)");
+        minDomVolSpinner.addChangeListener(e -> minDomVolumeForSlTp = (Integer) minDomVolSpinner.getValue());
+        settingsPanel.add(minDomVolSpinner, gbc);
+
+        // DOM Level Priority
+        gbc.gridx = 0; gbc.gridy = 56;
+        settingsPanel.add(new JLabel("DOM Priority:"), gbc);
+        gbc.gridx = 1;
+        JCheckBox domPriorityCheckBox = new JCheckBox();
+        domPriorityCheckBox.setSelected(prioritizeDomOverAtr);
+        domPriorityCheckBox.setToolTipText("Prioritize DOM levels over ATR for SL/TP placement");
+        domPriorityCheckBox.addActionListener(e -> prioritizeDomOverAtr = domPriorityCheckBox.isSelected());
+        settingsPanel.add(domPriorityCheckBox, gbc);
+
+        // Session-Aware ATR Scaling
+        gbc.gridx = 0; gbc.gridy = 57;
+        settingsPanel.add(new JLabel("Session-Aware ATR:"), gbc);
+        gbc.gridx = 1;
+        JCheckBox sessionAtrCheckBox = new JCheckBox();
+        sessionAtrCheckBox.setSelected(sessionAwareAtrScaling);
+        sessionAtrCheckBox.setToolTipText("Adjust ATR multipliers based on session phase (opening/lunch/close)");
+        sessionAtrCheckBox.addActionListener(e -> sessionAwareAtrScaling = sessionAtrCheckBox.isSelected());
+        settingsPanel.add(sessionAtrCheckBox, gbc);
+
+        // Use Trade Memory for SL/TP
+        gbc.gridx = 0; gbc.gridy = 58;
+        settingsPanel.add(new JLabel("Use Trade Memory:"), gbc);
+        gbc.gridx = 1;
+        JCheckBox tradeMemoryCheckBox = new JCheckBox();
+        tradeMemoryCheckBox.setSelected(useTradeMemoryForSlTp);
+        tradeMemoryCheckBox.setToolTipText("Use recent trade MFE/MAE to inform SL/TP placement");
+        tradeMemoryCheckBox.addActionListener(e -> useTradeMemoryForSlTp = tradeMemoryCheckBox.isSelected());
+        settingsPanel.add(tradeMemoryCheckBox, gbc);
+
+        // Memory Lookback
+        gbc.gridx = 0; gbc.gridy = 59;
+        settingsPanel.add(new JLabel("Memory Lookback:"), gbc);
+        gbc.gridx = 1;
+        JSpinner memoryLookbackSpinner = new JSpinner(new SpinnerNumberModel(memoryLookbackTrades.intValue(), 5, 100, 5));
+        memoryLookbackSpinner.setToolTipText("Number of recent trades to analyze for memory-driven SL/TP");
+        memoryLookbackSpinner.addChangeListener(e -> memoryLookbackTrades = (Integer) memoryLookbackSpinner.getValue());
+        settingsPanel.add(memoryLookbackSpinner, gbc);
+
+        // Notifications section
+        gbc.gridx = 0; gbc.gridy = 60; gbc.gridwidth = 2;
         addSeparator(settingsPanel, "Notifications", gbc);
 
-        gbc.gridx = 0; gbc.gridy = 49; gbc.gridwidth = 1;
+        gbc.gridx = 0; gbc.gridy = 61; gbc.gridwidth = 1;
         settingsPanel.add(new JLabel("Event Notifications:"), gbc);
         gbc.gridx = 1;
         JCheckBox eventNotifCheckBox = new JCheckBox();
@@ -1401,7 +1568,7 @@ public class OrderFlowStrategyEnhanced implements
         eventNotifCheckBox.addActionListener(e -> enableEventNotifications = eventNotifCheckBox.isSelected());
         settingsPanel.add(eventNotifCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 50;
+        gbc.gridx = 0; gbc.gridy = 62;
         settingsPanel.add(new JLabel("AI Notifications:"), gbc);
         gbc.gridx = 1;
         JCheckBox aiNotifCheckBox = new JCheckBox();
@@ -1410,7 +1577,7 @@ public class OrderFlowStrategyEnhanced implements
         aiNotifCheckBox.addActionListener(e -> enableAINotifications = aiNotifCheckBox.isSelected());
         settingsPanel.add(aiNotifCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 51;
+        gbc.gridx = 0; gbc.gridy = 63;
         settingsPanel.add(new JLabel("Periodic Updates:"), gbc);
         gbc.gridx = 1;
         JCheckBox periodicNotifCheckBox = new JCheckBox();
@@ -1426,7 +1593,7 @@ public class OrderFlowStrategyEnhanced implements
         });
         settingsPanel.add(periodicNotifCheckBox, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 52;
+        gbc.gridx = 0; gbc.gridy = 64;
         settingsPanel.add(new JLabel("Update Interval (min):"), gbc);
         gbc.gridx = 1;
         JSpinner periodicIntervalSpinner = new JSpinner(new SpinnerNumberModel(periodicUpdateIntervalMinutes.intValue(), 5, 60, 5));
@@ -1441,13 +1608,13 @@ public class OrderFlowStrategyEnhanced implements
         settingsPanel.add(periodicIntervalSpinner, gbc);
 
         // Apply button
-        gbc.gridx = 0; gbc.gridy = 53; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 65; gbc.gridwidth = 2;
         JButton applyButton = new JButton("Apply Settings");
         applyButton.addActionListener(e -> applySettings());
         settingsPanel.add(applyButton, gbc);
 
         // ========== TEST SL/TP LINES BUTTON ==========
-        gbc.gridx = 0; gbc.gridy = 54; gbc.gridwidth = 2;
+        gbc.gridx = 0; gbc.gridy = 66; gbc.gridwidth = 2;
         gbc.anchor = GridBagConstraints.CENTER;
         JButton testLinesButton = new JButton("TEST SL/TP LINES");
         testLinesButton.setToolTipText("Click to test SL/TP line drawing independently of AI/signals");
@@ -3405,6 +3572,19 @@ public class OrderFlowStrategyEnhanced implements
         settings.fixedPositionSize = fixedPositionSize;
         settings.stopLossTicks = stopLossTicks;
         settings.takeProfitTicks = takeProfitTicks;
+        // Smart SL/TP settings
+        settings.useSmartSlTp = useSmartSlTp;
+        settings.atrSlMultiplier = atrSlMultiplier;
+        settings.atrTpMultiplier = atrTpMultiplier;
+        settings.minRRRatio = minRRRatio;
+        settings.maxSlTicks = maxSlTicks;
+        settings.maxTpTicks = maxTpTicks;
+        // DOM quality and memory settings
+        settings.minDomVolumeForSlTp = minDomVolumeForSlTp;
+        settings.prioritizeDomOverAtr = prioritizeDomOverAtr;
+        settings.sessionAwareAtrScaling = sessionAwareAtrScaling;
+        settings.useTradeMemoryForSlTp = useTradeMemoryForSlTp;
+        settings.memoryLookbackTrades = memoryLookbackTrades;
 
         saveSettings();
         log("✅ Settings applied and saved");
@@ -3765,6 +3945,30 @@ public class OrderFlowStrategyEnhanced implements
                             // Create SignalData for AI evaluation
                             SignalData signalData = createSignalData(isBid, price, totalSize);
 
+                            // ========== R:R QUALITY FILTER ==========
+                            // Reject signals with poor R:R before sending to AI
+                            if (signalData.rrRejectionReason != null) {
+                                log("⚠️ R:R FILTER REJECTED: " + signalData.rrRejectionReason);
+                                log(String.format("   Signal: %s @ %d (Score: %d, R:R: %s)",
+                                    signalData.direction, price, signalData.score, signalData.risk.riskRewardRatio));
+                                fileLog("⚠️ R:R REJECTION: " + signalData.rrRejectionReason + " | " + signalData.risk.slTpReasoning);
+
+                                // Place rejection marker on chart
+                                onSkipMarker(price, signalData.score,
+                                    "R:R: " + signalData.rrRejectionReason);
+
+                                // Release the AI evaluation lock
+                                aiEvaluationInProgress.set(false);
+                                return;  // Skip this signal
+                            }
+
+                            // Log good R:R
+                            log(String.format("✅ R:R PASSED: %s (SL=%d, TP=%d, R:R=%s)",
+                                signalData.risk.slTpReasoning,
+                                signalData.risk.stopLossTicks,
+                                signalData.risk.takeProfitTicks,
+                                signalData.risk.riskRewardRatio));
+
                             // Log timestamp info for debugging replay mode
                             java.time.ZoneId etZone = java.time.ZoneId.of("America/New_York");
                             java.time.ZonedDateTime dataTime = java.time.Instant.ofEpochMilli(currentDataTimestampMs).atZone(etZone);
@@ -3978,6 +4182,257 @@ public class OrderFlowStrategyEnhanced implements
                 }
             }
         }
+    }
+
+    /**
+     * Smart SL/TP calculation result
+     */
+    private static class SmartSlTpResult {
+        int slTicks;
+        int tpTicks;
+        int slPrice;
+        int tpPrice;
+        double rrRatio;
+        boolean isGoodRR;
+        String reasoning;
+        String rejectionReason;  // If null, signal is acceptable
+
+        SmartSlTpResult(int slTicks, int tpTicks, int entryPrice, boolean isLong) {
+            this.slTicks = slTicks;
+            this.tpTicks = tpTicks;
+            this.slPrice = isLong ? entryPrice - slTicks : entryPrice + slTicks;
+            this.tpPrice = isLong ? entryPrice + tpTicks : entryPrice - tpTicks;
+            this.rrRatio = slTicks > 0 ? (double) tpTicks / slTicks : 0;
+            this.isGoodRR = rrRatio >= 1.0;
+        }
+    }
+
+    /**
+     * Calculate smart SL/TP based on ATR, DOM levels, memory, and R:R requirements
+     *
+     * Priority: Memory (trade history) > DOM levels > ATR > Fixed ticks
+     *
+     * @param isBid true for LONG, false for SHORT
+     * @param entryPrice entry price in ticks
+     * @return SmartSlTpResult with calculated SL/TP and R:R analysis
+     */
+    private SmartSlTpResult calculateSmartSlTp(boolean isBid, int entryPrice) {
+        int slTicks;
+        int tpTicks;
+        StringBuilder reasoning = new StringBuilder();
+
+        // ========== 1. GET ATR (with session-aware scaling) ==========
+        double atr = 0;
+        int atrTicks = 0;
+        double atrSlMult = atrSlMultiplier;
+        double atrTpMult = atrTpMultiplier;
+
+        if (atrCalculator.isInitialized()) {
+            atr = atrCalculator.getATR();
+            atrTicks = (int) Math.round(atr / pips);
+
+            // Session-aware ATR scaling
+            if (sessionAwareAtrScaling && sessionContext != null) {
+                SessionContext.SessionPhase phase = sessionContext.getCurrentPhase();
+                if (phase == SessionContext.SessionPhase.OPENING_BELL) {
+                    // Opening range (first 30 min): higher volatility, wider stops
+                    atrSlMult *= 1.3;  // 30% wider SL
+                    atrTpMult *= 1.2;  // 20% wider TP
+                    reasoning.append("OPENING(scaled)");
+                } else if (phase == SessionContext.SessionPhase.LUNCH_HOUR) {
+                    // Lunch lull: lower volatility, tighter stops
+                    atrSlMult *= 0.8;  // 20% tighter SL
+                    atrTpMult *= 0.8;  // 20% tighter TP
+                    reasoning.append("LUNCH(scaled)");
+                } else if (phase == SessionContext.SessionPhase.CLOSING_BELL) {
+                    // Close: higher volatility
+                    atrSlMult *= 1.2;
+                    atrTpMult *= 1.3;
+                    reasoning.append("CLOSE(scaled)");
+                } else {
+                    reasoning.append("RTH");
+                }
+            }
+            reasoning.append(String.format(" ATR=%.2f (%d ticks)", atr, atrTicks));
+        }
+
+        // ========== 2. GET DOM SUPPORT/RESISTANCE (with quality check) ==========
+        DOMAnalyzer.DOMLevel support = domAnalyzer.getNearestSupport();
+        DOMAnalyzer.DOMLevel resistance = domAnalyzer.getNearestResistance();
+
+        int supportDistance = 0;
+        int resistanceDistance = 0;
+        long supportVolume = 0;
+        long resistanceVolume = 0;
+
+        if (support != null && support.volume >= minDomVolumeForSlTp) {
+            supportDistance = Math.abs(entryPrice - support.price);
+            supportVolume = support.volume;
+            reasoning.append(String.format(", Support@%d (%d ticks, vol=%d)", support.price, supportDistance, supportVolume));
+        } else if (support != null) {
+            reasoning.append(String.format(", Support@%d (vol=%d < %d, IGNORED)", support.price, support.volume, minDomVolumeForSlTp));
+        }
+
+        if (resistance != null && resistance.volume >= minDomVolumeForSlTp) {
+            resistanceDistance = Math.abs(entryPrice - resistance.price);
+            resistanceVolume = resistance.volume;
+            reasoning.append(String.format(", Resistance@%d (%d ticks, vol=%d)", resistance.price, resistanceDistance, resistanceVolume));
+        } else if (resistance != null) {
+            reasoning.append(String.format(", Resistance@%d (vol=%d < %d, IGNORED)", resistance.price, resistance.volume, minDomVolumeForSlTp));
+        }
+
+        // ========== 3. GET MEMORY-DRIVEN LEVELS (from trade history) ==========
+        int memorySlDistance = 0;
+        int memoryTpDistance = 0;
+        String memoryInfo = "";
+
+        if (useTradeMemoryForSlTp && tradeLogger != null) {
+            try {
+                // Analyze recent trades for reversal levels
+                var recentTrades = tradeLogger.getRecentTrades(memoryLookbackTrades);
+                if (recentTrades != null && !recentTrades.isEmpty()) {
+                    // Find where price reversed (MFE/MAE levels)
+                    int avgMfe = 0;
+                    int avgMae = 0;
+                    int count = 0;
+
+                    for (var trade : recentTrades) {
+                        if (trade.mfeTicks > 0) {
+                            avgMfe += trade.mfeTicks;
+                            avgMae += trade.maeTicks;
+                            count++;
+                        }
+                    }
+
+                    if (count > 0) {
+                        avgMfe /= count;
+                        avgMae /= count;
+                        // Use average favorable excursion as TP hint
+                        // Use average adverse excursion as SL hint
+                        memoryTpDistance = (int) (avgMfe * 0.8);  // 80% of average MFE
+                        memorySlDistance = (int) (avgMae * 1.2);  // 120% of average MAE (be safer)
+                        memoryInfo = String.format(", Memory(MFE=%d, MAE=%d)", avgMfe, avgMae);
+                        reasoning.append(memoryInfo);
+                    }
+                }
+            } catch (Exception e) {
+                // Ignore memory errors, fall back to other methods
+            }
+        }
+
+        // ========== CALCULATE STOP LOSS ==========
+        if (useSmartSlTp) {
+            int atrSl = (int) Math.round(atrTicks * atrSlMult);
+            int domSl = 0;
+
+            if (isBid) {
+                // LONG: SL below entry, look for support below
+                domSl = supportDistance > 0 ? supportDistance + 2 : 0;
+            } else {
+                // SHORT: SL above entry, look for resistance above
+                domSl = resistanceDistance > 0 ? resistanceDistance + 2 : 0;
+            }
+
+            // Collect all valid SL candidates
+            java.util.List<Integer> slCandidates = new java.util.ArrayList<>();
+            slCandidates.add(stopLossTicks);  // Always include fixed
+            if (atrSl > 0) slCandidates.add(atrSl);
+            if (domSl > 0) slCandidates.add(domSl);
+            if (memorySlDistance > 0) slCandidates.add(memorySlDistance);
+
+            // Priority logic for SL selection
+            if (prioritizeDomOverAtr && domSl > 0 && supportVolume >= minDomVolumeForSlTp) {
+                // DOM priority: use DOM level if it's significant
+                slTicks = Math.max(stopLossTicks, domSl);
+                reasoning.append(String.format(", SL: DOM-priority=%d", slTicks));
+            } else {
+                // Default: use widest (safest) SL
+                slTicks = slCandidates.stream().max(Integer::compare).orElse(stopLossTicks);
+                reasoning.append(String.format(", SL: max-of-all=%d", slTicks));
+            }
+
+            // Cap at maximum
+            slTicks = Math.min(slTicks, maxSlTicks);
+        } else {
+            slTicks = stopLossTicks;
+            reasoning.append(String.format(", Fixed SL=%d", slTicks));
+        }
+
+        // ========== CALCULATE TAKE PROFIT ==========
+        if (useSmartSlTp) {
+            int atrTp = (int) Math.round(atrTicks * atrTpMult);
+            int domTp = 0;
+
+            if (isBid) {
+                // LONG: TP above entry, look for resistance above
+                domTp = resistanceDistance > 0 ? Math.max(0, resistanceDistance - 2) : 0;
+            } else {
+                // SHORT: TP below entry, look for support below
+                domTp = supportDistance > 0 ? Math.max(0, supportDistance - 2) : 0;
+            }
+
+            // Collect all valid TP candidates
+            java.util.List<Integer> tpCandidates = new java.util.ArrayList<>();
+            tpCandidates.add(takeProfitTicks);  // Always include fixed
+            if (atrTp > 0) tpCandidates.add(atrTp);
+            if (domTp > 0 && domTp >= slTicks) tpCandidates.add(domTp);  // DOM TP must be >= SL
+            if (memoryTpDistance > 0 && memoryTpDistance >= slTicks) tpCandidates.add(memoryTpDistance);
+
+            // Priority logic for TP selection
+            if (prioritizeDomOverAtr && domTp > 0 && domTp >= slTicks && resistanceVolume >= minDomVolumeForSlTp) {
+                // DOM priority: target the DOM level if it gives decent R:R
+                double domRR = (double) domTp / slTicks;
+                if (domRR >= minRRRatio * 0.8) {  // Allow 20% tolerance for DOM levels
+                    tpTicks = domTp;
+                    reasoning.append(String.format(", TP: DOM-priority=%d (R:R 1:%.1f)", domTp, domRR));
+                } else {
+                    tpTicks = Math.max(takeProfitTicks, atrTp);
+                    reasoning.append(String.format(", TP: ATR=%d (DOM=%d, R:R too low)", atrTp, domTp));
+                }
+            } else {
+                // Default: use closest valid TP (but ensure minimum R:R)
+                final int finalSlTicks = slTicks;  // For lambda
+                final double minTpRequired = finalSlTicks * minRRRatio * 0.8;
+                tpTicks = tpCandidates.stream()
+                    .filter(tp -> tp >= minTpRequired)  // Allow 20% tolerance
+                    .min(Integer::compare)
+                    .orElse(atrTp > 0 ? atrTp : takeProfitTicks);
+                reasoning.append(String.format(", TP: closest-valid=%d", tpTicks));
+            }
+
+            // Ensure minimum R:R ratio
+            double actualRR = (double) tpTicks / slTicks;
+            if (actualRR < minRRRatio) {
+                // Adjust TP to meet minimum R:R
+                tpTicks = (int) Math.ceil(slTicks * minRRRatio);
+                reasoning.append(String.format(", adjusted to min-RR=%d", tpTicks));
+            }
+
+            // Cap at maximum
+            tpTicks = Math.min(tpTicks, maxTpTicks);
+        } else {
+            tpTicks = takeProfitTicks;
+            reasoning.append(String.format(", Fixed TP=%d", tpTicks));
+        }
+
+        // Create result
+        SmartSlTpResult result = new SmartSlTpResult(slTicks, tpTicks, entryPrice, isBid);
+        result.reasoning = reasoning.toString();
+
+        // ========== R:R QUALITY CHECK ==========
+        if (result.rrRatio < minRRRatio) {
+            result.rejectionReason = String.format(
+                "R:R ratio 1:%.1f is below minimum 1:%.1f (SL=%d, TP=%d)",
+                result.rrRatio, minRRRatio, slTicks, tpTicks);
+        } else if (slTicks > maxSlTicks) {
+            result.rejectionReason = String.format(
+                "Stop loss %d ticks exceeds maximum %d (volatility too high)",
+                slTicks, maxSlTicks);
+        } else {
+            result.isGoodRR = true;
+        }
+
+        return result;
     }
 
     /**
@@ -4284,18 +4739,26 @@ public class OrderFlowStrategyEnhanced implements
         signal.performance.totalTrades = 0;
         signal.performance.winRate = 0;
 
-        // ========== RISK MANAGEMENT ==========
+        // ========== RISK MANAGEMENT (Smart SL/TP) ==========
         signal.risk = new SignalData.RiskManagement();
-        signal.risk.stopLossTicks = stopLossTicks;
-        signal.risk.stopLossPrice = isBid ? price - stopLossTicks : price + stopLossTicks;
-        signal.risk.stopLossValue = stopLossTicks * tickValue;
-        signal.risk.takeProfitTicks = takeProfitTicks;
-        signal.risk.takeProfitPrice = isBid ? price + takeProfitTicks : price - takeProfitTicks;
-        signal.risk.takeProfitValue = takeProfitTicks * tickValue;
+
+        // Calculate smart SL/TP using ATR and DOM levels
+        SmartSlTpResult slTp = calculateSmartSlTp(isBid, price);
+
+        // Store rejection reason if R:R is poor (used by signal filtering)
+        signal.rrRejectionReason = slTp.rejectionReason;
+
+        // Use calculated values
+        signal.risk.stopLossTicks = slTp.slTicks;
+        signal.risk.stopLossPrice = slTp.slPrice;
+        signal.risk.stopLossValue = slTp.slTicks * tickValue;
+        signal.risk.takeProfitTicks = slTp.tpTicks;
+        signal.risk.takeProfitPrice = slTp.tpPrice;
+        signal.risk.takeProfitValue = slTp.tpTicks * tickValue;
         signal.risk.breakEvenTicks = 3;
         signal.risk.breakEvenPrice = isBid ? price + 3 : price - 3;
-        double rrRatio = (double) takeProfitTicks / stopLossTicks;
-        signal.risk.riskRewardRatio = String.format("1:%.1f", rrRatio);
+        signal.risk.riskRewardRatio = String.format("1:%.1f", slTp.rrRatio);
+        signal.risk.slTpReasoning = slTp.reasoning;
 
         // Calculate position size: fixed or auto from risk %
         int positionSize;
