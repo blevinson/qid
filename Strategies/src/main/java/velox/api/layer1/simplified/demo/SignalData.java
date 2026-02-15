@@ -38,6 +38,80 @@ public class SignalData {
     // R:R quality check result
     public String rrRejectionReason;  // If non-null, signal was rejected due to poor R:R
 
+    // ========== CARMINE ROSATO ORDER FLOW DATA ==========
+    public OrderFlowContext orderFlow;
+
+    public static class OrderFlowContext {
+        // Per-price delta and Big Fish levels
+        public boolean hasBigFishNearby;
+        public int bigFishPrice;
+        public long bigFishDelta;
+        public boolean bigFishIsBuyer;
+        public boolean bigFishDefending;
+        public String bigFishSignal;
+
+        // Volume tails
+        public boolean hasUpperTail;
+        public boolean hasLowerTail;
+        public int upperTailLength;
+        public int lowerTailLength;
+        public String tailBias;
+        public String tailReasoning;
+
+        // Tape speed
+        public double tradesPerSecond;
+        public double volumePerSecond;
+        public String speedLevel;
+        public String dominantSide;
+        public boolean isHighSpeed;
+        public boolean isExhaustion;
+        public String tapeInterpretation;
+
+        // Stop hunts
+        public boolean recentStopHunt;
+        public String stopHuntSignal;
+        public int stopHuntStrength;
+        public String stopHuntLevelType;
+        public int stopHuntLevelPrice;
+
+        /**
+         * Format for AI prompt
+         */
+        public String toAIString() {
+            StringBuilder sb = new StringBuilder();
+            sb.append("═══ ORDER FLOW ANALYSIS ═══\n");
+
+            // Big Fish
+            if (hasBigFishNearby) {
+                sb.append(String.format("🐋 Big Fish: %s @ %d (delta: %+d)%s\n",
+                    bigFishIsBuyer ? "BUYER" : "SELLER", bigFishPrice, bigFishDelta,
+                    bigFishDefending ? " DEFENDING" : ""));
+            }
+
+            // Volume Tails
+            if (hasUpperTail || hasLowerTail) {
+                sb.append(String.format("📊 Volume Tails: Upper=%b(%d) Lower=%b(%d) → %s\n",
+                    hasUpperTail, upperTailLength, hasLowerTail, lowerTailLength, tailBias));
+            }
+
+            // Tape Speed
+            sb.append(String.format("⚡ Tape Speed: %.1f t/s (%s) - %s dominant\n",
+                tradesPerSecond, speedLevel, dominantSide));
+            if (isHighSpeed) {
+                sb.append(String.format("   ⚠️ HIGH SPEED: %s\n", tapeInterpretation));
+            }
+
+            // Stop Hunts
+            if (recentStopHunt) {
+                sb.append(String.format("🎯 Stop Hunt: %s at %s @ %d (strength: %d/10)\n",
+                    stopHuntSignal, stopHuntLevelType, stopHuntLevelPrice, stopHuntStrength));
+            }
+
+            sb.append("═══════════════════════════\n");
+            return sb.toString();
+        }
+    }
+
     public static class ScoreBreakdown {
         // Iceberg detection
         public int icebergPoints;
@@ -384,6 +458,11 @@ public class SignalData {
             sb.append(String.format("├─ Break-even: %d (+%d ticks)\n",
                 risk.breakEvenPrice, risk.breakEvenTicks));
             sb.append(String.format("└─ R:R Ratio: %s\n", risk.riskRewardRatio));
+        }
+
+        // Order Flow Analysis
+        if (orderFlow != null) {
+            sb.append("\n").append(orderFlow.toAIString());
         }
 
         sb.append("═══════════════════════════════════════════════════════════════\n");

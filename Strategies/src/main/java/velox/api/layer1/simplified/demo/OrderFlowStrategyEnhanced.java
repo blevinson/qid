@@ -365,6 +365,16 @@ public class OrderFlowStrategyEnhanced implements
     private final ATRCalculator atrCalculator = new ATRCalculator(14);
     private final DOMAnalyzer domAnalyzer = new DOMAnalyzer(50, 100);  // 50 tick lookback, 100 min wall size
 
+    // ========== CARMINE ROSATO ORDER FLOW TOOLS ==========
+    // Per-price delta tracking (Big Fish levels, institutional interest)
+    private final PriceDeltaTracker priceDeltaTracker = new PriceDeltaTracker();
+    // Volume tail detection (reversal signals from volume profile extremes)
+    private final VolumeTailDetector volumeTailDetector = new VolumeTailDetector();
+    // Tape speed measurement (urgency detection, exhaustion patterns)
+    private final TapeSpeedTracker tapeSpeedTracker = new TapeSpeedTracker();
+    // Stop hunt detection (liquidity grabs at key levels)
+    private final StopHuntDetector stopHuntDetector = new StopHuntDetector();
+
     // Tracking for EMAs and VWAP
     private double currentHigh = Double.NaN;
     private double currentLow = Double.NaN;
@@ -4787,6 +4797,49 @@ public class OrderFlowStrategyEnhanced implements
         signal.thresholds.recentWinRate = getRecentWinRate();
         signal.thresholds.isHighVolatility = isHighVolatility();
 
+        // ========== ORDER FLOW CONTEXT (Carmine Rosato Methodology) ==========
+        signal.orderFlow = new SignalData.OrderFlowContext();
+
+        // 1. Big Fish Analysis
+        PriceDeltaTracker.FishAnalysis fishAnalysis = priceDeltaTracker.analyzeForBigFish(price, 10);
+        signal.orderFlow.hasBigFishNearby = fishAnalysis.hasBigFishNearby;
+        if (fishAnalysis.nearestBigFish != null) {
+            signal.orderFlow.bigFishPrice = fishAnalysis.nearestBigFish.price;
+            signal.orderFlow.bigFishDelta = fishAnalysis.nearestBigFish.delta;
+            signal.orderFlow.bigFishIsBuyer = fishAnalysis.nearestBigFish.isBuyer;
+        }
+        signal.orderFlow.bigFishDefending = fishAnalysis.isDefending;
+        signal.orderFlow.bigFishSignal = fishAnalysis.signal;
+
+        // 2. Volume Tail Analysis
+        VolumeTailDetector.VolumeTailAnalysis tailAnalysis = volumeTailDetector.analyzeTails();
+        signal.orderFlow.hasUpperTail = tailAnalysis.hasUpperTail;
+        signal.orderFlow.hasLowerTail = tailAnalysis.hasLowerTail;
+        signal.orderFlow.upperTailLength = tailAnalysis.upperTailLength;
+        signal.orderFlow.lowerTailLength = tailAnalysis.lowerTailLength;
+        signal.orderFlow.tailBias = tailAnalysis.bias;
+        signal.orderFlow.tailReasoning = tailAnalysis.reasoning;
+
+        // 3. Tape Speed Analysis
+        TapeSpeedTracker.TapeSpeedAnalysis tapeAnalysis = tapeSpeedTracker.analyze();
+        signal.orderFlow.tradesPerSecond = tapeAnalysis.tradesPerSecond;
+        signal.orderFlow.volumePerSecond = tapeAnalysis.volumePerSecond;
+        signal.orderFlow.speedLevel = tapeAnalysis.speedLevel;
+        signal.orderFlow.dominantSide = tapeAnalysis.dominantSide;
+        signal.orderFlow.isHighSpeed = tapeAnalysis.isHighSpeed;
+        signal.orderFlow.isExhaustion = tapeAnalysis.isExhaustion;
+        signal.orderFlow.tapeInterpretation = tapeAnalysis.interpretation;
+
+        // 4. Stop Hunt Analysis
+        StopHuntDetector.StopHuntAnalysis huntAnalysis = stopHuntDetector.analyze();
+        signal.orderFlow.recentStopHunt = huntAnalysis.recentStopHunt;
+        signal.orderFlow.stopHuntSignal = huntAnalysis.huntSignal;
+        signal.orderFlow.stopHuntStrength = huntAnalysis.signalStrength;
+        if (huntAnalysis.mostRecentHunt != null) {
+            signal.orderFlow.stopHuntLevelType = huntAnalysis.mostRecentHunt.levelType;
+            signal.orderFlow.stopHuntLevelPrice = huntAnalysis.mostRecentHunt.levelPrice;
+        }
+
         // ========== CALCULATE FINAL SCORE ==========
         signal.score = calculateConfluenceScore(isBid, price, totalSize);
         signal.threshold = confluenceThreshold;
@@ -4955,6 +5008,43 @@ public class OrderFlowStrategyEnhanced implements
         int domMax = w.get(ConfluenceWeights.DOM_MAX);
         score += Math.max(-domMax, Math.min(domMax, domAdjustment));
 
+        // ========== CARMINE ROSATO ORDER FLOW CONFLUENCE ==========
+
+        // 1. Big Fish Defense Detection
+        // Check if price is near a Big Fish level and they're defending
+        PriceDeltaTracker.FishAnalysis fishAnalysis = priceDeltaTracker.analyzeForBigFish(price, 10);
+        if (fishAnalysis.isDefending) {
+            if ((fishAnalysis.signal.contains("BUY") && isBid) ||
+                (fishAnalysis.signal.contains("SELL") && !isBid)) {
+                score += 15;  // Big Fish defending in our direction
+            } else {
+                score -= 10;  // Big Fish defending against our direction
+            }
+        }
+
+        // 2. Volume Tail Analysis
+        // Check for volume tails indicating potential reversals
+        VolumeTailDetector.VolumeTailAnalysis tailAnalysis = volumeTailDetector.analyzeTails();
+        if (tailAnalysis.hasAnyTail()) {
+            if ((tailAnalysis.bias.equals("BULLISH") && isBid) ||
+                (tailAnalysis.bias.equals("BEARISH") && !isBid)) {
+                score += 10;  // Tail supports our direction
+            } else if (tailAnalysis.hasBothTails()) {
+                // Both tails = consolidation, be cautious
+                score -= 5;
+            }
+        }
+
+        // 3. Tape Speed Analysis
+        // Check for urgency, exhaustion, or low conviction
+        int tapeSpeedAdjustment = tapeSpeedTracker.getSpeedScoreAdjustment(isBid);
+        score += tapeSpeedAdjustment;
+
+        // 4. Stop Hunt Detection
+        // Check for recent stop hunts that could signal reversals
+        int stopHuntAdjustment = stopHuntDetector.getStopHuntScoreAdjustment(isBid);
+        score += stopHuntAdjustment;
+
         // ========== FINAL SCORE CLAMP ==========
         score = Math.max(-50, score);
 
@@ -5012,6 +5102,32 @@ public class OrderFlowStrategyEnhanced implements
             atrCalculator.update(currentHigh, currentLow, price);
         }
         previousClose = price;  // Will be updated on next trade
+
+        // ========== CARMINE ROSATO ORDER FLOW TOOLS UPDATE ==========
+        // Determine aggressor side from trade info
+        boolean isAggressorBuy = tradeInfo == null ? true : !tradeInfo.isBidAggressor;
+        int tradePrice = (int) price;
+        int tradeSize = size;
+
+        // Update per-price delta tracker (Big Fish levels)
+        priceDeltaTracker.recordTrade(tradePrice, tradeSize, isAggressorBuy);
+
+        // Update volume tail detector
+        volumeTailDetector.recordVolume(tradePrice, tradeSize);
+
+        // Update tape speed tracker
+        tapeSpeedTracker.recordTrade(tradePrice, tradeSize, isAggressorBuy);
+
+        // Update stop hunt detector with key levels
+        if (vwapCalculator.isInitialized()) {
+            stopHuntDetector.updateKeyLevels(
+                (int) vwapCalculator.getVWAP(),
+                volumeTailDetector.getRangeHigh(),
+                volumeTailDetector.getRangeLow(),
+                0  // Session open not tracked yet
+            );
+        }
+        stopHuntDetector.recordTrade(tradePrice, tradeSize, isAggressorBuy);
 
         // ========== PERFORMANCE TRACKING: CHECK SIGNAL OUTCOMES ==========
         checkSignalOutcomes((int)price);
