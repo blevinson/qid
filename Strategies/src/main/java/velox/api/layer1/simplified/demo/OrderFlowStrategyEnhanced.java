@@ -3133,7 +3133,7 @@ public class OrderFlowStrategyEnhanced implements
             // Initialize Pre-Market Analyzer
             if (preMarketAnalyzer == null && tradingMemoryDir != null) {
                 preMarketAnalyzer = new PreMarketAnalyzer(
-                    aiAuthToken,
+                    getEffectiveApiToken(),
                     tradingMemoryDir.toFile(),
                     (velox.api.layer1.simplified.demo.storage.TradingMemoryService) memoryService
                 );
@@ -3391,9 +3391,10 @@ public class OrderFlowStrategyEnhanced implements
         // Initialize if needed
         if (preMarketAnalyzer == null) {
             // Try to initialize
-            if (tradingMemoryDir != null && aiAuthToken != null && !aiAuthToken.isEmpty()) {
+            String effectiveToken = getEffectiveApiToken();
+            if (tradingMemoryDir != null && effectiveToken != null && !effectiveToken.isEmpty()) {
                 preMarketAnalyzer = new PreMarketAnalyzer(
-                    aiAuthToken,
+                    effectiveToken,
                     tradingMemoryDir.toFile(),
                     (velox.api.layer1.simplified.demo.storage.TradingMemoryService) memoryService
                 );
