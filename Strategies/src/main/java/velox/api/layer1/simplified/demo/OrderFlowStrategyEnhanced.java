@@ -3645,18 +3645,46 @@ public class OrderFlowStrategyEnhanced implements
     }
 
     /**
-     * Show pre-market analysis result in a dialog
+     * Show pre-market analysis result in a dialog with markdown rendering
      */
     private void showPreMarketDialog(String analysis) {
-        // Create scrollable text area
-        JTextArea textArea = new JTextArea(analysis);
-        textArea.setEditable(false);
-        textArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
-        textArea.setLineWrap(true);
-        textArea.setWrapStyleWord(true);
+        // Create JEditorPane with HTML support (like AI chat)
+        JEditorPane editorPane = new JEditorPane();
+        editorPane.setEditable(false);
+        editorPane.setContentType("text/html");
 
-        JScrollPane scrollPane = new JScrollPane(textArea);
-        scrollPane.setPreferredSize(new Dimension(700, 500));
+        // CSS styling (dark mode, similar to chat)
+        String css = "<style>" +
+            "body { font-family: SansSerif, Arial, sans-serif; font-size: 13px; color: #E0E0E0; padding: 12px; background: #1E1E1E; }" +
+            "h1 { color: #64B5F6; font-size: 18px; margin: 16px 0 8px 0; border-bottom: 1px solid #3D3D3D; padding-bottom: 4px; }" +
+            "h2 { color: #81C784; font-size: 16px; margin: 14px 0 6px 0; }" +
+            "h3 { color: #FFB74D; font-size: 14px; margin: 12px 0 4px 0; }" +
+            "p { margin: 8px 0; line-height: 1.5; }" +
+            "ul, ol { margin: 8px 0; padding-left: 24px; }" +
+            "li { margin: 4px 0; }" +
+            "code { background: #2D2D2D; color: #FFFFFF; padding: 2px 6px; border-radius: 4px; font-family: Monaco, monospace; font-size: 12px; }" +
+            "strong { color: #FFFFFF; }" +
+            "em { color: #B0BEC5; }" +
+            "hr { border: none; border-top: 1px solid #3D3D3D; margin: 16px 0; }" +
+            "a { color: #64B5F6; text-decoration: underline; }" +
+            ".key-level { background: #2D2D2D; padding: 8px 12px; border-radius: 4px; margin: 8px 0; }" +
+            ".bullish { color: #81C784; }" +
+            ".bearish { color: #E57373; }" +
+            "</style>";
+
+        // Convert markdown to HTML
+        String htmlContent = parseMarkdownToHtml(analysis);
+        htmlContent = htmlContent.replace("\n", "<br/>");
+
+        // Build complete HTML document
+        String html = "<html><head>" + css + "</head><body>" + htmlContent + "</body></html>";
+        editorPane.setText(html);
+
+        // Scroll to top
+        editorPane.setCaretPosition(0);
+
+        JScrollPane scrollPane = new JScrollPane(editorPane);
+        scrollPane.setPreferredSize(new Dimension(750, 550));
 
         // Show in dialog
         JOptionPane.showMessageDialog(
