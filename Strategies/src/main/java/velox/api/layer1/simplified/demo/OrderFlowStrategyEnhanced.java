@@ -696,14 +696,13 @@ public class OrderFlowStrategyEnhanced implements
             log("ℹ️ AI Trading disabled (enable in settings)");
         }
 
-        // Initialize Memory & Sessions (Phase 1)
+        // Initialize Memory Directory (always needed for pre-market analysis, snapshots, etc.)
         try {
-            if (effectiveToken != null && !effectiveToken.isEmpty()) {
-                log("🧠 Initializing Memory Service...");
+            log("🧠 Initializing Memory Service...");
 
-                // Get memory directory - use Bookmap's data folder
-                String userHome = System.getProperty("user.home");
-                Path memoryDir = null;
+            // Get memory directory - use Bookmap's data folder
+            String userHome = System.getProperty("user.home");
+            Path memoryDir = null;
 
                 // 1. Check for system property override first
                 String memoryDirOverride = System.getProperty("qid.memory.dir");
@@ -748,14 +747,34 @@ public class OrderFlowStrategyEnhanced implements
                     log("📁 Using Bookmap memory directory: " + memoryDir);
                 }
 
-                // Store for AI tools access
-                tradingMemoryDir = memoryDir;
+            // Store for AI tools access
+            tradingMemoryDir = memoryDir;
 
+            // Initialize Trade Logger for persistent trade history
+            tradeLogger = new velox.api.layer1.simplified.demo.storage.TradeLogger(memoryDir);
+            log("✅ Trade Logger initialized: " + memoryDir.resolve("trade-history.csv"));
+
+            // Initialize Session State Manager for daily stat persistence
+            sessionStateManager = new velox.api.layer1.simplified.demo.storage.SessionStateManager(memoryDir);
+            log("✅ Session State Manager initialized: " + sessionStateManager.getCurrentState());
+
+            // Initialize Session Context
+            sessionContext = new SessionContext();
+            log("✅ Session Context initialized");
+
+            // Initialize Unified Session Transcript (shared by AI chat and strategist)
+            java.nio.file.Path sessionsDir = java.nio.file.Path.of("sessions");
+            transcriptWriter = new velox.api.layer1.simplified.demo.storage.TranscriptWriter(sessionsDir);
+            transcriptWriter.initializeSession();
+            log("✅ Session Transcript initialized: " + sessionsDir);
+
+            // AI-dependent services (only initialize if we have a token)
+            if (effectiveToken != null && !effectiveToken.isEmpty()) {
                 // Import TradingMemoryService
                 velox.api.layer1.simplified.demo.storage.TradingMemoryService service =
                     new velox.api.layer1.simplified.demo.storage.TradingMemoryService(
                         memoryDir.toFile(),
-                        aiAuthToken,
+                        effectiveToken,
                         java.nio.file.Paths.get(".").toAbsolutePath()
                     );
 
@@ -766,30 +785,12 @@ public class OrderFlowStrategyEnhanced implements
                 log("✅ Memory Service initialized: " + service.getIndexedFileCount() + " files, " +
                     service.getIndexedChunkCount() + " chunks");
 
-                // Initialize Trade Logger for persistent trade history
-                tradeLogger = new velox.api.layer1.simplified.demo.storage.TradeLogger(memoryDir);
-                log("✅ Trade Logger initialized: " + memoryDir.resolve("trade-history.csv"));
-
-                // Initialize Session State Manager for daily stat persistence
-                sessionStateManager = new velox.api.layer1.simplified.demo.storage.SessionStateManager(memoryDir);
-                log("✅ Session State Manager initialized: " + sessionStateManager.getCurrentState());
-
-                // Initialize Session Context
-                sessionContext = new SessionContext();
-                log("✅ Session Context initialized");
-
-                // Initialize Unified Session Transcript (shared by AI chat and strategist)
-                java.nio.file.Path sessionsDir = java.nio.file.Path.of("sessions");
-                transcriptWriter = new velox.api.layer1.simplified.demo.storage.TranscriptWriter(sessionsDir);
-                transcriptWriter.initializeSession();
-                log("✅ Session Transcript initialized: " + sessionsDir);
-
                 // Initialize AI Investment Strategist (Phase 3) with transcript
                 aiStrategist = new AIInvestmentStrategist(service, effectiveToken, transcriptWriter);
                 aiStrategist.setPromptMode(aiPromptMode);
                 log("✅ AI Investment Strategist initialized");
             } else {
-                log("⚠️ Memory Service disabled (no API token)");
+                log("⚠️ AI-dependent services disabled (no API token)");
             }
         } catch (Exception e) {
             log("⚠️ Memory Service initialization: " + e.getMessage());
