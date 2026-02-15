@@ -3241,6 +3241,9 @@ public class OrderFlowStrategyEnhanced implements
                 sessionPhaseTracker = new SessionPhaseTracker(60);  // Check every 60 seconds
                 sessionPhaseTracker.setLogger(this::log);
 
+                // Wire up data time supplier for replay mode support
+                sessionPhaseTracker.setDataTimeSupplier(() -> currentDataTimestampMs);
+
                 // Set up phase transition callback
                 sessionPhaseTracker.setOnPhaseTransition(this::onPhaseTransition);
 
@@ -3250,13 +3253,12 @@ public class OrderFlowStrategyEnhanced implements
                 fileLog("📊 SCHEDULER STARTED: Phase tracker running, current phase: " + sessionPhaseTracker.getCurrentPhase().getDisplayName());
                 fileLog("📊 SCHEDULER CONFIG: checkInterval=60s, autoPhaseAnalysis=" + autoPhaseAnalysis);
 
-                // If we're in PRE_MARKET and auto analysis is enabled, run initial analysis
-                if (autoPhaseAnalysis && sessionPhaseTracker.getCurrentPhase() == SessionPhaseTracker.SessionPhase.PRE_MARKET) {
-                    if (sessionPhaseAnalyzer != null && !sessionPhaseAnalyzer.getContextManager().hasTodaysContext()) {
-                        log("📊 Auto-running pre-market analysis (no context for today)");
-                        fileLog("📊 SCHEDULER: Auto-triggering pre-market analysis (no existing context)");
-                        runAutoPreMarketAnalysis();
-                    }
+                // ALWAYS run initial analysis if no context for today (regardless of phase)
+                // This is important for replay mode where wall clock != data time
+                if (autoPhaseAnalysis && sessionPhaseAnalyzer != null && !sessionPhaseAnalyzer.getContextManager().hasTodaysContext()) {
+                    log("📊 No session context for today - running initial analysis");
+                    fileLog("📊 SCHEDULER: Auto-triggering initial analysis (no existing context for today)");
+                    runAutoPreMarketAnalysis();
                 }
             }
 
