@@ -51,6 +51,53 @@ public class AIInvestmentStrategist {
     // Prompt mode: "FULL" or "COMPACT"
     private String promptMode = "COMPACT";
 
+    // ========== LATENCY TRACKING ==========
+    // Rolling average of API response times (last 20 calls)
+    private final java.util.Queue<Long> latencyHistory = new java.util.LinkedList<>();
+    private static final int LATENCY_HISTORY_SIZE = 20;
+    private long averageLatencyMs = 5000;  // Default to 5 seconds
+    private int latencyCallCount = 0;
+
+    /**
+     * Record API latency and update rolling average
+     */
+    private void recordLatency(long latencyMs) {
+        latencyHistory.offer(latencyMs);
+        if (latencyHistory.size() > LATENCY_HISTORY_SIZE) {
+            latencyHistory.poll();
+        }
+        // Calculate rolling average
+        long sum = 0;
+        for (Long l : latencyHistory) {
+            sum += l;
+        }
+        averageLatencyMs = sum / latencyHistory.size();
+        latencyCallCount++;
+        log("⏱️ API latency: %dms | Rolling avg: %dms (n=%d)".formatted(latencyMs, averageLatencyMs, latencyHistory.size()));
+    }
+
+    /**
+     * Get estimated API latency in milliseconds
+     */
+    public long getEstimatedLatencyMs() {
+        return averageLatencyMs;
+    }
+
+    /**
+     * Get latency statistics
+     */
+    public String getLatencyStats() {
+        if (latencyHistory.isEmpty()) {
+            return "No data yet";
+        }
+        long min = Long.MAX_VALUE, max = Long.MIN_VALUE;
+        for (Long l : latencyHistory) {
+            min = Math.min(min, l);
+            max = Math.max(max, l);
+        }
+        return "avg=%dms, min=%dms, max=%dms, n=%d".formatted(averageLatencyMs, min, max, latencyCallCount);
+    }
+
     /**
      * Constructor for AIInvestmentStrategist
      *
@@ -491,7 +538,7 @@ public class AIInvestmentStrategist {
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
         long elapsed = System.currentTimeMillis() - startTime;
-        log("⏱️ API response time: %dms".formatted(elapsed));
+        recordLatency(elapsed);  // Track latency for drift prediction
 
         if (response.statusCode() != 200) {
             throw new Exception("API error: " + response.statusCode() + " - " + response.body());
