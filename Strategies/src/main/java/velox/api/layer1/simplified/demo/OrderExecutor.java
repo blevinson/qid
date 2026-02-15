@@ -36,9 +36,13 @@ public interface OrderExecutor {
      * @param side Order side (BUY, SELL)
      * @param price Entry price (NaN for market)
      * @param quantity Number of contracts
-     * @param stopLossOffset SL offset from entry price (positive value, in price units)
-     * @param takeProfitOffset TP offset from entry price (positive value, in price units)
+     * @param stopLossOffset SL offset from entry price (in TICKS/price levels - number of minimum price increments)
+     * @param takeProfitOffset TP offset from entry price (in TICKS/price levels - number of minimum price increments)
      * @return Order ID
+     *
+     * NOTE: For Bookmap API, offsets are in "price levels" which means the number of minimum
+     * price increments (ticks). For ES with 0.25 tick size, an offset of 70 means 70 ticks = 17.50 points.
+     * Bookmap will apply these offsets from the ACTUAL FILL PRICE, not the signal price.
      */
     String placeBracketOrder(OrderType type, OrderSide side, double price, int quantity,
                             double stopLossOffset, double takeProfitOffset);

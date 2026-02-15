@@ -232,7 +232,24 @@ public class OrderFlowStrategyEnhanced implements
     private ConfluenceWeights confluenceWeights = new ConfluenceWeights();
 
     @Parameter(name = "AI Auth Token")
-    private String aiAuthToken = "sk-zai-proxy-key";  // Proxy substitutes real key
+    private String aiAuthToken = "";  // User's API token or empty for proxy
+
+    // Proxy token constant
+    private static final String PROXY_TOKEN = "sk-zai-proxy-key";
+
+    // Use proxy for API calls (when true, uses PROXY_TOKEN instead of aiAuthToken)
+    private boolean useProxy = true;
+
+    /**
+     * Get the effective API token to use
+     * Returns proxy token if useProxy is true, otherwise returns user's token
+     */
+    private String getEffectiveApiToken() {
+        if (useProxy) {
+            return PROXY_TOKEN;
+        }
+        return aiAuthToken;
+    }
 
     @Parameter(name = "AI Prompt Mode")
     private String aiPromptMode = "COMPACT";  // FULL or COMPACT
@@ -269,7 +286,8 @@ public class OrderFlowStrategyEnhanced implements
         public Boolean enableAITrading = false;
         public String aiMode = "MANUAL";
         public Integer confluenceThreshold = 50;
-        public String aiAuthToken = "8a4f5b950ea142c98746d5a320666414.Yf1MQwtkwfuDbyHw";
+        public String aiAuthToken = "";  // User's API token (empty = use proxy)
+        public Boolean useProxy = true;  // Use proxy by default
         public Integer replayStartHour = 9;   // Hour (24h) when replay data starts (9 = 9:00 AM)
         public Integer replayStartMinute = 30; // Minute when replay data starts (30 = :30)
         public Boolean devMode = false;  // Dev mode for permissive AI testing
@@ -474,6 +492,21 @@ public class OrderFlowStrategyEnhanced implements
     }
     private PendingTradeRequest pendingTradeRequest = null;
 
+    // ========== PENDING BRACKET ORDER TRACKING ==========
+    // Track bracket orders waiting for fill to update markers with actual prices
+    private static class PendingBracketOrder {
+        String orderId;          // Entry order ID
+        String positionId;       // Position ID for tracking
+        boolean isLong;           // Direction
+        int signalPrice;          // Signal price in ticks (what we expected)
+        int slOffset;             // Stop loss offset in ticks
+        int tpOffset;             // Take profit offset in ticks
+        int score;                // Signal score
+        String reasoning;         // AI reasoning
+        long timestamp;           // When order was placed
+    }
+    private final Map<String, PendingBracketOrder> pendingBracketOrders = new ConcurrentHashMap<>();
+
     // ========== STATE ==========
     private Map<String, OrderInfo> orders = new HashMap<>();
     private Map<Integer, List<String>> priceLevels = new HashMap<>();
@@ -577,6 +610,12 @@ public class OrderFlowStrategyEnhanced implements
         aiMode = settings.aiMode;
         confluenceThreshold = settings.confluenceThreshold;
         aiAuthToken = settings.aiAuthToken;
+        // Proxy setting
+        useProxy = settings.useProxy != null ? settings.useProxy : true;
+        // AI prompt mode
+        if (settings.aiPromptMode != null) {
+            aiPromptMode = settings.aiPromptMode;
+        }
         // Position sizing settings
         accountSize = settings.accountSize;
         riskPerTradePercent = settings.riskPerTradePercent;
@@ -634,7 +673,8 @@ public class OrderFlowStrategyEnhanced implements
         aiTakeProfitLine.setColor(Color.GREEN);
 
         // Initialize AI components if enabled at startup
-        if (enableAITrading && aiAuthToken != null && !aiAuthToken.isEmpty()) {
+        String effectiveToken = getEffectiveApiToken();
+        if (enableAITrading && effectiveToken != null && !effectiveToken.isEmpty()) {
             initializeAIComponents();
         } else {
             log("ℹ️ AI Trading disabled (enable in settings)");
@@ -642,7 +682,7 @@ public class OrderFlowStrategyEnhanced implements
 
         // Initialize Memory & Sessions (Phase 1)
         try {
-            if (aiAuthToken != null && !aiAuthToken.isEmpty()) {
+            if (effectiveToken != null && !effectiveToken.isEmpty()) {
                 log("🧠 Initializing Memory Service...");
 
                 // Get memory directory - use Bookmap's data folder
@@ -729,7 +769,7 @@ public class OrderFlowStrategyEnhanced implements
                 log("✅ Session Transcript initialized: " + sessionsDir);
 
                 // Initialize AI Investment Strategist (Phase 3) with transcript
-                aiStrategist = new AIInvestmentStrategist(service, aiAuthToken, transcriptWriter);
+                aiStrategist = new AIInvestmentStrategist(service, effectiveToken, transcriptWriter);
                 aiStrategist.setPromptMode(aiPromptMode);
                 log("✅ AI Investment Strategist initialized");
             } else {
@@ -741,9 +781,9 @@ public class OrderFlowStrategyEnhanced implements
         }
 
         // Initialize AI Threshold Service if token provided
-        if (aiAuthToken != null && !aiAuthToken.isEmpty()) {
-            aiThresholdService = new AIThresholdService(aiAuthToken);
-            log("🤖 AI Chat Service initialized");
+        if (effectiveToken != null && !effectiveToken.isEmpty()) {
+            aiThresholdService = new AIThresholdService(effectiveToken);
+            log("🤖 AI Chat Service initialized" + (useProxy ? " (using proxy)" : ""));
 
             // Initialize AI Tools Provider for function calling
             aiToolsProvider = new AIToolsProvider();
@@ -1065,14 +1105,18 @@ public class OrderFlowStrategyEnhanced implements
         gbc.gridy = 10; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL;
         JTextField aiTokenField = new JTextField();
         aiTokenField.setText(aiAuthToken);
-        aiTokenField.setToolTipText("Your Claude API token for z.ai (leave empty to disable AI features)");
+        aiTokenField.setToolTipText("<html>Your Claude API token for z.ai<br>Leave empty if using proxy</html>");
+        aiTokenField.setEnabled(!useProxy);  // Disable if using proxy
         aiTokenField.addFocusListener(new java.awt.event.FocusAdapter() {
             public void focusLost(java.awt.event.FocusEvent e) {
                 aiAuthToken = aiTokenField.getText();
-                // Reinitialize AI service if token changed
-                if (aiAuthToken != null && !aiAuthToken.isEmpty()) {
-                    aiThresholdService = new AIThresholdService(aiAuthToken);
-                    log("🤖 AI Auth Token updated - Service initialized");
+                settings.aiAuthToken = aiAuthToken;
+                saveSettings();
+                // Reinitialize AI service with effective token
+                String token = getEffectiveApiToken();
+                if (token != null && !token.isEmpty()) {
+                    aiThresholdService = new AIThresholdService(token);
+                    log("🤖 AI Auth Token updated - Service initialized" + (useProxy ? " (proxy)" : ""));
                 } else {
                     aiThresholdService = null;
                     log("⚠️ AI Auth Token cleared - Service disabled");
@@ -1080,9 +1124,32 @@ public class OrderFlowStrategyEnhanced implements
             }
         });
         settingsPanel.add(aiTokenField, gbc);
+
+        // Use Proxy checkbox
+        gbc.gridx = 0; gbc.gridy = 11; gbc.gridwidth = 2;
+        JCheckBox useProxyCheckBox = new JCheckBox("Use Proxy (sk-zai-proxy-key)", useProxy);
+        useProxyCheckBox.setToolTipText("<html>When enabled, uses the proxy server instead of direct API calls.<br>Disable this to use your own API token above.</html>");
+        JTextField finalAiTokenField = aiTokenField;
+        useProxyCheckBox.addActionListener(e -> {
+            useProxy = useProxyCheckBox.isSelected();
+            settings.useProxy = useProxy;
+            finalAiTokenField.setEnabled(!useProxy);
+            saveSettings();
+            // Reinitialize with new setting
+            String token = getEffectiveApiToken();
+            if (token != null && !token.isEmpty()) {
+                aiThresholdService = new AIThresholdService(token);
+                log("🤖 AI Proxy mode: " + (useProxy ? "ENABLED" : "DISABLED") + " - Service initialized");
+            } else {
+                aiThresholdService = null;
+                log("⚠️ No API token available - Service disabled");
+            }
+        });
+        settingsPanel.add(useProxyCheckBox, gbc);
+
         gbc.fill = GridBagConstraints.NONE;  // Reset fill
 
-        gbc.gridx = 0; gbc.gridy = 11; gbc.gridwidth = 1;
+        gbc.gridx = 0; gbc.gridy = 12; gbc.gridwidth = 1;
         JLabel useAiAdaptiveLabel = new JLabel("Use AI Adaptive:");
         useAiAdaptiveLabel.setToolTipText("Enable AI to automatically adjust thresholds based on market conditions");
         settingsPanel.add(useAiAdaptiveLabel, gbc);
@@ -1103,14 +1170,15 @@ public class OrderFlowStrategyEnhanced implements
         gbc.gridy = 14; gbc.gridwidth = 1;
         JButton aiChatButton = new JButton("💬 Open AI Chat");
         aiChatButton.setToolTipText("Open AI Chat window");
-        aiChatButton.setEnabled(aiAuthToken != null && !aiAuthToken.isEmpty());
+        String token = getEffectiveApiToken();
+        aiChatButton.setEnabled(token != null && !token.isEmpty());
         aiChatButton.addActionListener(e -> openAIChatWindow());
         settingsPanel.add(aiChatButton, gbc);
 
         gbc.gridy = 15; gbc.gridwidth = 1;
         aiReevaluateButton = new JButton("🔄 Optimize Thresholds");
         aiReevaluateButton.setToolTipText("Ask AI to optimize trading thresholds based on market conditions");
-        aiReevaluateButton.setEnabled(aiAuthToken != null && !aiAuthToken.isEmpty());
+        aiReevaluateButton.setEnabled(token != null && !token.isEmpty());
         aiReevaluateButton.addActionListener(e -> triggerAIReevaluation());
         settingsPanel.add(aiReevaluateButton, gbc);
 
@@ -1201,10 +1269,7 @@ public class OrderFlowStrategyEnhanced implements
             saveSettings();
         });
         settingsPanel.add(promptModeCombo, gbc);
-        // Sync local var with saved setting
-        if (settings.aiPromptMode != null) {
-            aiPromptMode = settings.aiPromptMode;
-        }
+        // Note: aiPromptMode is synced from settings during initialize(), no need to sync again here
 
         gbc.gridx = 0; gbc.gridy = 22;
         JLabel confThreshLabel = new JLabel("Confluence Threshold:");
@@ -2950,7 +3015,8 @@ public class OrderFlowStrategyEnhanced implements
      * Can be called at startup or when AI Trading is enabled in settings
      */
     private void initializeAIComponents() {
-        if (aiAuthToken == null || aiAuthToken.isEmpty()) {
+        String effectiveToken = getEffectiveApiToken();
+        if (effectiveToken == null || effectiveToken.isEmpty()) {
             log("⚠️ Cannot initialize AI - no auth token");
             return;
         }
@@ -2972,7 +3038,7 @@ public class OrderFlowStrategyEnhanced implements
             });
 
             // Create AI integration layer with logger wrapper
-            aiIntegration = new AIIntegrationLayer(aiAuthToken, new AIIntegrationLayer.AIStrategyLogger() {
+            aiIntegration = new AIIntegrationLayer(effectiveToken, new AIIntegrationLayer.AIStrategyLogger() {
                 @Override
                 public void log(String message, Object... args) {
                     OrderFlowStrategyEnhanced.this.log(message);
@@ -6099,6 +6165,28 @@ public class OrderFlowStrategyEnhanced implements
         }
     }
 
+    @Override
+    public void onBracketOrderPlaced(String orderId, String positionId, boolean isLong,
+                                      int signalPrice, int slOffset, int tpOffset,
+                                      int score, String reasoning) {
+        // Track this pending bracket order so we can update markers when it fills
+        PendingBracketOrder pending = new PendingBracketOrder();
+        pending.orderId = orderId;
+        pending.positionId = positionId;
+        pending.isLong = isLong;
+        pending.signalPrice = signalPrice;
+        pending.slOffset = slOffset;
+        pending.tpOffset = tpOffset;
+        pending.score = score;
+        pending.reasoning = reasoning;
+        pending.timestamp = System.currentTimeMillis();
+
+        pendingBracketOrders.put(orderId, pending);
+        log("📌 TRACKING BRACKET ORDER: orderId=" + orderId + " signalPrice=" + signalPrice +
+            " SL_off=" + slOffset + " TP_off=" + tpOffset);
+        fileLog("📌 Pending bracket order tracked: " + orderId + " signal=" + signalPrice + " SL_off=" + slOffset + " TP_off=" + tpOffset);
+    }
+
     // ========== OrdersListener Implementation ==========
 
     @Override
@@ -6112,16 +6200,59 @@ public class OrderFlowStrategyEnhanced implements
 
     @Override
     public void onOrderExecuted(ExecutionInfo executionInfo) {
-        log("💰 ORDER EXECUTED: " + executionInfo.orderId + " @ " + executionInfo.price);
+        // executionInfo.price is in ACTUAL price units, not ticks
+        // Convert to ticks for our internal use
+        int fillPriceTicks = (int) Math.round(executionInfo.price / pips);
+        log("💰 ORDER EXECUTED: " + executionInfo.orderId + " @ " + executionInfo.price + " (ticks: " + fillPriceTicks + ")");
+
         // Delegate to order executor if available
         if (orderExecutor != null && orderExecutor instanceof BookmapOrderExecutor) {
             // Execution tracking is handled internally by executor
         }
 
+        // Check if this is an entry order fill for a pending bracket order
+        PendingBracketOrder pending = pendingBracketOrders.get(executionInfo.orderId);
+        if (pending != null) {
+            // Entry order filled - update markers with ACTUAL fill price
+            log("✅ BRACKET ENTRY FILLED: orderId=" + executionInfo.orderId + " fillPrice=" + fillPriceTicks + " ticks");
+
+            // Calculate actual SL/TP from fill price and offsets
+            int actualSlPrice = pending.isLong ?
+                fillPriceTicks - pending.slOffset :
+                fillPriceTicks + pending.slOffset;
+            int actualTpPrice = pending.isLong ?
+                fillPriceTicks + pending.tpOffset :
+                fillPriceTicks - pending.tpOffset;
+
+            // Calculate slippage from signal price
+            int slippageTicks = Math.abs(fillPriceTicks - pending.signalPrice);
+
+            log("📊 ACTUAL PRICES FROM FILL:");
+            log(String.format("   Signal: %d ticks | Fill: %d ticks | Slippage: %d ticks",
+                pending.signalPrice, fillPriceTicks, slippageTicks));
+            int signalSlPrice = pending.isLong ? pending.signalPrice - pending.slOffset : pending.signalPrice + pending.slOffset;
+            log(String.format("   Signal SL: %d | Actual SL: %d | Diff: %d",
+                signalSlPrice, actualSlPrice, Math.abs(actualSlPrice - signalSlPrice)));
+            int signalTpPrice = pending.isLong ? pending.signalPrice + pending.tpOffset : pending.signalPrice - pending.tpOffset;
+            log(String.format("   Signal TP: %d | Actual TP: %d | Diff: %d",
+                signalTpPrice, actualTpPrice, Math.abs(actualTpPrice - signalTpPrice)));
+
+            fileLog("✅ ENTRY FILL: signal=" + pending.signalPrice + " fill=" + fillPriceTicks + " slippage=" + slippageTicks +
+                " SL=" + actualSlPrice + " TP=" + actualTpPrice);
+
+            // Update chart markers with actual prices
+            activeStopLossPrice = actualSlPrice;
+            activeTakeProfitPrice = actualTpPrice;
+            log("📍 Chart SL/TP lines updated: SL=" + actualSlPrice + " TP=" + actualTpPrice);
+
+            // Remove from pending (order is now filled)
+            pendingBracketOrders.remove(executionInfo.orderId);
+            log("🧹 Removed from pending orders (size now: " + pendingBracketOrders.size() + ")");
+        }
+
         // Check if this is a bracket order SL/TP execution
         if (aiOrderManager != null) {
-            int fillPrice = (int) executionInfo.price;
-            checkBracketOrderFill(executionInfo.orderId, fillPrice);
+            checkBracketOrderFill(executionInfo.orderId, fillPriceTicks);
         }
     }
 

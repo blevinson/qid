@@ -300,7 +300,7 @@ public class AIOrderManager {
             );
 
             // Place bracket order with native SL/TP (Bookmap managed)
-            // Offsets are in TICKS (distance from entry price)
+            // Offsets are in TICKS (price levels) - distance from entry price
             this.pips = signal.pips;  // Store for later use
 
             // Calculate offsets in ticks
@@ -308,8 +308,13 @@ public class AIOrderManager {
             int tpOffsetTicks = Math.abs(decision.takeProfit - signal.price);
 
             log("📊 Bracket order offsets (ticks): SL=%d, TP=%d", slOffsetTicks, tpOffsetTicks);
-            log("📊 Entry: %d ticks, SL: %d ticks, TP: %d ticks", signal.price, decision.stopLoss, decision.takeProfit);
-            fileLog("📝 NATIVE BRACKET: entry=" + signal.price + " SL=" + decision.stopLoss + " TP=" + decision.takeProfit + " (offsets: SL=" + slOffsetTicks + " TP=" + tpOffsetTicks + ")");
+            log("📊 Entry signal: %d ticks, SL target: %d ticks, TP target: %d ticks", signal.price, decision.stopLoss, decision.takeProfit);
+            log("📊 Actual prices: Entry=%.2f, SL=%.2f, TP=%.2f",
+                signal.price * signal.pips, decision.stopLoss * signal.pips, decision.takeProfit * signal.pips);
+            log("⚠️ NOTE: Market order may fill at different price - Bookmap applies offsets from FILL price");
+            fileLog("📝 NATIVE BRACKET: signal_entry=" + signal.price + "ticks SL_target=" + decision.stopLoss + "ticks TP_target=" + decision.takeProfit + "ticks");
+            fileLog("📝 Offsets sent to Bookmap: SL_offset=" + slOffsetTicks + "ticks TP_offset=" + tpOffsetTicks + "ticks");
+            fileLog("📝 Actual prices: Entry=" + (signal.price * signal.pips) + " SL=" + (decision.stopLoss * signal.pips) + " TP=" + (decision.takeProfit * signal.pips));
 
             OrderExecutor.OrderSide entrySide = decision.isLong ?
                 OrderExecutor.OrderSide.BUY : OrderExecutor.OrderSide.SELL;
@@ -341,6 +346,17 @@ public class AIOrderManager {
             // Track position
             activePositions.put(positionId, position);
             log("✅ Position tracked: %s", positionId.substring(0, 8));
+
+            // Notify strategy about pending bracket order (for fill tracking)
+            // This allows strategy to update markers with actual fill price later
+            if (markerCallback != null) {
+                markerCallback.onBracketOrderPlaced(
+                    entryOrderId, positionId, decision.isLong,
+                    signal.price, slOffsetTicks, tpOffsetTicks,
+                    signal.score, decision.reasoning
+                );
+                fileLog("📍 onBracketOrderPlaced called: orderId=" + entryOrderId + " signalPrice=" + signal.price + " SL_off=" + slOffsetTicks + " TP_off=" + tpOffsetTicks);
+            }
 
             // Place AI entry marker on chart
             log("📍 Calling markerCallback.onEntryMarker...");
@@ -926,5 +942,21 @@ public class AIOrderManager {
          * @param slippageTicks how many ticks price moved
          */
         void onSlippageRejectedMarker(int signalPrice, int currentPrice, int slippageTicks);
+
+        /**
+         * Called when bracket order is placed, before fill
+         * Strategy should track this to update markers with actual fill price later
+         * @param orderId Entry order ID from Bookmap
+         * @param positionId Position ID for tracking
+         * @param isLong Direction
+         * @param signalPrice Signal price in ticks (what we expected)
+         * @param slOffset Stop loss offset in ticks
+         * @param tpOffset Take profit offset in ticks
+         * @param score Signal score
+         * @param reasoning AI reasoning
+         */
+        void onBracketOrderPlaced(String orderId, String positionId, boolean isLong,
+                                  int signalPrice, int slOffset, int tpOffset,
+                                  int score, String reasoning);
     }
 }
