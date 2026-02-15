@@ -6159,14 +6159,11 @@ public class OrderFlowStrategyEnhanced implements
             markerIndicator.addIcon(price, icon, 3, 3);
             fileLog("✅ addIcon called with price=" + price + " (ticks)");
 
-            // Track active SL/TP levels for line drawing (keep in tick units, drawAITradingLevels will convert)
-            activeStopLossPrice = stopLossPrice;
-            activeTakeProfitPrice = takeProfitPrice;
-
-            log(String.format("✅ SL/TP levels set: SL=%d TP=%d (indicators: %s, %s)",
-                activeStopLossPrice, activeTakeProfitPrice,
-                aiStopLossLine != null ? "OK" : "NULL",
-                aiTakeProfitLine != null ? "OK" : "NULL"));
+            // NOTE: SL/TP levels are NOT set here - they will be set after order fills
+            // This prevents showing signal-based prices before we know actual fill price
+            // Market order slippage means fill price differs from signal price
+            log(String.format("✅ Entry marker placed. SL/TP will be set after fill (signal SL=%d TP=%d)",
+                stopLossPrice, takeProfitPrice));
         } catch (Exception e) {
             log("❌ Failed to place entry marker: " + e.getMessage());
             fileLog("❌ Failed to place entry marker: " + e.getMessage());
@@ -6410,10 +6407,32 @@ public class OrderFlowStrategyEnhanced implements
             fileLog(String.format("📈 BOOKMAP COMPARISON: Entry=%.2f SL=%.2f TP=%.2f (offsets: SL=%d TP=%d ticks)",
                 fillPriceTicks * pips, actualSlPrice * pips, actualTpPrice * pips, pending.slOffset, pending.tpOffset));
 
-            // Update chart markers with actual prices
+            // Update chart markers with actual prices (NOW we know fill price)
             activeStopLossPrice = actualSlPrice;
             activeTakeProfitPrice = actualTpPrice;
             log("📍 Chart SL/TP lines updated: SL=" + actualSlPrice + " TP=" + actualTpPrice);
+
+            // CRITICAL: Update AIOrderManager position with actual fill prices
+            // This fixes data integrity issue where signal-based prices were used for:
+            // - Trade logging accuracy
+            // - Performance statistics
+            // - P&L calculations
+            // - Memory/learning data
+            if (aiOrderManager != null && pending.positionId != null) {
+                aiOrderManager.updatePositionOnFill(
+                    pending.positionId,
+                    fillPriceTicks,
+                    actualSlPrice,
+                    actualTpPrice,
+                    slippageTicks
+                );
+                log("📊 Position updated with actual fill prices via updatePositionOnFill()");
+                fileLog("📊 updatePositionOnFill called: positionId=" + pending.positionId +
+                    " fill=" + fillPriceTicks + " SL=" + actualSlPrice + " TP=" + actualTpPrice);
+            } else {
+                log("⚠️ Cannot update position: aiOrderManager=" + (aiOrderManager != null ? "OK" : "NULL") +
+                    " positionId=" + pending.positionId);
+            }
 
             // Remove from pending (order is now filled)
             pendingBracketOrders.remove(executionInfo.orderId);

@@ -769,6 +769,52 @@ public class AIOrderManager {
     }
 
     /**
+     * Update position with actual fill price and SL/TP
+     * Called by strategy when order execution completes
+     *
+     * IMPORTANT: This fixes the data integrity issue where signal-based prices
+     * were being used instead of actual fill prices. This affects:
+     * - Trade logging accuracy
+     * - Performance statistics
+     * - P&L calculations
+     * - Memory/learning data
+     *
+     * @param positionId Position to update
+     * @param actualFillPrice Actual fill price in ticks
+     * @param actualSlPrice Actual stop loss price in ticks (fill + offset)
+     * @param actualTpPrice Actual take profit price in ticks (fill + offset)
+     * @param slippageTicks Difference between signal and fill price
+     */
+    public void updatePositionOnFill(String positionId, int actualFillPrice, int actualSlPrice, int actualTpPrice, int slippageTicks) {
+        ActivePosition position = activePositions.get(positionId);
+        if (position == null) {
+            log("⚠️ Cannot update position - not found: %s", positionId != null ? positionId.substring(0, 8) : "null");
+            fileLog("⚠️ updatePositionOnFill: position not found: " + positionId);
+            return;
+        }
+
+        int oldEntry = position.entryPrice;
+        int oldSl = position.stopLossPrice.get();
+        int oldTp = position.takeProfitPrice.get();
+
+        // Update position with actual values
+        position.entryPrice = actualFillPrice;
+        position.stopLossPrice.set(actualSlPrice);
+        position.takeProfitPrice.set(actualTpPrice);
+        position.entrySlippage = slippageTicks;
+
+        log("📍 POSITION UPDATED WITH ACTUAL FILL PRICES:");
+        log("   Entry: %d → %d ticks (slippage: %d)", oldEntry, actualFillPrice, slippageTicks);
+        log("   SL: %d → %d ticks (diff: %d)", oldSl, actualSlPrice, Math.abs(actualSlPrice - oldSl));
+        log("   TP: %d → %d ticks (diff: %d)", oldTp, actualTpPrice, Math.abs(actualTpPrice - oldTp));
+        log("   Actual prices: Entry=$%.2f, SL=$%.2f, TP=$%.2f",
+            actualFillPrice * pips, actualSlPrice * pips, actualTpPrice * pips);
+
+        fileLog(String.format("📍 POSITION UPDATED: entry %d→%d SL %d→%d TP %d→%d (slippage=%d)",
+            oldEntry, actualFillPrice, oldSl, actualSlPrice, oldTp, actualTpPrice, slippageTicks));
+    }
+
+    /**
      * Cancel pending entry order
      * Can be called if AI changes mind before fill
      */
