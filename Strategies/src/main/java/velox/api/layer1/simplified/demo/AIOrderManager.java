@@ -91,6 +91,14 @@ public class AIOrderManager {
     }
 
     /**
+     * Set current time supplier for staleness checks (for replay mode support)
+     */
+    private Supplier<Long> currentTimeSupplier;
+    public void setCurrentTimeSupplier(Supplier<Long> supplier) {
+        this.currentTimeSupplier = supplier;
+    }
+
+    /**
      * Set suppliers for historical context recording
      */
     public void setContextSuppliers(
@@ -147,7 +155,9 @@ public class AIOrderManager {
      * @return null if OK to proceed, or rejection reason if should skip
      */
     private String checkSignalStaleness(SignalData signal) {
-        long now = System.currentTimeMillis();
+        // Use currentTimeSupplier if available (for replay mode support)
+        // Otherwise fall back to wall clock time
+        long now = currentTimeSupplier != null ? currentTimeSupplier.get() : System.currentTimeMillis();
 
         // Skip staleness check if timestamp is not set (0 or negative)
         // This handles unit tests and edge cases where timestamp isn't available
