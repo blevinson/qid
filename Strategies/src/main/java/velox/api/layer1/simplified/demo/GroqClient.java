@@ -1,13 +1,23 @@
 package velox.api.layer1.simplified.demo;
 
-import velox.api.layer1.messages.L1ApiMessage;
+import velox.api.layer1.messages.Type;
+import velox.api.layer1.simplified.demo.AIDecision;
+import velox.api.layer1.simplified.demo.AIThresholdService;
+import velox.api.layer1.simplified.demo.AIProvider;
+import velox.api.layer1.simplified.demo.AIProviderException;
+import velox.api.layer1.simplified.demo.AISettings;
+import velox.api.layer1.simplified.demo.AIResponse;
+import velox.api.layer1.simplified.demo.SignalData;
+
+import com.github.frankleyrocha.groqapi.GroqClient;
+import com.github.frankleyrocha.groqapi.GroqCompletion;
+import com.github.frankleyrocha.groqapi.GroqMessage;
+import com.github.frankleyrocha.groqapi.MessageContent;
+import com.github.frankleyrocha.groqapi.GroqMessage.Role;
+import com.github.frankleyrocha.groqapi.GroqMessage;
 import velox.api.layer1.data.InstrumentInfo;
+
 import java.io.IOException;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -15,23 +25,26 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Groq AI client implementing OpenAI-style API.
+ * Groq client wrapper implementing AIProvider interface.
+ * Uses groqapi Maven library for Groq API integration.
  * Provides ultra-low latency (~10-50ms) and cost-effective AI inference.
  */
-public class GroqClient implements AIProvider {
+public class GroqClientWrapper implements AIProvider {
 
-    private static final String BASE_URL = "https://api.groq.com/openai/v1";
-    private static final String CHAT_COMPLETIONS_ENDPOINT = "/chat/completions";
-    private final String apiKey;
-    private final String model;
-    private final int timeoutSeconds = 30;
+    private final GroqClient client;
+    private final String modelName;
+    private final int timeoutSeconds;
 
     // Latency tracking (EMA with 0.9 weight)
     private final AtomicLong lastLatency = new AtomicLong(0);
 
-    public GroqClient(String apiKey, String model) {
-        this.apiKey = apiKey;
-        this.model = model;
+    public GroqClientWrapper(String apiKey, String modelName, AISettings settings) {
+        // Initialize Groq client with API key
+        this.client = new GroqClient(apiKey);
+
+        // Set model and timeout from settings
+        this.modelName = modelName;
+        this.timeoutSeconds = settings.fallbackTimeoutMs / 1000;
     }
 
     @Override
@@ -44,20 +57,20 @@ public class GroqClient implements AIProvider {
         long startTime = System.currentTimeMillis();
 
         try {
-            // Build request
-            Map<String, Object> requestBody = buildRequest(signal, context);
+            // Build Groq request
+            GroqCompletion request = buildRequest(signal, context);
 
-            // Send to Groq
-            String jsonResponse = sendToGroq(requestBody);
+            // Send request
+            GroqCompletion response = client.createChatCompletion(request, timeoutSeconds);
 
-            // Parse response
-            AIResponse response = parseResponse(jsonResponse);
+            // Extract AI decision
+            AIResponse aiResponse = parseResponse(response);
 
             long latency = (int)(System.currentTimeMillis() - startTime);
             updateLatency(latency);
 
-            log.info("[Groq] Response in " + latency + "ms: action=" + response.decision.action);
-            return response;
+            log.info("[Groq] Response in " + latency + "ms: action=" + aiResponse.decision.action);
+            return aiResponse;
 
         } catch (IOException e) {
             log.error("[Groq] API error", e);
@@ -67,16 +80,16 @@ public class GroqClient implements AIProvider {
 
     @Override
     public boolean isHealthy() {
-        // Simple health check - try a minimal request
         try {
-            Map<String, Object> requestBody = new HashMap<>();
-            requestBody.put("model", model);
-            requestBody.put("messages", List.of(Map.of(
-                "role", "system",
-                "content", "Health check"
-            )));
+            // Simple health check - minimal request
+            GroqMessage healthCheck = GroqMessage.ofSystem("Health check");
+            GroqCompletion request = GroqCompletion.builder()
+                    .messages(List.of(healthCheck))
+                    .model(modelName)
+                    .temperature(0.0)
+                    .build();
 
-            sendToGroq(requestBody);
+            client.createChatCompletion(request, timeoutSeconds);
             return true;
 
         } catch (Exception e) {
@@ -91,139 +104,152 @@ public class GroqClient implements AIProvider {
         return latency > 0 ? (int)latency : 0;
     }
 
-    private String sendToGroq(Map<String, Object> body) throws IOException {
-        HttpClient client = HttpClient.newHttpClient();
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(BASE_URL + CHAT_COMPLETIONS_ENDPOINT))
-                .header("Authorization", "Bearer " + apiKey)
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(writeJson(body)))
-                .timeout(Duration.ofSeconds(timeoutSeconds))
+    /**
+     * Builds a Groq API request for chat completions.
+     */
+    private GroqCompletion buildRequest(Signal signal, MarketContext context) {
+        // Build messages list
+        List<GroqMessage> messages = new ArrayList<>();
+
+        // System prompt - provides context for AI Strategist Mode
+        String systemPrompt = buildSystemPrompt(signal, context);
+
+        // System message with AI Strategist Mode instructions
+        GroqMessage systemMessage = GroqMessage.ofSystem(systemPrompt);
+        messages.add(systemMessage);
+
+        // Note: User prompt would go here if needed
+        // messages.add(GroqMessage.ofUser(buildUserPrompt(signal, context)));
+
+        return GroqCompletion.builder()
+                .messages(messages)
+                .model(modelName)
+                .temperature(0.1) // Low temp for deterministic decisions
+                .maxTokens(2000)
                 .build();
-
-        HttpResponse<String> response = client.send(request, Duration.ofSeconds(timeoutSeconds + 5));
-
-        if (response.statusCode() >= 200 && response.statusCode() < 300) {
-            return response.body();
-        } else {
-            throw new IOException("Groq API returned " + response.statusCode());
-        }
     }
 
-    private Map<String, Object> buildRequest(Signal signal, MarketContext context) {
-        Map<String, Object> messages = new ArrayList<>();
-        messages.add(Map.of(
-                "role", "system",
-                "content", buildPrompt(signal, context)
-        ));
-
-        Map<String, Object> body = new HashMap<>();
-        body.put("model", model);
-        body.put("messages", messages);
-        body.put("temperature", 0.1); // Low temp for deterministic decisions
-        body.put("max_tokens", 2000);
-        body.put("top_p", 1);
-
-        return body;
-    }
-
-    private String buildPrompt(Signal signal, MarketContext context) {
-        // Use AI Strategist Mode prompt
-        // Note: This needs to be updated to use the full strategist prompt
-        // For now, use a simplified version
+    /**
+     * Builds system prompt for AI Strategist Mode.
+     * Simplified version for initial implementation.
+     */
+    private String buildSystemPrompt(Signal signal, MarketContext context) {
         StringBuilder prompt = new StringBuilder();
 
         prompt.append("You are a trading strategist. A market signal has been detected.\n\n");
 
-        prompt.append("Signal: ").append(signal.type)
-                .append(" at ").append(signal.price)
-                .append("\n");
+        prompt.append("📊 SIGNAL INTEL:\n");
+        prompt.append("- Type: ").append(signal.type).append("\n");
+        prompt.append("- Price: ").append(signal.price).append("\n");
+        prompt.append("- Score: ").append(signal.score).append("/100\n");
+        prompt.append("- Direction: ").append(signal.direction).append("\n");
 
-        prompt.append("Market Context:\n");
-        prompt.append("- Price: ").append(context.currentPrice).append("\n");
+        prompt.append("📈 MARKET CONTEXT:\n");
+        prompt.append("- Current Price: ").append(context.currentPrice).append("\n");
         prompt.append("- Trend: ").append(context.trend).append("\n");
+        prompt.append("- CVD: ").append(context.cvdValue).append(" (").append(context.cvdTrend).append(")\n");
+        prompt.append("- Momentum: ").append(String.format("%.2f", context.momentum)).append("\n");
+        prompt.append("- Time Since Last: ").append(context.timeSinceLastSignal / 60000).append("s\n\n");
 
-        prompt.append("Decide:\n");
+        prompt.append("🎯 YOUR ROLE: Analyze this market intelligence and decide:\n\n");
         prompt.append("1. Is this a trading opportunity? (TRADE/WAIT/PASS)\n");
         prompt.append("2. If TRADE, what's the optimal entry strategy?\n");
         prompt.append("3. Provide confidence (0.0-1.0)\n");
         prompt.append("4. Provide reasoning\n");
+        prompt.append("5. Return JSON response matching AI Strategist Mode schema.\n\n");
 
-        prompt.append("Respond with JSON matching AI Strategist Mode schema.\n");
+        prompt.append("⚠️  Important: You are in AI Strategist Mode:\n");
+        prompt.append("- Use TRADE/WAIT/PASS for action\n");
+        prompt.append("- Use entryIntent (PULLBACK/BREAKOUT/MOMENTUM/FADE)\n");
+        prompt.append("- Use order.type (MARKET/LIMIT/STOP_MARKET)\n");
+        prompt.append("- Prices are in ticks, not points\n");
+        prompt.append("- Use tick-based offsets for stopLoss/takeProfit\n");
+        prompt.append("- Provide constraintsUsed envelope\n");
+        prompt.append("- For WAIT, provide monitorPlan with conditions\n\n");
 
         return prompt.toString();
     }
 
-    private AIResponse parseResponse(String jsonResponse) {
-        // Simplified JSON parsing - for now just return a basic response
-        // In production, use a proper JSON library
-
-        // Parse response and extract action
-        // For now, return a mock response to get the code compiling
-        return AIResponse.success(createMockDecision(), 50, "groq");
+    /**
+     * Builds user prompt for AI interaction.
+     */
+    private String buildUserPrompt(Signal signal, MarketContext context) {
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("Analyze this signal and provide trading decision.");
+        return prompt.toString();
     }
 
-    private AIDecision createMockDecision() {
-        // Mock decision - will be replaced with actual parsing
-        AIDecision decision = new AIDecision();
-        decision.action = AIDecision.StrategistAction.TRADE;
-        decision.confidence = 0.85;
-        decision.reasoning = "Mock decision - will be replaced with actual parsing";
-        return decision;
-    }
+    /**
+     * Parses Groq completion response to AIResponse.
+     */
+    private AIResponse parseResponse(GroqCompletion response) {
+        // Get first (and only) message from AI
+        GroqMessage message = response.getChoices().get(0);
 
-    private String writeJson(Map<String, Object> data) {
-        // Simple JSON writer (no external deps)
-        StringBuilder json = new StringBuilder();
-        json.append("{");
-        boolean first = true;
-
-        for (Map.Entry<String, Object> entry : data.entrySet()) {
-            if (!first) {
-                json.append(",");
-            }
-            first = false;
-
-            json.append("\"").append(entry.getKey()).append("\":\"");
-
-            Object value = entry.getValue();
-            if (value instanceof String) {
-                json.append(escapeJson((String) value));
-            } else if (value instanceof Integer || value instanceof Double) {
-                json.append(value);
-            } else if (value instanceof Map) {
-                json.append("{");
-                boolean mapFirst = true;
-                for (Map.Entry<String, Object> mapEntry : ((Map<String, Object>) value).entrySet()) {
-                    if (!mapFirst) {
-                        json.append(",");
-                    }
-                    mapFirst = false;
-
-                    Object mapValue = mapEntry.getValue();
-                    if (mapValue instanceof String) {
-                        json.append("\"").append(mapEntry.getKey()).append("\":\"").append(escapeJson((String) mapValue)).append("\"");
-                    }
-                }
-                json.append("}");
-            }
-
-            json.append("}");
+        if (message == null) {
+            log.warn("[Groq] No message in response");
+            throw new AIProviderException("No valid AI decision in response");
         }
 
-        return json.toString();
+        String content = message.getContent();
+
+        // Parse JSON content
+        // Note: For now, simplified parsing - will need full JSON library
+        AIResponse aiResponse = new AIResponse();
+        aiResponse.decision = parseAction(content);
+        aiResponse.confidence = parseConfidence(content);
+        aiResponse.reasoning = parseReasoning(content);
+
+        return aiResponse;
     }
 
-    private String escapeJson(String s) {
-        return s.replace("\\", "\\\\").replace("\"", "\\\"");
+    private AIDecision.StrategistAction parseAction(String content) {
+        // Look for "action": "TRADE" or "WAIT" or "PASS"
+        if (content.contains("\"action\"")) {
+            int idx = content.indexOf("\"action\"") + 10; // Skip "action": and space
+            int end = content.indexOf("\"", idx + 1);
+            if (end > 0 && end < content.indexOf("\"", idx + 9)) {
+                String action = content.substring(idx + 1, end).trim();
+                return AIDecision.StrategistAction.fromString(action);
+            }
+        }
+
+        // Default to PASS if not found
+        return AIDecision.StrategistAction.PASS;
     }
 
-    private void updateLatency(long latencyMs) {
-        // EMA with 0.9 weight
-        long oldLatency = lastLatency.get();
-        long newLatency = (oldLatency == 0)
-                ? latencyMs
-                : (long)(oldLatency * 0.9 + latencyMs * 0.1);
-        lastLatency.set(newLatency);
+    private double parseConfidence(String content) {
+        try {
+            // Look for "confidence": 0.XX
+            int idx = content.indexOf("confidence") + 13; // Skip "confidence": and space
+            int start = idx + 14; // After quote
+            if (start < content.length() && start > 0) {
+                int end = content.indexOf("\"", start);
+                if (end > 0 && end < content.length()) {
+                    String numStr = content.substring(start, end).trim();
+                    return Double.parseDouble(numStr);
+                }
+            }
+        } catch (Exception e) {
+            log.error("[Groq] Failed to extract confidence: " + e.getMessage());
+            return 0.5; // Default
+        }
+    }
+
+    private String parseReasoning(String content) {
+        try {
+            // Look for "reasoning": "text"
+            int idx = content.indexOf("reasoning") + 13; // Skip "reasoning": and space
+            int start = idx + 14; // After quote
+            if (start < content.length() && start > 0) {
+                int end = content.indexOf("\"", start);
+                if (end > 0 && end < content.length()) {
+                    return content.substring(start + 1, end - 1).trim();
+                }
+            }
+        } catch (Exception e) {
+            log.error("[Groq] Failed to extract reasoning: " + e.getMessage());
+            return "Unable to extract reasoning";
+        }
     }
 }
