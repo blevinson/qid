@@ -83,32 +83,43 @@ Signal Detected @ 5000 (Iceberg, CVD +500, Trend UP)
   "action": "TRADE" | "WAIT" | "PASS",
   "confidence": 0.0,
   "reasoning": "",
+  "instrument": "ES",
+  "side": "LONG" | "SHORT",
+  "tickSize": 0.25,
   "marketAnalysis": {
     "bias": "BULLISH" | "BEARISH" | "NEUTRAL",
     "keyLevels": ["VWAP 4995", "POC 4992", "Res 5002"],
     "concerns": ["low volume", "news in 12m"]
   },
-  "constraints": {
+  "constraintsUsed": {
     "maxRiskTicks": 20,
     "maxChaseTicks": 6,
-    "maxSlippageTicks": 2,
-    "timeInForceDefault": "IOC" | "GTC" | "DAY"
+    "maxSlippageTicks": 2
   },
   "strategy": {
     "entryIntent": "PULLBACK" | "BREAKOUT" | "MOMENTUM" | "FADE",
     "order": {
       "type": "MARKET" | "LIMIT" | "STOP_MARKET",
-      "price": 4995,
+      "price": 4995.0,
+      "tif": "IOC" | "GTC" | "DAY",
       "expiresInSeconds": 180,
       "fallback": "CANCEL" | "MARKET" | "REPRICE"
     },
-    "stopLoss": { "price": 4970 },
-    "takeProfit": { "price": 5030 },
+    "stopLoss": { "offsetTicks": -25 },
+    "takeProfit": { "offsetTicks": 35 },
     "riskRewardRatio": 1.4
   },
   "monitorPlan": null
 }
 ```
+
+**Field Requirements by Action:**
+
+| Action | strategy | monitorPlan | constraintsUsed |
+|--------|-----------|--------------|-----------------|
+| TRADE | Required | Must be null | Required |
+| WAIT | Must be null | Required | Required |
+| PASS | Must be null | Must be null | Required |
 
 ### Action Types
 
@@ -149,25 +160,50 @@ The `WAIT` action is **actionable** when a `monitorPlan` is provided:
   "action": "WAIT",
   "confidence": 0.60,
   "reasoning": "Interesting setup but waiting for confirmation",
+  "instrument": "ES",
+  "side": "LONG",
+  "tickSize": 0.25,
   "marketAnalysis": {
     "bias": "BULLISH",
     "keyLevels": ["Res 5002"],
     "concerns": ["approaching resistance"]
   },
+  "constraintsUsed": {
+    "maxRiskTicks": 20,
+    "maxChaseTicks": 6,
+    "maxSlippageTicks": 2
+  },
   "monitorPlan": {
-    "upgradeToTradeIf": {
-      "priceAbove": 5002,
-      "volumeIncreasePercent": 30,
+    "durationSeconds": 300,
+    "upgrade": {
+      "priceCrossAbove": 5002.0,
+      "volumeIncreasePercent": 30.0,
       "cvdTrend": "POSITIVE"
     },
-    "invalidateIf": {
-      "priceBelow": 4985,
+    "invalidate": {
+      "priceCrossBelow": 4985.0,
       "cvdTrend": "NEGATIVE"
-    },
-    "monitorDurationSeconds": 300
+    }
   }
 }
 ```
+
+**MonitorPlan Fields:**
+
+| Field | Type | Description |
+|-------|-------|-------------|
+| `durationSeconds` | Integer | How long to monitor before giving up |
+| `upgrade` | ConditionSet | Conditions that upgrade WAIT to TRADE |
+| `invalidate` | ConditionSet | Conditions that invalidate the trade idea |
+
+**ConditionSet Fields:**
+
+| Field | Type | Description |
+|-------|-------|-------------|
+| `priceCrossAbove` | Double | Trigger if price crosses above this level |
+| `priceCrossBelow` | Double | Trigger if price crosses below this level |
+| `volumeIncreasePercent` | Double | Trigger if volume increased by this % |
+| `cvdTrend` | String | "POSITIVE", "NEGATIVE", "NEUTRAL" |
 
 This makes WAIT a **first-class action** that can lead to a TRADE decision if conditions are met.
 
@@ -207,23 +243,23 @@ This makes WAIT a **first-class action** that can lead to a TRADE decision if co
 - **keyLevels**: Array of key price levels (VWAP, POC, S/R levels)
 - **concerns**: Array of concerns that factor into decision (can be empty array `[]`)
 
-### `constraints` (Required)
+### `constraintsUsed` (Required)
+
+**Note:** Constraints come from system configuration, not AI. AI echoes back which constraints are binding.
 
 ```json
 {
   "maxRiskTicks": 20,
   "maxChaseTicks": 6,
-  "maxSlippageTicks": 2,
-  "timeInForceDefault": "IOC" | "GTC" | "DAY"
+  "maxSlippageTicks": 2
 }
 ```
 
 - **maxRiskTicks**: Maximum distance from entry to stop loss (risk envelope)
 - **maxChaseTicks**: Maximum ticks to chase a moving market for entry
 - **maxSlippageTicks**: Maximum acceptable slippage on fill
-- **timeInForceDefault**: Default time-in-force if not specified in order (IOC/GTC/DAY)
 
-These create an **explicit risk constraints envelope** that the execution layer must respect.
+These create an **explicit risk constraints envelope** that the execution layer must respect. The AI should echo back the constraints that influenced its decision.
 
 ### `strategy.entryIntent` (Required if action=TRADE)
 
@@ -237,14 +273,16 @@ These create an **explicit risk constraints envelope** that the execution layer 
 ```json
 {
   "type": "MARKET" | "LIMIT" | "STOP_MARKET",
-  "price": 4995,
+  "price": 4995.0,
+  "tif": "IOC" | "GTC" | "DAY",
   "expiresInSeconds": 180,
   "fallback": "CANCEL" | "MARKET" | "REPRICE"
 }
 ```
 
 - **type**: Order type
-- **price**: Entry price (optional for MARKET orders)
+- **price**: Entry price in decimal points (optional for MARKET orders)
+- **tif**: Time-in-force (IOC/GTC/DAY). Overrides default if specified.
 - **expiresInSeconds**: Maximum time to wait for fill (required for LIMIT/STOP_MARKET)
 - **fallback**: Action if time limit expires:
   - `CANCEL`: Cancel order, no trade
@@ -254,21 +292,23 @@ These create an **explicit risk constraints envelope** that the execution layer 
 ### `strategy.stopLoss` (Required if action=TRADE)
 
 ```json
-{ "price": 4970 }
+{ "offsetTicks": -25 }
 ```
 
-- Stop loss price
+- Stop loss offset in ticks from entry price (negative for long, positive for short)
 - Should be below logical support (long) or above logical resistance (short)
-- Must respect `constraints.maxRiskTicks` limit
+- Must respect `constraintsUsed.maxRiskTicks` limit
+- Execution layer calculates absolute price: `stopLossPrice = entryPrice + (offsetTicks * tickSize)`
 
 ### `strategy.takeProfit` (Required if action=TRADE)
 
 ```json
-{ "price": 5030 }
+{ "offsetTicks": 35 }
 ```
 
-- Take profit price
+- Take profit offset in ticks from entry price (positive for long, negative for short)
 - Should reference resistance/target levels
+- Execution layer calculates absolute price: `takeProfitPrice = entryPrice + (offsetTicks * tickSize)`
 
 ### `strategy.riskRewardRatio` (Optional)
 
@@ -279,23 +319,32 @@ These create an **explicit risk constraints envelope** that the execution layer 
 
 ```json
 {
-  "upgradeToTradeIf": {
-    "priceAbove": 5002,
-    "priceBelow": 4980,
-    "volumeIncreasePercent": 30,
+  "durationSeconds": 300,
+  "upgrade": {
+    "priceCrossAbove": 5002.0,
+    "priceCrossBelow": 4980.0,
+    "volumeIncreasePercent": 30.0,
     "cvdTrend": "POSITIVE"
   },
-  "invalidateIf": {
-    "priceBelow": 4985,
+  "invalidate": {
+    "priceCrossBelow": 4985.0,
     "cvdTrend": "NEGATIVE"
-  },
-  "monitorDurationSeconds": 300
+  }
 }
 ```
 
-- **upgradeToTradeIf**: Conditions that upgrade WAIT to TRADE
-- **invalidateIf**: Conditions that invalidate the trade idea
-- **monitorDurationSeconds**: How long to monitor before giving up
+- **durationSeconds**: How long to monitor before giving up
+- **upgrade**: Conditions that upgrade WAIT to TRADE
+- **invalidate**: Conditions that invalidate the trade idea
+
+**Typed Condition Fields:**
+
+| Field | Type | Description |
+|-------|-------|-------------|
+| `priceCrossAbove` | Double | Trigger if price crosses above this level |
+| `priceCrossBelow` | Double | Trigger if price crosses below this level |
+| `volumeIncreasePercent` | Double | Trigger if volume increased by this % |
+| `cvdTrend` | String | "POSITIVE", "NEGATIVE", "NEUTRAL" |
 
 This makes WAIT **actionable** and **first-class** rather than just "log and forget".
 
@@ -303,14 +352,13 @@ This makes WAIT **actionable** and **first-class** rather than just "log and for
 
 ## Units and Rounding Rules
 
-### All Prices in Ticks
+### Pricing Model: Prices in Points, Offsets in Ticks
 
-**All price fields are in ticks, not points or dollars.**
+**We use a dual model for clarity:**
+- **Prices** (entry, trigger levels): Decimal points (e.g., 4995.00, 5000.25)
+- **Offsets** (stop loss, take profit, risk): Integer ticks (e.g., -25, +40)
 
-- **entryPrice**: Integer ticks
-- **stopLoss.price**: Integer ticks
-- **takeProfit.price**: Instrument-specific integer ticks
-- **order.price**: Integer ticks
+This avoids confusion and makes calculations intuitive.
 
 ### Tick Size Calculation
 
@@ -318,33 +366,56 @@ This makes WAIT **actionable** and **first-class** rather than just "log and for
 // Get instrument-specific tick size
 double tickSize = instrument.getTickSize(); // e.g., 0.25 for ES
 
-// Convert ticks to price
-double price = ticks * tickSize;
+// Convert tick offset to price offset
+double priceOffset = ticks * tickSize;
 
-// Convert price to ticks
-int ticks = (int) Math.round(price / tickSize);
+// Calculate absolute stop/take price
+double stopLossPrice = entryPrice + (stopLossTicks * tickSize);
+double takeProfitPrice = entryPrice + (takeProfitTicks * tickSize);
+
+// Convert price to tick units (for logging/analysis)
+int tickUnits = (int) Math.round(price / tickSize);
 ```
 
 ### Rounding Rules
 
-1. **User Input → Ticks**: Always round to nearest tick using `Math.round()`
-2. **AI Output → Ticks**: AI returns integers, assumed to be tick count
-3. **Display**: Convert ticks back to price for display (4 decimal places for ES)
+1. **AI Price Output**: Prices are decimal points (e.g., 4995.0, 5000.25)
+2. **Tick Offsets**: Always integers representing tick count (e.g., -25, +40)
+3. **Execution Layer**: Applies tick size when placing orders
+4. **Display**: Show both price points and tick offsets for clarity
 
-### Example: ES Futures
+### Example: ES Futures (Tick Size = 0.25)
 
 ```
-Tick Size: 0.25
-Point Value: $50
+AI Output for LONG entry:
+  - Entry Price: 4995.0 (decimal points)
+  - Stop Loss: offsetTicks = -25
+  - Take Profit: offsetTicks = +35
 
-AI Output: 4995 ticks
-  → Price: 4995 * 0.25 = 1248.75
+Execution Calculation:
+  - Stop Loss Price: 4995.0 + (-25 * 0.25) = 4988.75
+  - Take Profit Price: 4995.0 + (35 * 0.25) = 5003.75
 
-AI Output: SL @ 4970 ticks
-  → Price: 4970 * 0.25 = 1242.50
+Risk Analysis:
+  - Risk: 25 ticks = 6.25 points = $312.50 (ES)
+  - Reward: 35 ticks = 8.75 points = $437.50 (ES)
+  - R:R Ratio: 1.4:1
 
-Display: Entry @ 1248.75 | SL @ 1242.50
+Display: Entry @ 4995.0 | SL @ 4988.75 (-25 ticks) | TP @ 5003.75 (+35 ticks)
 ```
+
+### Why This Model?
+
+**Separation of concerns:**
+- **AI** focuses on trade logic and relative distances (offsets in ticks)
+- **Execution layer** handles instrument-specific price calculations
+- **Logging** shows both forms for analysis
+
+**Benefits:**
+- ✅ AI doesn't need to know tick sizes
+- ✅ Easy to reason about relative distances (e.g., "risk 20 ticks")
+- ✅ Clear separation between trade logic and execution mechanics
+- ✅ Works across different instruments (ES, NQ, etc.)
 
 ---
 
@@ -431,14 +502,14 @@ This will be added in a later phase after entry strategy is validated.
 **Scenario:** Order fills while timeout callback fires
 
 ```java
-// Use atomic compare-and-set
-if (orderState.compareAndSet(OrderState.PENDING, OrderState.FILLED)) {
+// Use atomic compare-and-set for thread-safe state transitions
+if (pending.state.compareAndSet(OrderState.PENDING, OrderState.FILLED)) {
     // Handle fill
-} else if (orderState.compareAndSet(OrderState.PENDING, OrderState.CANCELLED)) {
+} else if (pending.state.compareAndSet(OrderState.PENDING, OrderState.CANCELLED)) {
     // Handle cancellation
 } else {
     // State already changed - ignore duplicate event
-    log("Duplicate event for order " + orderId + ", current state: " + orderState);
+    log("Duplicate event for order " + orderId + ", current state: " + pending.state.get());
 }
 ```
 
@@ -449,18 +520,19 @@ if (orderState.compareAndSet(OrderState.PENDING, OrderState.FILLED)) {
 **Solution:** Use idempotency key
 
 ```java
-// Signal contains unique identifier
-String idempotencyKey = signal.getId() + "_" + AI.getId();
+// Idempotency key must be DETERMINISTIC, not random
+// Use signalId + decisionVersion to prevent duplicate orders
+String idempotencyKey = signal.getId() + "_" + decisionVersion;
 
-// Check for existing order
-if (activeOrders.containsKey(idempotencyKey)) {
+// Check for existing order with same key
+if (idempotencyKeys.containsValue(idempotencyKey)) {
     log("Duplicate signal detected, ignoring: " + idempotencyKey);
     return;
 }
 
 // Place order with idempotency key
 placeOrder(plan, idempotencyKey);
-activeOrders.put(idempotencyKey, orderId);
+idempotencyKeys.put(idempotencyKey, orderId);
 ```
 
 ---
@@ -469,8 +541,8 @@ activeOrders.put(idempotencyKey, orderId);
 
 ### Scenario 1: Pullback Entry (LIMIT)
 
-**Signal:** Iceberg BUY detected @ 5000 ticks
-**Context:** Price at 5002, VWAP at 4995, strong uptrend
+**Signal:** Iceberg BUY detected @ 5000.0
+**Context:** Price at 5002.0, VWAP at 4995.0, strong uptrend
 
 **AI Response:**
 ```json
@@ -478,34 +550,43 @@ activeOrders.put(idempotencyKey, orderId);
   "action": "TRADE",
   "confidence": 0.85,
   "reasoning": "Strong institutional buying in uptrend",
+  "instrument": "ES",
+  "side": "LONG",
+  "tickSize": 0.25,
   "marketAnalysis": {
     "bias": "BULLISH",
-    "keyLevels": ["VWAP 4995", "POC 4992"],
+    "keyLevels": ["VWAP 4995.0", "POC 4992.0"],
     "concerns": []
   },
-  "constraints": {
-    "maxRiskTicks": 20,
+  "constraintsUsed": {
+    "maxRiskTicks": 25,
     "maxChaseTicks": 6,
-    "maxSlippageTicks": 2,
-    "timeInForceDefault": "GTC"
+    "maxSlippageTicks": 2
   },
   "strategy": {
     "entryIntent": "PULLBACK",
     "order": {
       "type": "LIMIT",
-      "price": 4995,
+      "price": 4995.0,
+      "tif": "GTC",
       "expiresInSeconds": 180,
       "fallback": "CANCEL"
     },
-    "stopLoss": { "price": 4970 },
-    "takeProfit": { "price": 5030 },
+    "stopLoss": { "offsetTicks": -25 },
+    "takeProfit": { "offsetTicks": 35 },
     "riskRewardRatio": 1.4
   },
   "monitorPlan": null
 }
 ```
 
-**Result:** LIMIT order placed at 4995 ticks. If filled within 180s, position opened. If not, order cancelled.
+**Result:**
+- LIMIT order placed at 4995.0 points
+- Stop loss calculated: 4995.0 + (-25 * 0.25) = 4988.75 points
+- Take profit calculated: 4995.0 + (35 * 0.25) = 5003.75 points
+- Risk: 25 ticks = 6.25 points = $312.50 (ES)
+- Reward: 35 ticks = 8.75 points = $437.50 (ES)
+- If filled within 180s, position opened. If not, order cancelled.
 
 ---
 
@@ -802,10 +883,37 @@ public static class Constraints {
     public String timeInForceDefault = "GTC"; // IOC/GTC/DAY
 }
 
+// AIDecision.java (enhanced)
+public static class AIDecision {
+    public String signalId;
+    public String instrument;          // ES, NQ, etc.
+    public String side;                 // LONG, SHORT
+    public double tickSize;            // Instrument tick size (e.g., 0.25 for ES)
+    public String version;              // Decision version for idempotency
+    public StrategistAction action;
+    public double confidence;
+    public String reasoning;
+    public MarketAnalysis marketAnalysis;
+    public Constraints constraintsUsed;
+    public Strategy strategy;
+    public MonitorPlan monitorPlan;
+    public TradePlan plan;
+
+    // Helper to check if actionable
+    public boolean isTradeAction() {
+        return action == StrategistAction.TRADE;
+    }
+
+    public boolean isWaitAction() {
+        return action == StrategistAction.WAIT && monitorPlan != null;
+    }
+}
+
 // OrderSpec.java
 public static class OrderSpec {
     public String type;                    // MARKET/LIMIT/STOP_MARKET
-    public Integer price;                  // Entry price in ticks (null for MARKET)
+    public Double price;                  // Entry price in decimal points (null for MARKET)
+    public String tif;                    // IOC/GTC/DAY - time-in-force
     public Integer expiresInSeconds;       // Max wait time (null for MARKET)
     public String fallback;               // CANCEL/MARKET/REPRICE
 
@@ -817,7 +925,7 @@ public static class OrderSpec {
 
 // StopTakeLevel.java
 public static class StopTakeLevel {
-    public int price;                     // Price in ticks
+    public int offsetTicks;   // Offset from entry price in ticks
 }
 
 // Strategy.java
@@ -831,14 +939,22 @@ public static class Strategy {
 
 // MonitorPlan.java
 public static class MonitorPlan {
-    public Map<String, Object> upgradeToTradeIf;  // Upgrade conditions
-    public Map<String, Object> invalidateIf;      // Invalidate conditions
-    public int monitorDurationSeconds;
+    public int durationSeconds;
+    public ConditionSet upgrade;   // Upgrade conditions
+    public ConditionSet invalidate; // Invalidate conditions
 
     public MonitorPlan() {
-        this.upgradeToTradeIf = new HashMap<>();
-        this.invalidateIf = new HashMap<>();
+        this.upgrade = new ConditionSet();
+        this.invalidate = new ConditionSet();
     }
+}
+
+// ConditionSet.java
+public static class ConditionSet {
+    public Double priceCrossAbove;
+    public Double priceCrossBelow;
+    public Double volumeIncreasePercent;
+    public String cvdTrend;
 }
 
 // PendingOrder.java (new)
@@ -848,7 +964,8 @@ public static class PendingOrder {
     public long expiryTime;
     public String fallbackAction;
     public Strategy strategy;
-    public OrderState state = OrderState.PENDING;
+    public final AtomicReference<OrderState> state =
+        new AtomicReference<>(OrderState.PENDING);
 
     public PendingOrder(String orderId, String idempotencyKey, long expiryTime,
                         String fallbackAction, Strategy strategy) {
@@ -881,29 +998,6 @@ public static class TradePlan {
     public MarketAnalysis marketAnalysis;
     public MonitorPlan monitorPlan;
 }
-
-// Enhanced AIDecision
-public static class AIDecision {
-    public String signalId;
-    public StrategistAction action;
-    public double confidence;
-    public String reasoning;
-    public MarketAnalysis marketAnalysis;
-    public Constraints constraints;
-    public Strategy strategy;
-    public MonitorPlan monitorPlan;
-    public TradePlan plan;
-
-    // Helper to check if actionable
-    public boolean isTradeAction() {
-        return action == StrategistAction.TRADE;
-    }
-
-    public boolean isWaitAction() {
-        return action == StrategistAction.WAIT && monitorPlan != null;
-    }
-}
-```
 
 ### Phase 2: Prompt Updates
 
@@ -1011,10 +1105,10 @@ public class AIOrderManager {
         Strategy strategy = decision.strategy;
         OrderSpec order = strategy.order;
 
-        // Create idempotency key
-        String idempotencyKey = signal.getId() + "_" + UUID.randomUUID().toString();
+        // Create DETERMINISTIC idempotency key (not random!)
+        String idempotencyKey = signal.getId() + "_" + decision.version;
 
-        // Check for duplicate
+        // Check for duplicate with same key
         if (idempotencyKeys.containsValue(idempotencyKey)) {
             log("Duplicate signal detected, ignoring: " + idempotencyKey);
             return false;
@@ -1037,8 +1131,11 @@ public class AIOrderManager {
     }
 
     private boolean executeMarketEntry(Strategy strategy, Signal signal, String idempotencyKey) {
-        int orderId = placeMarketOrder(signal.direction, strategy.stopLoss.price,
-                                      strategy.takeProfit.price);
+        // Calculate absolute stop/take prices from offsets
+        double stopLossPrice = strategy.order.price + (strategy.stopLoss.offsetTicks * tickSize);
+        double takeProfitPrice = strategy.order.price + (strategy.takeProfit.offsetTicks * tickSize);
+
+        int orderId = placeMarketOrder(signal.direction, stopLossPrice, takeProfitPrice);
 
         idempotencyKeys.put(orderId, idempotencyKey);
         log("[MARKET] Order " + orderId + " placed - " + strategy.entryIntent);
@@ -1047,10 +1144,14 @@ public class AIOrderManager {
 
     private boolean executeLimitEntry(Strategy strategy, Signal signal, int timeLimit,
                                      String fallback, String idempotencyKey) {
-        int orderId = placeLimitOrder(signal.direction, strategy.order.price,
-                                      strategy.stopLoss.price, strategy.takeProfit.price);
+        // Calculate absolute stop/take prices from offsets
+        double stopLossPrice = strategy.order.price + (strategy.stopLoss.offsetTicks * tickSize);
+        double takeProfitPrice = strategy.order.price + (strategy.takeProfit.offsetTicks * tickSize);
 
-        long expiryTime = System.currentTimeMillis() + (timeLimit * 1000);
+        int orderId = placeLimitOrder(signal.direction, strategy.order.price,
+                                      stopLossPrice, takeProfitPrice);
+
+        long expiryTime = System.currentTimeMillis() + (timeLimit * 1000L);
 
         pendingOrders.put(orderId, new PendingOrder(
             String.valueOf(orderId),
@@ -1061,17 +1162,21 @@ public class AIOrderManager {
         ));
 
         idempotencyKeys.put(orderId, idempotencyKey);
-        log("[LIMIT] Order " + orderId + " placed @ " + strategy.order.price + " ticks, " +
+        log("[LIMIT] Order " + orderId + " placed @ " + strategy.order.price + " points, " +
             "expires in " + timeLimit + "s, fallback: " + fallback);
         return true;
     }
 
     private boolean executeStopMarketEntry(Strategy strategy, Signal signal, int timeLimit,
                                           String fallback, String idempotencyKey) {
-        int orderId = placeStopMarketOrder(signal.direction, strategy.order.price,
-                                           strategy.stopLoss.price, strategy.takeProfit.price);
+        // Calculate absolute stop/take prices from offsets
+        double stopLossPrice = strategy.order.price + (strategy.stopLoss.offsetTicks * tickSize);
+        double takeProfitPrice = strategy.order.price + (strategy.takeProfit.offsetTicks * tickSize);
 
-        long expiryTime = System.currentTimeMillis() + (timeLimit * 1000);
+        int orderId = placeStopMarketOrder(signal.direction, strategy.order.price,
+                                           stopLossPrice, takeProfitPrice);
+
+        long expiryTime = System.currentTimeMillis() + (timeLimit * 1000L);
 
         pendingOrders.put(orderId, new PendingOrder(
             String.valueOf(orderId),
@@ -1082,7 +1187,7 @@ public class AIOrderManager {
         ));
 
         idempotencyKeys.put(orderId, idempotencyKey);
-        log("[STOP_MARKET] Order " + orderId + " placed @ " + strategy.order.price + " ticks, " +
+        log("[STOP_MARKET] Order " + orderId + " placed @ " + strategy.order.price + " points, " +
             "expires in " + timeLimit + "s, fallback: " + fallback);
         return true;
     }
@@ -1173,12 +1278,13 @@ public class MonitorPlanExecutor {
             decision.monitorPlan,
             decision.marketAnalysis,
             System.currentTimeMillis(),
-            decision.monitorPlan.monitorDurationSeconds * 1000
+            decision.monitorPlan.durationSeconds * 1000L,
+            market.volume
         );
 
         activeMonitors.put(monitorId, context);
         log("[MONITOR] Started monitoring " + monitorId + " for " +
-            decision.monitorPlan.monitorDurationSeconds + "s");
+            decision.monitorPlan.durationSeconds + "s");
     }
 
     public void checkMonitors(MarketData market) {
@@ -1211,48 +1317,41 @@ public class MonitorPlanExecutor {
     }
 
     private boolean checkUpgradeConditions(MonitorContext context, MarketData market) {
-        Map<String, Object> conditions = context.monitorPlan.upgradeToTradeIf;
+        ConditionSet conditions = context.monitorPlan.upgrade;
 
-        if (conditions.containsKey("priceAbove")) {
-            int threshold = (int) conditions.get("priceAbove");
-            if (market.price <= threshold) return false;
+        if (conditions.priceCrossAbove != null && market.price <= conditions.priceCrossAbove) {
+            return false;
         }
 
-        if (conditions.containsKey("priceBelow")) {
-            int threshold = (int) conditions.get("priceBelow");
-            if (market.price >= threshold) return false;
+        if (conditions.priceCrossBelow != null && market.price >= conditions.priceCrossBelow) {
+            return false;
         }
 
-        if (conditions.containsKey("volumeIncreasePercent")) {
-            double threshold = (double) conditions.get("volumeIncreasePercent");
+        if (conditions.volumeIncreasePercent != null) {
             double increase = ((market.volume - context.startVolume) / context.startVolume) * 100;
-            if (increase < threshold) return false;
+            if (increase < conditions.volumeIncreasePercent) return false;
         }
 
-        if (conditions.containsKey("cvdTrend")) {
-            String trend = (String) conditions.get("cvdTrend");
-            if (!market.cvdTrend.equals(trend)) return false;
+        if (conditions.cvdTrend != null && !market.cvdTrend.equals(conditions.cvdTrend)) {
+            return false;
         }
 
         return true;
     }
 
     private boolean checkInvalidateConditions(MonitorContext context, MarketData market) {
-        Map<String, Object> conditions = context.monitorPlan.invalidateIf;
+        ConditionSet conditions = context.monitorPlan.invalidate;
 
-        if (conditions.containsKey("priceAbove")) {
-            int threshold = (int) conditions.get("priceAbove");
-            if (market.price > threshold) return true;
+        if (conditions.priceCrossAbove != null && market.price > conditions.priceCrossAbove) {
+            return true;
         }
 
-        if (conditions.containsKey("priceBelow")) {
-            int threshold = (int) conditions.get("priceBelow");
-            if (market.price < threshold) return true;
+        if (conditions.priceCrossBelow != null && market.price < conditions.priceCrossBelow) {
+            return true;
         }
 
-        if (conditions.containsKey("cvdTrend")) {
-            String trend = (String) conditions.get("cvdTrend");
-            if (market.cvdTrend.equals(trend)) return true;
+        if (conditions.cvdTrend != null && market.cvdTrend.equals(conditions.cvdTrend)) {
+            return true;
         }
 
         return false;
@@ -1273,12 +1372,13 @@ public class MonitorPlanExecutor {
         public double startVolume;
 
         public MonitorContext(String monitorId, MonitorPlan monitorPlan,
-                             MarketAnalysis marketAnalysis, long startTime, long expiryTime) {
+                             MarketAnalysis marketAnalysis, long startTime, long expiryTime, double startVolume) {
             this.monitorId = monitorId;
             this.monitorPlan = monitorPlan;
             this.marketAnalysis = marketAnalysis;
             this.startTime = startTime;
             this.expiryTime = expiryTime;
+            this.startVolume = startVolume;
         }
     }
 }
